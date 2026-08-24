@@ -1,0 +1,32 @@
+[package]
+license = "Apache-2.0"
+name = "codel-shell-session-support"
+version = "0.1.0"
+edition.workspace = true
+description = "Session-support modules for the codel shell crate family: managed MCP credential/catalog caching and file-access tracking."
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+codel-file-utils = { path = "../codel-file-utils", optional = true }
+codel-http = { workspace = true }
+codel-shell-base = { workspace = true }
+codel-version = { workspace = true }
+codel-workspace = { workspace = true }
+
+[features]
+default-bazel = []
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,208 @@
+//! `codel/btw` and `codel/review/*` extension handlers.
+//!
+//! - `btw`: dispatch a side question to the active session via
+//!   `SessionCommand::SideQuestion` and return the answer.
+//! - `review/comment` and `review/comment/delete`: record inline code review
+//!   events to cloud storage.
+
+use std::sync::Arc;
+
+use agent_client_protocol as acp;
+use tokio::sync::oneshot;
+
+use super::{ExtResult, parse_params};
+use crate::agent::MvpAgent;
+use crate::session::{
+    CommentDeleteRequest, CommentDeleteResponse, CommentRequest, CommentResponse, SessionCommand,
+};
+use crate::upload::gcs::WithAuth as _;
+use codel_file_utils::gcs::upload_bytes;
+
+#[tracing::instrument(skip_all, fields(method = %args.method))]
+pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    match args.method.as_ref() {
+        "codel/btw" => {
+            tracing::info!("handling /btw side question");
+            handle_btw(agent, args).await
+        }
+        m if m.starts_with("codel/review") => {
+            tracing::info!("handling review comment");
+            handle_review(agent, args).await
+        }
+        _ => Err(acp::Error::method_not_found()),
+    }
+}
+
+/// Handle `codel/btw` -- a side question that doesn't interrupt the current turn.
+async fn handle_btw(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BtwRequest {
+        session_id: String,
+        question: String,
+    }
+
+    let req: BtwRequest = parse_params(args)?;
+    let sid: acp::SessionId = req.session_id.clone().into();
+    let session_handle = {
+        let sessions = agent.sessions.borrow();
+        sessions.get(&sid).cloned()
+    };
+    let Some(session) = session_handle else {
+        return Err(
+            acp::Error::invalid_params().data(format!("session not found: {}", req.session_id))
+        );
+    };
+    let (tx, rx) = oneshot::channel();
+    let _ = session.cmd_tx.send(SessionCommand::SideQuestion {
+        question: req.question,
+        respond_to: tx,
+    });
+    let result = rx
+        .await
+        .map_err(|_| acp::Error::internal_error().data("session failed to respond"))?;
+    match result {
+        Ok(answer) => super::to_ext_response(Ok(serde_json::json!({
+            "answer": answer,
+        }))),
+        Err(e) => Err(acp::Error::internal_error().data(e)),
+    }
+}
+
+/// Record inline code review events.
+///
+/// Methods:
+/// - `codel/review/comment`: record a new inline code comment to cloud storage
+/// - `codel/review/comment/delete`: record a tombstone event for a deleted comment
+async fn handle_review(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    match args.method.as_ref() {
+        "codel/review/comment" => {
+            let request: CommentRequest = parse_params(args)?;
+
+            let comment_id = uuid::Uuid::now_v7().to_string();
+
+            tracing::info!(
+                comment_id = %comment_id,
+                session_id = %request.session_id,
+                prompt_index = request.prompt_index,
+                path = %request.citation.path,
+                lines = %format!("{}-{}", request.citation.start_line, request.citation.end_line),
+                "Comment received"
+            );
+
+            let record = serde_json::json!({
+                "event": "create",
+                "commentId": comment_id,
+                "sessionId": request.session_id,
+                "promptIndex": request.prompt_index,
+                "comment": null,
+                "citation": request.citation,
+                "agentId": crate::remote::client::agent_id(),
+                "clientType": format!("{:?}", agent.client_type()),
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+
+            if let Some(gcs_config) = agent
+                .build_gcs_config(format!("{}/comments", request.session_id))
+                .await
+            {
+                let json_bytes = serde_json::to_vec_pretty(&record)
+                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                let gcs_path = format!(
+                    "{}/{}.json",
+                    gcs_config.gcs_prefix.as_deref().unwrap_or("comments"),
+                    comment_id
+                );
+
+                let auth_manager = Some(agent.auth_manager.clone());
+                tokio::spawn(async move {
+                    match upload_bytes(
+                        &gcs_config.with_auth(auth_manager),
+                        &gcs_path,
+                        &json_bytes,
+                        "application/json",
+                    )
+                    .await
+                    {
+                        Ok(gcs_url) => {
+                            tracing::info!(gcs_url = %gcs_url, "Comment uploaded to GCS");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, gcs_path, "Failed to upload comment to GCS");
+                        }
+                    }
+                });
+            }
+
+            let value = serde_json::to_value(CommentResponse {
+                comment_id,
+                recorded: true,
+            })
+            .map(|value| serde_json::value::to_raw_value(&value).map(Arc::from))
+            .expect("to work")
+            .expect("to work");
+            Ok(acp::ExtResponse::new(value))
+        }
+        "codel/review/comment/delete" => {
+            let request: CommentDeleteRequest = parse_params(args)?;
+
+            tracing::info!(
+                comment_id = %request.comment_id,
+                session_id = %request.session_id,
+                "Comment delete received"
+            );
+
+            let record = serde_json::json!({
+                "event": "delete",
+                "commentId": request.comment_id,
+                "sessionId": request.session_id,
+                "agentId": crate::remote::client::agent_id(),
+                "clientType": format!("{:?}", agent.client_type()),
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+
+            if let Some(gcs_config) = agent
+                .build_gcs_config(format!("{}/comments", request.session_id))
+                .await
+            {
+                let json_bytes = serde_json::to_vec_pretty(&record)
+                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                let event_id = uuid::Uuid::now_v7().to_string();
+                let gcs_path = format!(
+                    "{}/{}.json",
+                    gcs_config.gcs_prefix.as_deref().unwrap_or("comments"),
+                    event_id
+                );
+
+                let auth_manager = Some(agent.auth_manager.clone());
+                tokio::spawn(async move {
+                    match upload_bytes(
+                        &gcs_config.with_auth(auth_manager),
+                        &gcs_path,
+                        &json_bytes,
+                        "application/json",
+                    )
+                    .await
+                    {
+                        Ok(gcs_url) => {
+                            tracing::info!(gcs_url = %gcs_url, "Comment delete event uploaded to GCS");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, gcs_path, "Failed to upload comment delete event to GCS");
+                        }
+                    }
+                });
+            }
+
+            let value = serde_json::to_value(CommentDeleteResponse {
+                comment_id: request.comment_id,
+                deleted: true,
+            })
+            .map(|value| serde_json::value::to_raw_value(&value).map(Arc::from))
+            .expect("to work")
+            .expect("to work");
+            Ok(acp::ExtResponse::new(value))
+        }
+        _ => Err(acp::Error::method_not_found()),
+    }
+}

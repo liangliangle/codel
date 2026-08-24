@@ -1,0 +1,28 @@
+[package]
+license = "Apache-2.0"
+name = "codel-workspace-client"
+version = "0.1.0"
+edition.workspace = true
+description = "Lightweight typed client for hub-proxied workspace.* RPCs (shared by codel-shell proxy mode and other consumers)"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
+codel-computer-hub-sdk = { workspace = true }
+codel-workspace-types = { workspace = true }
+codel-tool-protocol = { workspace = true }
+codel-tool-runtime = { workspace = true }
+
+[features]
+default = []
+default-bazel = []
+[dev-dependencies]
+schemars = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+codel-tool-types = { workspace = true }
+
+[lints]
+workspace = true
