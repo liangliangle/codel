@@ -19,8 +19,6 @@ use crate::util::config::RemoteSettings;
 pub struct MediaToolCredentials {
     /// `None`: the per-request provider is the only source, so a foreign login never reaches the client.
     pub static_bearer: Option<String>,
-    /// Always `false` for a foreign-issuer login: that account is metered by its own gate, not SuperCodel.
-    pub tier_restricted: bool,
 }
 
 /// The config a host outside the embedded agent builds media tools from.
@@ -65,7 +63,6 @@ pub fn image_gen_config(cfg: &Config, credentials: &MediaToolCredentials) -> Ima
         image_edit_enabled: cfg.resolve_image_edit().value,
         model_override: cfg.resolve_image_gen_model_override(),
         edit_model_override: cfg.resolve_image_edit_model_override(),
-        tier_restricted: credentials.tier_restricted,
     }
 }
 
@@ -89,7 +86,6 @@ pub fn video_gen_config(cfg: &Config, credentials: &MediaToolCredentials) -> Vid
         extra_headers: media_headers(cfg, &base_url),
         base_url,
         zdr_video_output_s3: zdr_video_output_s3.map(Box::new),
-        tier_restricted: credentials.tier_restricted,
         zdr_restricted,
     }
 }

@@ -329,15 +329,6 @@ impl codel_tool_runtime::Tool for ImageEditTool {
             res.require::<ImageGenClient>()?.clone()
         };
 
-        // Free / X Basic users are zero-limited on Imagine server-side; return
-        // the upsell prose instead of a doomed request (shares `image_gen`'s
-        // message and short-circuits before resolving any attachments).
-        if client.is_tier_restricted() {
-            return Ok(ToolOutput::Text(
-                super::image_gen::TIER_RESTRICTED_UPSELL.into(),
-            ));
-        }
-
         // Before the attachments are read: a refused bearer must not cost the image encoding
         let sent_bearer = client.current_bearer().await?;
 

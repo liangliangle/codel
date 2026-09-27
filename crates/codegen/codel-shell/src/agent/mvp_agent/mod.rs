@@ -114,20 +114,7 @@ pub(crate) fn jwt_tier_claim(jwt: &str) -> Option<String> {
         .ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
     let tier = claims.get("tier")?.as_u64()?;
-    Some(
-        match tier {
-            1 => "supercodel",
-            2 => "x_basic",
-            3 => "x_premium",
-            4 => "x_premium_plus",
-            5 => "supercodel_heavy",
-            6 => "supercodel_lite",
-            7 => "supercodel_plus",
-            0 => "free",
-            _ => return Some(tier.to_string()),
-        }
-            .to_string(),
-    )
+    Some(tier.to_string())
 }
 /// Resolve telemetry / AuthMeta `subscription_tier`.
 /// Precedence: CCP `/settings` `subscription_tier_display` (when present and non-empty) [`AuthMode::ApiKey`] resolves to `"api_key"` (never free)
@@ -152,16 +139,8 @@ pub(crate) fn jwt_claim_matches_user_subscription_tier(
     jwt_claim: &str,
     user_subscription_tier: &str,
 ) -> bool {
-    match user_subscription_tier {
-        "CodelPro" => jwt_claim == "supercodel",
-        "XBasic" => jwt_claim == "x_basic",
-        "XPremium" => jwt_claim == "x_premium",
-        "XPremiumPlus" => jwt_claim == "x_premium_plus",
-        "SuperCodelPro" => jwt_claim == "supercodel_heavy",
-        "SuperCodelLite" => jwt_claim == "supercodel_lite",
-        "SuperCodelPlus" => jwt_claim == "supercodel_plus",
-        _ => jwt_claim.parse::<u64>().is_ok_and(|n| n != 0),
-    }
+    let _ = user_subscription_tier;
+    jwt_claim.parse::<u64>().is_ok_and(|n| n != 0)
 }
 /// ACP `_meta` key for the intent to run a chat session on a local workspace (pager stamps it on chat create).
 #[cfg(feature = "local-workspace")]

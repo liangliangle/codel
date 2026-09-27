@@ -714,3 +714,113 @@ Policy pins such as `allow_managed_hooks_only` (see [Hooks](10-hooks.md#allow-on
 ## Check what is in effect
 
 Run `codel inspect` on the developer's machine. It lists every config file that contributed, including requirements and managed layers, so a policy that is not applying is visible in one command.
+
+## Environment variables added by the upstream sync
+
+This tree was synced onto the upstream repository at commit `f0e3be11`
+(2026-09-23) from the fork point `b41c75a5` (2026-07-26). Every variable below
+was introduced upstream in that window and is renamed to the `CODEL_` prefix
+(the fork keeps no compatibility with the old names). Each one also has a
+`config.toml` equivalent; prefer the config file.
+
+### Auth and endpoints
+
+| Variable | Meaning |
+| --- | --- |
+| `CODEL_CLI_BASE_URL` | Base URL the CLI uses to reach the Codel API. |
+| `CODEL_EXTRA_CA_BUNDLE` | Path to an extra PEM CA bundle for TLS to the API. |
+| `CODEL_FORCE_LOGIN_TEAM_ID` | Pin the credential to one team id (fail-closed). |
+| `CODEL_AUTH_FORCE_DARK_WAKE` | Force a token refresh wake even when the cached token looks fresh. |
+| `CODEL_UNCHARGED_401_PARK` | Park the session instead of retrying after an uncharged 401. |
+| `CODEL_SETTINGS_CACHE` | Override the remote-settings cache location. |
+| `CODEL_CONFIG`, `CODEL_CONFIG_PATH` | Point at an alternate `config.toml`. |
+
+### Workspace and hub
+
+| Variable | Meaning |
+| --- | --- |
+| `CODEL_WORKSPACE_DASHBOARD` | Enable the workspace dashboard surface. |
+| `CODEL_WORKSPACE_HUB_CONNECT_DEADLINE_SECS` | Deadline for the initial hub connect. |
+| `CODEL_WORKSPACE_HUB_CONNECT_HEDGE_AFTER_SECS` | Hedge the hub connect after this delay. |
+| `CODEL_WORKSPACE_WS_LIVENESS_DEADLINE_SECS` | WebSocket liveness deadline. |
+| `CODEL_WORKSPACE_PRESENCE_KEEPALIVE_ENABLED` | Keep the hub presence lease alive. |
+| `CODEL_WORKSPACE_PRESENCE_ACTIVITY_WINDOW_MS` | Presence activity window. |
+| `CODEL_WORKSPACE_RPC_ACTIVITY_WINDOW_MS` | RPC activity window. |
+| `CODEL_WORKSPACE_PREVIEW_STATE_REPORTER_ENABLED` | Report preview state to the hub. |
+| `CODEL_WORKSPACE_PREVIEW_STATE_POLL_INTERVAL_MS` | Preview state poll interval. |
+| `CODEL_WORKSPACE_PREVIEW_STATE_WAIT_SECS` | Preview state wait budget. |
+| `CODEL_WORKSPACE_PREVIEW_DISCOVERY_REFRESH_MS` | Preview discovery refresh interval. |
+| `CODEL_WORKSPACE_SCHEDULED_TASK_KEEP_AWAKE_MS` | Keep-awake window for scheduled tasks. |
+| `CODEL_WORKSPACE_OIDC_*` | Proactive OIDC refresh tuning; unused when auth is API-key only. |
+| `CODEL_CHAT_LOCAL_WORKSPACE*` | Local-workspace intent plumbing used by `--chat` clients. |
+| `CODEL_FILE_LOCK_SLOT_DIR` | Directory holding the machine-local file-lock slots. |
+
+### Subagents and workflows
+
+| Variable | Meaning |
+| --- | --- |
+| `CODEL_MAX_CONCURRENT_SUBAGENTS` | Cap on concurrently running subagents. |
+| `CODEL_SUBAGENTS_MAX_DEPTH` | Maximum subagent nesting depth. |
+| `CODEL_SUBAGENT_MODEL_INHERITANCE` | How a subagent picks its model. |
+| `CODEL_SUBAGENT_LIMIT_BEHAVIOR` | What happens when the subagent budget is hit. |
+| `CODEL_SUBAGENT_RATE_LIMIT_MAX_ATTEMPTS` | Retry budget for subagent rate limits. |
+| `CODEL_SUBAGENT_SAMPLING_LIMIT` | Sampling cap for subagents. |
+| `CODEL_SUBAGENT_WATERFALL` | Enable waterfall subagent dispatch. |
+| `CODEL_SUBAGENT_WORKER_THREADS` | Worker threads for subagent execution. |
+| `CODEL_WORKFLOW_MAX_CONCURRENT_AGENTS` | Cap on agents inside one workflow. |
+
+### Media, tools and prompts
+
+| Variable | Meaning |
+| --- | --- |
+| `CODEL_MAX_PARALLEL_IMAGE_GEN_CALLS` | Concurrency cap for image generation. |
+| `CODEL_MAX_PARALLEL_VIDEO_GEN_CALLS` | Concurrency cap for video generation. |
+| `CODEL_IMAGE_CAPABILITIES_DIR` | Override the cached image-capabilities directory. |
+| `CODEL_VIDEO_MODEL` | Default video generation model id. |
+| `CODEL_BUILD_TOOLS`, `CODEL_BUILD_SPAWN_TOOL` | Tool-surface selection for the build profile. |
+| `CODEL_BOT_TOOL_IDS`, `CODEL_BOT_DEFAULT_TOOL_IDS`, `CODEL_BOT_TOOL_DESCRIPTIONS` | Bot tool surface. |
+| `CODEL_WORKTREE_TYPE` | Worktree backend selection. |
+| `CODEL_TURN_SUMMARY`, `CODEL_TURN_TRANSIENT_RETRY` | Turn summarisation and transient-retry behaviour. |
+| `CODEL_LONG_REASONING_REMINDER` | Long-reasoning reminder cadence. |
+| `CODEL_PROMPT_ACK_TIMEOUT_SECS` | Prompt acknowledgement timeout. |
+| `CODEL_REQUEST_COMPRESSION` | Request body compression. |
+| `CODEL_LENGTH_SALVAGE` | Salvage truncated model output. |
+| `CODEL_RESUME_NUDGE_DISABLED` | Suppress the resume nudge. |
+| `CODEL_SESSION_SEARCH` | Session search backend. |
+| `CODEL_SESSION_EXIT_DRAIN_SECS`, `CODEL_SESSION_END_HOOKS_TIMEOUT_MS` | Session teardown budgets. |
+| `CODEL_ACTIVE_AGENT_MESSAGES` | Active-agent message surface. |
+
+### UI, terminal and diagnostics
+
+| Variable | Meaning |
+| --- | --- |
+| `CODEL_DOCK`, `CODEL_DOCK_V2` | Dock layout toggles. |
+| `CODEL_SCREEN_MODE_SWITCH` | Screen-mode switching. |
+| `CODEL_APPEARANCE` | Appearance preset. |
+| `CODEL_TERMINAL_THEME` | Terminal theme override. |
+| `CODEL_DEFAULT_PERMISSION_MODE` | Default permission mode. |
+| `CODEL_EXIT_AFTER_FIRST_RENDER` | Exit after the first render (smoke tests). |
+| `CODEL_EXIT_TIMEOUT_SECS`, `CODEL_CONNECT_UI_TIMEOUT_SECS` | Startup/exit budgets. |
+| `CODEL_ENVRC_TIMEOUT_SECS` | `.envrc` evaluation budget. |
+| `CODEL_BOOTSTRAP_REGRESSION_SOFT` | Soft-fail bootstrap regression checks. |
+| `CODEL_SPAN_PROFILE_OUT` | Write a span profile to this path. |
+| `CODEL_DESCRIBE_TYPE_TIMEOUT_MS` | Schema-describe timeout. |
+| `CODEL_GROVE`, `CODEL_CLONE`, `CODEL_TITLE_REFRESH` | Grove/clone/title-refresh features. |
+| `CODEL_WORKER_THREADS` | Worker-thread count. |
+| `CODEL_HOME_BACKUP`, `CODEL_HOME_PREFIX` | `$CODEL_HOME` layout knobs. |
+| `CODEL_TOOLS_*_SHA256`, `CODEL_TOOLS_FD_*` | Pinned hashes/targets for bundled helper binaries. |
+| `CODEL_SKILLS_BASE_URL` | Base URL for skill downloads. |
+| `CODEL_FEEDBACK_TRACE_CARD` | Feedback trace card toggle. |
+| `CODEL_COMPUTER_SESSION_RESUMED_EMIT` | Emit the computer-session-resumed event. |
+
+Variables whose names contain `TEST`, `_CHILD`, `_PROBE`, `FUZZ`, `SWEEP` or
+`BENCH` are internal harness knobs and are not part of the user surface.
+
+### Removed in this fork
+
+`CODEL_ENABLE_TELEMETRY`, `CODEL_TELEMETRY_*`, `CODEL_TRACE_UPLOAD*`,
+`CODEL_EXTERNAL_OTEL`, `CODEL_OTEL_*`, `CODEL_INTERNAL_OTLP_*`,
+`CODEL_WORKSPACE_OTLP_ENDPOINT`, `CODEL_MEMTRACE*`, `CODEL_LOG_SAMPLING`,
+`CODEL_ERROR_REPORTING` and the `GROK_*`/`XAI_*` spellings of all of the above
+do not exist here: the fork ships no telemetry transport, so nothing reads or
+honours them.

@@ -166,6 +166,21 @@ pub static USER_GUIDE: &[Doc] = &[
         "工作流",
         "Rhai 脚本化工作流编排引擎的使用与编写"
     ),
+    guide!(
+        "25-status-line.md",
+        "状态栏",
+        "底部状态行：模型、上下文用量、成本与自定义脚本"
+    ),
+    guide!(
+        "26-config-reference.md",
+        "配置参考",
+        "config.toml / managed_config.toml / requirements.toml 全字段参考"
+    ),
+    guide!(
+        "27-codel-clone.md",
+        "codel clone",
+        "用 Grove 内容库挂载投影工作树（NFS / FUSE）"
+    ),
 ];
 
 /// Non-user-guide reference docs. Separate from USER_GUIDE because they

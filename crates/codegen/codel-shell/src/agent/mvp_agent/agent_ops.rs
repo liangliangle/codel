@@ -2216,7 +2216,6 @@ impl MvpAgent {
     ) -> crate::agent::media_tool_config::MediaToolCredentials {
         crate::agent::media_tool_config::MediaToolCredentials {
             static_bearer: self.auth_manager.side_call_bearer().ok(),
-            tier_restricted: self.is_tier_restricted_capability(),
         }
     }
     /// The tool talks directly to the deployer service.

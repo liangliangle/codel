@@ -110,28 +110,12 @@ impl TelemetryClient {
             shell_version,
             client_type,
             client_version,
-            subscription_tier: subscription_tier.map(|t| normalize_tier(&t)),
+            subscription_tier,
             http_client,
         }
     }
 }
-/// Normalize a subscription tier string to a consistent lowercase_underscore format for Mixpanel.
-/// Handles both CCP display names ("SuperCodel Heavy") and JWT-derived keys ("supercodel_heavy").
-fn normalize_tier(tier: &str) -> String {
-    match tier {
-        "SuperCodel Heavy" | "supercodel_heavy" => "supercodel_heavy",
-        "SuperCodel Plus" | "supercodel_plus" => "supercodel_plus",
-        "SuperCodel" | "supercodel" => "supercodel",
-        "SuperCodel Lite" | "supercodel_lite" => "supercodel_lite",
-        "X Premium+" | "x_premium_plus" => "x_premium_plus",
-        "X Premium" | "x_premium" => "x_premium",
-        "X Basic" | "x_basic" => "x_basic",
-        "Free" | "free" => "free",
-        "API Key" | "api_key" => "api_key",
-        other => return other.to_ascii_lowercase().replace(' ', "_"),
-    }
-    .to_string()
-}
+
 static TELEMETRY_CLIENT: OnceLock<Mutex<Option<TelemetryClient>>> = OnceLock::new();
 /// Returns `true` when telemetry mode is `Enabled`.
 /// Used by `log_event`; product analytics events only fire in `Enabled` mode.
