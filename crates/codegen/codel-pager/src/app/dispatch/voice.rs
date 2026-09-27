@@ -53,11 +53,10 @@ fn voice_target_for_view(app: &AppView) -> Option<VoiceTarget> {
 /// Elsewhere (e.g. the welcome screen, which has no agent to host a modal) it is a silent no-op.
 /// Never starts voice; always returns no effects.
 fn open_voice_tier_upsell(app: &mut AppView) -> Vec<Effect> {
-    let login_method = app.login_method_id.as_ref().map(|id| id.0.to_string());
     match app.active_view {
         ActiveView::Agent(id) => {
             if let Some(agent) = app.agents.get_mut(&id) {
-                super::billing::open_restricted_command_upsell(agent, login_method);
+                super::billing::open_restricted_command_upsell(agent, None);
             }
         }
         ActiveView::AgentDashboard => {

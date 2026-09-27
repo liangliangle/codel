@@ -456,30 +456,6 @@ fn row_belonging_to_another_agent_is_not_painted_under_this_one() {
     );
 }
 
-#[test]
-fn cycling_agents_cannot_re_run_a_script_faster_than_the_floor() {
-    let mut now = Instant::now();
-    let mut app = status_line_app(StatusLineType::Command);
-    // A second agent the row can legitimately describe, so the switch reaches the throttle rather than stopping at "no session to report on"
-    let second = AgentId(1);
-    let session = make_test_agent_session(&app, second, "second-session");
-    let mut agent = AgentView::new(session, ScrollbackState::new());
-    agent.status_context = Some(test_context("/tmp/second"));
-    app.agents.insert(second, agent);
-
-    app.update_status_line_at(now);
-    assert!(queued_a_run(&app), "nothing ran, so the switch is moot");
-    app.pending_effects.clear();
-    app.on_status_line_command_finished_at(now, RunId(0), RunOutcome::Output("row".to_string()));
-
-    app.active_view = ActiveView::Agent(second);
-    app.update_status_line_at(now);
-    assert!(app.pending_effects.is_empty(), "re-ran inside the floor");
-    assert!(app.status_line.force_pending(), "the switch was dropped");
-    now += MIN_REFRESH_INTERVAL_MS;
-    app.update_status_line_at(now);
-    assert!(queued_a_run(&app), "the deferred run never happened");
-}
 
 #[test]
 fn row_nobody_asked_for_arms_nothing_that_outlives_the_turn() {

@@ -715,11 +715,6 @@ pub(crate) fn reject_non_fs_only_advertised_tools(
 /// Metadata returned from effect execution so the event loop can patch state that requires a spawned task handle (e.g., auth AbortHandle).
 #[derive(Default)]
 pub(crate) struct EffectMeta {
-    /// Auth abort handle and its request sequence.
-    /// The event loop must install this into `AppView.auth_state` if the current auth state still matches the sequence.
-    pub auth_abort_handle: Option<(u64, tokio::task::AbortHandle)>,
-    /// Auth URL poll abort handle and request sequence (installed on `AppView.auth_url_poll_handle` when the seq still matches).
-    pub auth_url_poll_handle: Option<(u64, tokio::task::AbortHandle)>,
 }
 /// Extract the first user prompt text from a session's `chat_history.jsonl`.
 ///
@@ -794,34 +789,6 @@ pub(super) fn count_chat_history_stats(history_path: &Path) -> (usize, usize) {
         }
     }
     (turn_count, tool_call_count)
-}
-pub(super) async fn send_logout(tx: &AcpAgentTx) {
-    let req = acp::ExtRequest::new(
-        "codel/auth/logout",
-        serde_json::value::to_raw_value(&serde_json::json!({}))
-            .expect("serialize auth/logout params")
-            .into(),
-    );
-    if let Err(e) = acp_send(req, tx).await {
-        tracing::warn!(error = %e, "logout failed");
-    }
-}
-/// Best-effort `codel/auth/cancel`: stops the shell's device/loopback wait so a later login is single-flight.
-/// Errors are ignored; the UI already left `Authenticating`.
-/// `request_seq` scopes the cancel to the abandoned attempt.
-pub(super) async fn send_auth_cancel(tx: &AcpAgentTx, request_seq: u64) -> TaskResult {
-    let req = acp::ExtRequest::new(
-        "codel/auth/cancel",
-        serde_json::value::to_raw_value(
-                &serde_json::json!({ "request_seq": request_seq }),
-            )
-            .expect("serialize auth/cancel params")
-            .into(),
-    );
-    if let Err(e) = acp_send(req, tx).await {
-        tracing::debug!(error = %e, "auth cancel ext request failed (ignored)");
-    }
-    TaskResult::AuthCancelComplete
 }
 pub(super) async fn send_check_subscription(
     tx: &AcpAgentTx,
@@ -934,43 +901,6 @@ pub(super) async fn send_credit_limit_recheck(
             TaskResult::CreditLimitRecheckComplete {
                 agent_id,
                 meta: None,
-            }
-        }
-    }
-}
-pub(super) async fn send_authenticate(
-    tx: &AcpAgentTx,
-    request_seq: u64,
-    method_id: acp::AuthMethodId,
-    use_oauth: bool,
-    force_interactive: bool,
-) -> TaskResult {
-    let mut meta = serde_json::json!({
-        "use_oauth": use_oauth,
-        "request_seq": request_seq,
-    });
-    if force_interactive && let Some(obj) = meta.as_object_mut() {
-        obj.insert("force_interactive".into(), serde_json::json!(true));
-    }
-    let req = acp::AuthenticateRequest::new(method_id).meta(meta.as_object().cloned());
-    match acp_send(req, tx).await {
-        Ok(resp) => {
-            ulog::info("auth completed", None, None);
-            TaskResult::AuthComplete {
-                request_seq,
-                meta: resp.meta.map(serde_json::Value::Object),
-            }
-        }
-        Err(e) => {
-            let error = sanitize_user_error(&e.to_string());
-            ulog::error(
-                "auth failed",
-                None,
-                Some(serde_json::json!({"error": &error})),
-            );
-            TaskResult::AuthFailed {
-                request_seq,
-                error,
             }
         }
     }

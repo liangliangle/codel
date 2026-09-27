@@ -1169,7 +1169,6 @@ pub(crate) async fn run(
         .as_deref()
         .map(agent_client_protocol::ModelId::new);
     app.cli_effort_token = args.reasoning_effort.clone();
-    app.auth_use_oauth = args.oauth;
     app.show_resolved_model = remote_settings
         .as_ref()
         .and_then(|s| s.show_resolved_model)
@@ -1231,7 +1230,6 @@ pub(crate) async fn run(
     app.cancel_rewind_enabled = connection.cancel_rewind_enabled;
     apply_session_recap_available(&mut app, connection.session_recap_available);
     app.shell_feedback_trace_offer = connection.feedback_trace_offer;
-    app.auth_methods = connection.auth_methods.clone();
     // No interactive login exists: the API key comes from config or
     // `codel/setApiKey`, so the startup path never prompts.
     let mut post_render_effects: Vec<Effect> = vec![];
@@ -1249,9 +1247,8 @@ pub(crate) async fn run(
             Err(e) => tracing::warn!("failed to deserialize auth_meta: {e}"),
         }
     } else {
-        app.is_api_key_auth = app.auth_methods.iter().any(|m| {
-            m.id().0.as_ref() == codel_shell::agent::auth_method::CODEL_API_KEY_METHOD_ID
-        });
+        // No eager-auth metadata: the credential, if any, is a configured API key.
+        app.is_api_key_auth = true;
         if !app.consumer_account() {
             app.usage_visible = false;
             app.sync_billing_surface_to_agents();
@@ -3918,26 +3915,6 @@ fn process_effects(
             continue;
         };
         let (quit, meta) = effects::execute(eff, tasks, &app.acp_tx, &app.cwd, &flags, progress_tx);
-        if let Some((seq, abort_handle)) = meta.auth_abort_handle
-            && let super::app_view::AuthState::Authenticating {
-                request_seq,
-                handle,
-                ..
-            } = &mut app.auth_state
-            && *request_seq == seq
-        {
-            *handle = Some(abort_handle);
-        }
-        if let Some((seq, abort_handle)) = meta.auth_url_poll_handle {
-            let still_current = matches!(
-                &app.auth_state,
-                super::app_view::AuthState::Authenticating { request_seq, .. }
-                    if *request_seq == seq
-            );
-            if still_current {
-                app.auth_url_poll_handle = Some((seq, abort_handle));
-            }
-        }
         if quit {
             return true;
         }

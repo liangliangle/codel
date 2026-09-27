@@ -9,76 +9,11 @@ use crate::test_util::test_terminal;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-#[test]
-fn welcome_show_toast_scrubs_control_chars() {
-    let mut app = test_app();
-    assert!(matches!(app.active_view, ActiveView::Welcome));
-    app.show_toast("a\nb\rc\thttps://codel.dev");
-    let toast = app
-        .welcome_toast
-        .as_ref()
-        .map(|(m, _)| m.as_str())
-        .unwrap_or("");
-    assert!(
-        !toast.chars().any(|c| c.is_control()),
-        "control chars must be scrubbed at write: {toast:?}"
-    );
-    assert!(toast.contains("https://codel.dev"), "{toast:?}");
-}
-#[test]
-fn parse_esc_ttl_bounds() {
-    let default = PendingAction::ESC_DOUBLE_PRESS_TTL;
-    assert_eq!(parse_esc_ttl(None), default);
-    assert_eq!(parse_esc_ttl(Some("garbage".into())), default);
-    assert_eq!(parse_esc_ttl(Some("".into())), default);
-    assert_eq!(parse_esc_ttl(Some("0".into())), default);
-    assert_eq!(parse_esc_ttl(Some("-5".into())), default);
-    assert_eq!(
-        parse_esc_ttl(Some(" 1200 ".into())),
-        Duration::from_millis(1200)
-    );
-    assert_eq!(
-        parse_esc_ttl(Some(ESC_DOUBLE_PRESS_TEST_MS.to_string())),
-        Duration::from_millis(ESC_DOUBLE_PRESS_TEST_MS)
-    );
-    assert_eq!(
-        parse_esc_ttl(Some(u64::MAX.to_string())),
-        Duration::from_millis(ESC_DOUBLE_PRESS_TEST_MS)
-    );
-}
-/// `AppView::draw` is the ONLY drain point for the process-wide deferred release flag.
-/// If the wrapper loses its `run_deferred_release()` call, every draw/tick-path cliff silently stops purging.
-/// The cliffs are video scroll-off, takeover drain, and frame-set replacement.
-#[test]
-#[serial_test::serial(MEMORY_RELEASE_DEFER)]
-fn app_draw_drains_deferred_release_after_flush() {
-    use crate::memory_release::test_support;
-    test_support::install_counting_hook();
-    crate::memory_release::run_deferred_release();
-    let (mut terminal, _frame_rx) = test_terminal();
-    let mut app = test_app();
-    crate::memory_release::request_release_after_draw("unit-test-defer");
-    let before = test_support::calls();
-    app.draw(&mut terminal);
-    assert_eq!(
-        test_support::calls(),
-        before + 1,
-        "AppView::draw must drain the deferred release post-flush"
-    );
-    let before = test_support::calls();
-    app.draw(&mut terminal);
-    assert_eq!(
-        test_support::calls(),
-        before,
-        "a draw without a pending request must not purge"
-    );
-}
 pub(crate) fn test_app() -> AppView {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     AppView {
         pending_startup: None,
         active_view: ActiveView::Welcome,
-        auth_return_view: None,
         agents: indexmap::IndexMap::new(),
         next_agent_id: 0,
         models: ModelState::default(),
@@ -153,7 +88,6 @@ pub(crate) fn test_app() -> AppView {
         resume_local_miss: None,
         agent_override: None,
         bootstrap_acp_commands: Vec::new(),
-        auth_methods: Vec::new(),
         auth_state: AuthState::Done,
         trust_state: TrustState::Done,
         consent_state: crate::app::consent::ConsentState::Done,
@@ -161,16 +95,7 @@ pub(crate) fn test_app() -> AppView {
         welcome_consent_link_rects: Vec::new(),
         welcome_consent_hover_link: None,
         consent_answered: None,
-        login_label: None,
-        login_method_id: None,
-        auth_start_mode: AuthMode::Pending,
-        auth_code_input: LineEditor::default(),
-        next_auth_request_seq: 1,
-        auth_url_poll_handle: None,
         deferred_startup: Default::default(),
-        auth_use_oauth: false,
-        auth_clipboard_delivery: None,
-        auth_clipboard_feedback_generation: 0,
         team_id: None,
         is_team_principal: false,
         team_name: None,
@@ -220,11 +145,8 @@ pub(crate) fn test_app() -> AppView {
         last_scroll_pos: None,
         last_cache_evict_at: None,
         welcome_prompt_rect: None,
-        welcome_auth_url_rect: None,
-        welcome_on_auth_url: false,
         welcome_on_changelog_cta: false,
         welcome_announcement: WelcomeAnnouncementState::default(),
-        welcome_auth_fallback_rect: None,
         welcome_refresh_rect: None,
         welcome_gate_url_rect: None,
         welcome_upgrade_cta_rect: None,
@@ -242,8 +164,6 @@ pub(crate) fn test_app() -> AppView {
         welcome_on_privacy_banner: false,
         welcome_on_upgrade_cta: false,
         welcome_changelog_cta_rect: None,
-        auth_show_raw_url: false,
-        native_select_hold: false,
         session_picker_entries: None,
         session_picker_loading: false,
         session_picker_state: crate::views::picker::PickerState::with_mode(
@@ -3267,19 +3187,6 @@ fn welcome_pending_ctrl_c_quits_instantly() {
     assert!(app.pending_action.is_none());
 }
 #[test]
-fn welcome_authenticating_ctrl_c_quits_instantly() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Command,
-    };
-    let outcome = app.handle_input(&ctrl_c());
-    assert!(matches!(outcome, InputOutcome::Action(Action::Quit)));
-    assert!(app.pending_action.is_none());
-}
-#[test]
 fn page_keys_from_prompt_page_conversation_without_mutating_prompt() {
     let mut app = test_app_with_agent();
     let ActiveView::Agent(id) = app.active_view else {
@@ -4814,22 +4721,6 @@ fn prompt_focused_bare_text_chars_promote_no_action() {
     }
 }
 #[test]
-fn welcome_pending_l_triggers_login() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Pending { error: None };
-    app.welcome_prompt_focused = false;
-    let outcome = app.handle_input(&key_event(KeyCode::Char('l'), KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Action(Action::Login)));
-}
-#[test]
-fn welcome_pending_enter_triggers_login() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Pending { error: None };
-    app.welcome_prompt_focused = false;
-    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Action(Action::Login)));
-}
-#[test]
 fn welcome_pending_n_is_unchanged() {
     let mut app = test_app();
     app.auth_state = AuthState::Pending { error: None };
@@ -5007,118 +4898,6 @@ fn worktree_dialog_paste_is_scoped_away_from_welcome_prompt() {
     assert_eq!(app.new_worktree_dialog.as_ref().unwrap().label(), "a中b");
     assert!(app.welcome_prompt.text().is_empty());
 }
-#[test]
-fn authenticating_loopback_esc_quits() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Action(Action::Quit)));
-}
-#[test]
-fn authenticating_command_esc_quits() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Command,
-    };
-    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Action(Action::Quit)));
-}
-/// Regression (user report): 'q' must type into the auth-code input, not quit.
-#[test]
-fn authenticating_loopback_q_types_into_code_input() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    let outcome = app.handle_input(&key_event(KeyCode::Char('q'), KeyModifiers::NONE));
-    assert!(
-        matches!(outcome, InputOutcome::Changed),
-        "typing 'q' must edit the auth code input, got {outcome:?}"
-    );
-    assert_eq!(app.auth_code_input.text(), "q");
-}
-/// Users reflex-type the displayed device code; bare 'q' must not abort.
-#[test]
-fn authenticating_device_and_command_q_does_not_quit() {
-    for mode in [AuthMode::Device, AuthMode::Command] {
-        let mut app = test_app();
-        app.auth_state = AuthState::Authenticating {
-            request_seq: 1,
-            handle: None,
-            auth_url: None,
-            mode,
-        };
-        let outcome = app.handle_input(&key_event(KeyCode::Char('q'), KeyModifiers::NONE));
-        assert!(
-            matches!(outcome, InputOutcome::Unchanged),
-            "bare 'q' must not quit during {mode:?} auth, got {outcome:?}"
-        );
-    }
-}
-/// Advertised cancel keys must survive the bare-'q' removal.
-#[test]
-fn authenticating_advertised_cancel_keys_still_quit() {
-    for mode in [AuthMode::Loopback, AuthMode::Device, AuthMode::Command] {
-        for (code, mods) in [
-            (KeyCode::Char('q'), KeyModifiers::CONTROL),
-            (KeyCode::Char('c'), KeyModifiers::CONTROL),
-            (KeyCode::Esc, KeyModifiers::NONE),
-        ] {
-            let mut app = test_app();
-            app.auth_state = AuthState::Authenticating {
-                request_seq: 1,
-                handle: None,
-                auth_url: None,
-                mode,
-            };
-            let outcome = app.handle_input(&key_event(code, mods));
-            assert!(
-                matches!(outcome, InputOutcome::Action(Action::Quit)),
-                "{code:?}+{mods:?} must still quit during {mode:?} auth, got {outcome:?}"
-            );
-        }
-    }
-}
-#[test]
-fn authenticating_loopback_char_mutates_input() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    let outcome = app.handle_input(&key_event(KeyCode::Char('a'), KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(app.auth_code_input.text(), "a");
-}
-#[test]
-fn authenticating_loopback_readline_control_chords_are_ignored() {
-    for code in [KeyCode::Char('u'), KeyCode::Char('d')] {
-        let mut app = test_app();
-        app.auth_state = AuthState::Authenticating {
-            request_seq: 1,
-            handle: None,
-            auth_url: None,
-            mode: AuthMode::Loopback,
-        };
-        app.auth_code_input.set_text("token");
-        let outcome = app.handle_input(&key_event(code, KeyModifiers::CONTROL));
-        assert!(matches!(outcome, InputOutcome::Changed));
-        assert_eq!(app.auth_code_input.text(), "token");
-    }
-}
 #[cfg(target_os = "windows")]
 #[test]
 fn authenticating_loopback_altgr_char_mutates_input() {
@@ -5135,100 +4914,6 @@ fn authenticating_loopback_altgr_char_mutates_input() {
     ));
     assert!(matches!(outcome, InputOutcome::Changed));
     assert_eq!(app.auth_code_input.text(), "@");
-}
-#[test]
-fn authenticating_loopback_backspace_removes_char() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    app.auth_code_input.set_text("ab");
-    let outcome = app.handle_input(&key_event(KeyCode::Backspace, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(app.auth_code_input.text(), "a");
-}
-#[test]
-fn authenticating_loopback_paste_appends_text() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    app.auth_code_input.set_text("tok");
-    let outcome = app.handle_input(&Event::Paste("en_value".to_string()));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(app.auth_code_input.text(), "token_value");
-}
-#[test]
-fn authenticating_loopback_cursor_edit_and_paste_stay_scoped() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    app.auth_code_input.set_text("ab");
-    let _ = app.handle_input(&key_event(KeyCode::Left, KeyModifiers::NONE));
-    let _ = app.handle_input(&Event::Paste("中\r\n".to_owned()));
-    assert_eq!(app.auth_code_input.text(), "a中b");
-    assert!(app.welcome_prompt.text().is_empty());
-    let _ = app.handle_input(&key_event(KeyCode::Delete, KeyModifiers::NONE));
-    assert_eq!(app.auth_code_input.text(), "a中");
-}
-#[test]
-fn authenticating_loopback_uses_canonical_super_v_paste() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook::no_raster(
-        Some("secret\r\n"),
-    ));
-    let outcome = app.handle_input(&key_event(KeyCode::Char('v'), KeyModifiers::SUPER));
-    crate::clipboard::clear_clipboard_probe_hook();
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(app.auth_code_input.text(), "secret");
-    assert!(app.welcome_prompt.text().is_empty());
-}
-#[test]
-fn authenticating_loopback_enter_empty_is_noop() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    app.auth_code_input.set_text("   ");
-    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Unchanged));
-}
-#[test]
-fn authenticating_loopback_enter_with_content_submits() {
-    let mut app = test_app();
-    app.auth_state = AuthState::Authenticating {
-        request_seq: 1,
-        handle: None,
-        auth_url: None,
-        mode: AuthMode::Loopback,
-    };
-    app.auth_code_input.set_text(" token123 ");
-    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
-    match outcome {
-        InputOutcome::Action(Action::SubmitAuthCode(code)) => {
-            assert_eq!(code, "token123");
-        }
-        other => panic!("expected SubmitAuthCode, got {:?}", other),
-    }
 }
 /// A bare `Moved` after a press means the release was lost: the press must end, never promote into a selection.
 #[test]

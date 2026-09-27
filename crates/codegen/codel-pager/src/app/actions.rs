@@ -613,23 +613,6 @@ pub enum Action {
     PermissionFollowup(String),
     /// User cancelled the front permission request (Ctrl-C / Esc in Options mode).
     PermissionCancel,
-    /// Log out: remove credentials and return to the login screen.
-    Logout,
-    /// Log out and immediately start a new login flow.
-    SwitchAccount,
-    /// User pressed login on the welcome screen.
-    Login,
-    /// Cancel an in-progress login that was started from inside a session (`/login` or a 401 re-auth prompt) and return to the previous view.
-    /// Distinct from `Quit`: abandoning a mid-session re-auth must not exit the app or lose the open session.
-    CancelLogin,
-    /// User submitted a manually-pasted auth token (loopback mode).
-    SubmitAuthCode(String),
-    /// Copy the auth URL to the clipboard during authentication.
-    CopyAuthUrl,
-    /// Show the raw auth URL with mouse capture disabled for manual copy.
-    ShowRawAuthUrl,
-    /// Hide the raw auth URL and re-enable mouse capture.
-    HideRawAuthUrl,
     /// Persist the shown workspace key. `Done` only after a durable write, an already-durable key, or auto-trust. A process-local persist stays `Pending`.
     /// already-durable key, or auto-trust. A process-local persist stays `Pending`.
     /// (Declining quits via [`Action::Quit`]; there is no decline action.)
@@ -1770,17 +1753,6 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
     },
-    /// Send AuthenticateRequest to the agent.
-    Authenticate {
-        request_seq: u64,
-        method_id: acp::AuthMethodId,
-        use_oauth: bool,
-        force_interactive: bool,
-    },
-    /// Poll for auth URL from the agent (ext request).
-    PollAuthUrl { request_seq: u64 },
-    /// Submit a manually-pasted auth code (ext request).
-    SubmitAuthCode { request_seq: u64, code: String },
     /// Fetch MCP server list from the shell (codel/mcp/list).
     FetchMcpsList {
         agent_id: AgentId,
@@ -2055,12 +2027,6 @@ pub enum Effect {
         /// `None` for text-only interjections; the wire shape stays byte-identical to legacy.
         blocks: Option<Vec<acp::ContentBlock>>,
     },
-    /// Log out via `codel/auth/logout` (shell clears auth.json and in-memory state).
-    Logout,
-    /// Cancel an in-flight interactive auth on the shell (`codel/auth/cancel`).
-    /// Used when the user abandons mid-session `/login` so the device-code poll stops instead of running until the code expires.
-    /// `request_seq` scopes the cancel so a delayed RPC cannot tear down a successor login.
-    CancelAuth { request_seq: u64 },
     /// Re-check subscription status via `codel/auth/check_subscription`.
     /// `verify` scopes the result to a deferred-gate verification (see [`crate::app::subscription`]); `None` for generic checks.
     CheckSubscription { verify: Option<u64> },
@@ -2076,14 +2042,6 @@ pub enum Effect {
     /// Schedule `TaskResult::GateVerifyTimeout { generation }` after [`crate::app::subscription::GATE_VERIFY_TIMEOUT`].
     /// [`crate::app::subscription::GATE_VERIFY_TIMEOUT`].
     ScheduleGateVerifyTimeout { generation: u64 },
-    /// Log out then authenticate sequentially in one task.
-    SwitchAccount {
-        request_seq: u64,
-        method_id: acp::AuthMethodId,
-        use_oauth: bool,
-    },
-    /// Clear the auth copy feedback after a delay if its generation is still current.
-    ScheduleClearAuthCopyFeedback { generation: u64 },
     /// Register the current session in the active-session registry
     /// (`~/.codel/active_sessions.json`).
     RegisterActiveSession {
@@ -2684,30 +2642,6 @@ pub enum TaskResult {
         agent_id: AgentId,
         agent_name: Option<String>,
     },
-    /// Authentication completed successfully.
-    AuthComplete {
-        request_seq: u64,
-        meta: Option<serde_json::Value>,
-    },
-    /// Authentication failed.
-    AuthFailed {
-        request_seq: u64,
-        error: String,
-    },
-    /// Auth URL is ready (from the provider).
-    AuthUrlReady {
-        request_seq: u64,
-        auth_url: Option<String>,
-        /// Deprecated: superseded by `mode` (authoritative).
-        /// Kept only as a back-compat fallback for older agents that don't send `mode`.
-        external: bool,
-        /// Presentation mode from `codel/auth/get_url`; `None` on older agents.
-        mode: Option<String>,
-    },
-    /// Auth code was submitted (fire-and-forget).
-    AuthCodeSubmitted {
-        request_seq: u64,
-    },
     /// MCP server list fetched from shell.
     McpsListLoaded {
         agent_id: AgentId,
@@ -3053,10 +2987,6 @@ pub enum TaskResult {
         agent_id: AgentId,
         commands: Vec<acp::AvailableCommand>,
     },
-    /// Shell acknowledged logout (auth cleared).
-    LogoutComplete,
-    /// Best-effort `codel/auth/cancel` finished (no UI update; state already left Authenticating).
-    AuthCancelComplete,
     /// Shell responded to `codel/auth/check_subscription`.
     /// `verify` echoes the generation from `Effect::CheckSubscription` for deferred-gate verifications.
     CheckSubscriptionComplete {
@@ -3078,10 +3008,6 @@ pub enum TaskResult {
     PaywallCheckTick,
     /// The deferred-gate verification window expired.
     GateVerifyTimeout {
-        generation: u64,
-    },
-    /// The 2-second auth copy feedback timer expired.
-    AuthCopyFeedbackTimeout {
         generation: u64,
     },
     DeepSearchResults {

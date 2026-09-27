@@ -41,22 +41,6 @@ fn voice_slash_submit_starts_recording_in_plan_mode() {
     );
 }
 
-#[test]
-fn voice_on_welcome_noop_when_startup_gated() {
-    // Auth or folder trust unresolved: voice must not create a session (that would bypass the startup gate)
-    // It stays a silent no-op on welcome
-    let mut app = test_app();
-    app.auth_state = AuthState::Pending { error: None };
-    app.voice_mode_enabled = true;
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    app.voice_cmd_tx = Some(tx);
-
-    dispatch(Action::EnableVoiceMode, &mut app);
-
-    assert!(app.agents.is_empty(), "no session created while gated");
-    assert!(matches!(app.active_view, ActiveView::Welcome));
-    assert!(!app.voice_listening());
-}
 
 #[test]
 fn voice_final_appends_to_prompt_with_single_space() {

@@ -163,27 +163,6 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::ScheduleClearAuthCopyFeedback { generation } => {
-            tasks
-                .spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    TaskResult::AuthCopyFeedbackTimeout {
-                        generation,
-                    }
-                });
-        }
-        Effect::Logout => {
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    send_logout(&tx).await;
-                    TaskResult::LogoutComplete
-                });
-        }
-        Effect::CancelAuth { request_seq } => {
-            let tx = acp_tx.clone();
-            tasks.spawn(async move { send_auth_cancel(&tx, request_seq).await });
-        }
         Effect::CheckSubscription { verify } => {
             let tx = acp_tx.clone();
             tasks.spawn(async move { send_check_subscription(&tx, verify).await });
@@ -213,16 +192,6 @@ pub(crate) fn execute(
                         generation,
                     }
                 });
-        }
-        Effect::SwitchAccount { request_seq, method_id, use_oauth } => {
-            let tx = acp_tx.clone();
-            let abort_handle = tasks
-                .spawn(async move {
-                    send_logout(&tx).await;
-                    send_authenticate(&tx, request_seq, method_id, use_oauth, false)
-                        .await
-                });
-            meta.auth_abort_handle = Some((request_seq, abort_handle));
         }
         Effect::CreateSession {
             agent_id,
@@ -2330,106 +2299,6 @@ pub(crate) fn execute(
                     TaskResult::FeatureOverridePersisted {
                         feature,
                         result,
-                    }
-                });
-        }
-        Effect::Authenticate {
-            request_seq,
-            method_id,
-            use_oauth,
-            force_interactive,
-        } => {
-            let tx = acp_tx.clone();
-            let abort_handle = tasks
-                .spawn(async move {
-                    send_authenticate(
-                            &tx,
-                            request_seq,
-                            method_id,
-                            use_oauth,
-                            force_interactive,
-                        )
-                        .await
-                });
-            meta.auth_abort_handle = Some((request_seq, abort_handle));
-        }
-        Effect::PollAuthUrl { request_seq } => {
-            let tx = acp_tx.clone();
-            let abort_handle = tasks
-                .spawn(async move {
-                    let mut auth_url: Option<String> = None;
-                    let mut external = false;
-                    let mut mode: Option<String> = None;
-                    for i in 0..60 {
-                        if i > 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(50))
-                                .await;
-                        }
-                        let params = serde_json::json!({});
-                        let req = acp::ExtRequest::new(
-                            "codel/auth/get_url",
-                            serde_json::value::to_raw_value(&params)
-                                .expect("serialize auth_url params")
-                                .into(),
-                        );
-                        if let Ok(resp) = acp_send(req, &tx).await {
-                            let v: serde_json::Value = serde_json::from_str(resp.0.get())
-                                .unwrap_or_default();
-                            external = v
-                                .get("external_provider")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            mode = v
-                                .get("mode")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            auth_url = v
-                                .get("auth_url")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                        }
-                        if auth_url.is_some() {
-                            break;
-                        }
-                    }
-                    TaskResult::AuthUrlReady {
-                        request_seq,
-                        auth_url,
-                        external,
-                        mode,
-                    }
-                });
-            meta.auth_url_poll_handle = Some((request_seq, abort_handle));
-        }
-        Effect::SubmitAuthCode { request_seq, code } => {
-            let tx = acp_tx.clone();
-            tasks
-                .spawn(async move {
-                    let params = serde_json::json!({ "code": code });
-                    let req = acp::ExtRequest::new(
-                        "codel/auth/submit_code",
-                        serde_json::value::to_raw_value(&params)
-                            .expect("serialize auth code params")
-                            .into(),
-                    );
-                    match acp_send(req, &tx).await {
-                        Ok(_) => {
-                            TaskResult::AuthCodeSubmitted {
-                                request_seq,
-                            }
-                        }
-                        Err(e) => {
-                            let error = e.to_string();
-                            ulog::error(
-                                "auth failed",
-                                None,
-                                Some(serde_json::json!({"error": &error})),
-                            );
-                            TaskResult::AuthFailed {
-                                request_seq,
-                                error,
-                            }
-                        }
                     }
                 });
         }

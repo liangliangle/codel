@@ -699,7 +699,6 @@ pub(super) fn dispatch_send_prompt_submission(
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
     let subagent_model_inheritance_from_app = app.subagent_model_inheritance;
-    let login_method_id_from_app = app.login_method_id.as_ref().map(|id| id.0.to_string());
     let leader_mode = app.leader_mode;
     let screen_mode_is_minimal = app.screen_mode.is_minimal();
     let Some(agent) = app.agents.get_mut(&id) else {
@@ -792,7 +791,7 @@ pub(super) fn dispatch_send_prompt_submission(
                 agent.prompt.set_text("");
             }
             let opened =
-                super::billing::open_restricted_command_upsell(agent, login_method_id_from_app);
+                super::billing::open_restricted_command_upsell(agent, None);
             debug_assert!(opened, "no modal was open, so the upsell must open");
         }
         return effects;
@@ -1825,8 +1824,7 @@ pub(super) fn handle_prompt_response(
         // Driver-only by construction: viewers never receive a PromptResponse
         // No queue drain: queued prompts would fail on the same exhausted quota
         if free_usage_blocked {
-            let auth_method = app.login_method_id.as_ref().map(|id| id.0.to_string());
-            super::billing::open_free_usage_upsell(agent, auth_method);
+            super::billing::open_free_usage_upsell(agent, None);
             if let Some(p) = pending_adoption {
                 agent.discard_pending_adoption_updates(&p.prompt_id);
             }

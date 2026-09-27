@@ -22,14 +22,6 @@ fn content_hit(id: &str) -> codel_shell::extensions::session_search::SearchSessi
     }
 }
 
-/// Like [`test_app`] but with `cwd` set to this crate's directory, which lives inside the git repo.
-/// Worktree tests require a git ancestor to pass the `has_git_ancestor` pre-check.
-fn test_app_git() -> AppView {
-    let mut app = test_app();
-    app.cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    app.cwd_has_git_ancestor = true;
-    app
-}
 
 fn count_extension_fetches(effects: &[Effect]) -> usize {
     effects

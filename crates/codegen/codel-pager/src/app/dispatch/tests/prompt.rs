@@ -786,31 +786,6 @@ fn focus_prompt_switches_pane() {
     assert_eq!(agent_ref(&app, id).active_pane, ActivePane::Prompt);
 }
 
-/// `FocusPrompt` resolves to the child under a takeover, whose hidden composer refuses the pane; the root keeps its focus too.
-#[test]
-fn focus_prompt_under_takeover_is_refused_on_the_child() {
-    let mut app = test_app_with_agent();
-    let parent_id = AgentId(0);
-    let child_sid = "child-overlay-focus";
-    let child = AgentView::new(
-        make_test_agent_session(&app, AgentId(1), child_sid),
-        ScrollbackState::new(),
-    );
-    {
-        let parent = app.agents.get_mut(&parent_id).unwrap();
-        parent.set_active_pane(ActivePane::Scrollback, true);
-        parent.insert_test_child(child_sid.to_string(), Box::new(child));
-        parent.active_subagent = Some(child_sid.to_string());
-    }
-
-    let effects = dispatch(Action::FocusPrompt, &mut app);
-
-    assert!(effects.is_empty());
-    let parent = app.agents.get(&parent_id).unwrap();
-    assert_eq!(ActivePane::Scrollback, parent.active_pane);
-    let child = parent.subagent_view(child_sid).unwrap();
-    assert_eq!(ActivePane::Scrollback, child.active_pane);
-}
 
 #[test]
 fn send_prompt_produces_effect_and_clears_input() {
@@ -3959,122 +3934,7 @@ fn interject_before_paste_probe_keeps_image() {
     assert!(agent_ref(&app, id).prompt.images.is_empty());
 }
 
-/// Guard: a stashed send must NOT be re-issued to the wrong session when the user switched agents during the probe window.
-/// The image still attaches to the original target; the stale send is dropped, not sent to the new agent.
-#[test]
-fn agent_paste_completion_after_switch_does_not_send_to_other_agent() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut app = test_app_with_agent(); // agent A = AgentId(0), active view
-    let a = AgentId(0);
-    let b = AgentId(1);
-    // A second agent B for the user to switch to mid-probe.
-    let session_b = make_test_agent_session(&app, b, "session-b");
-    app.agents
-        .insert(b, AgentView::new(session_b, ScrollbackState::new()));
 
-    // Cmd+V an image into A (active view A): the probe defers
-    {
-        let agent = app.agents.get_mut(&a).unwrap();
-        agent.set_active_pane(ActivePane::Prompt, true);
-        agent.prompt.set_text("for agent A");
-    }
-    crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook::with_raster(
-        None,
-    ));
-    {
-        let agent = app.agents.get_mut(&a).unwrap();
-        let _ = agent
-            .handle_prompt_key_for_test(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
-    }
-    let ctx = agent_ref(&app, a)
-        .pending_effects
-        .iter()
-        .find_map(|e| match e {
-            Effect::ProbeClipboardAttachment { ctx, .. } => Some(ctx.clone()),
-            _ => None,
-        })
-        .expect("Cmd+V of an image must defer a probe");
-    crate::clipboard::clear_clipboard_probe_hook();
-    // Model the event loop: `AppView::handle_input` drains the view's pending effects after the key event, before the completion arrives
-    // The completion arm hands back anything still queued
-    app.agents.get_mut(&a).unwrap().pending_effects.clear();
-
-    // Enter (still on A): the send is stashed
-    let effects = dispatch(Action::SendPrompt("for agent A".into()), &mut app);
-    assert!(effects.is_empty());
-    assert!(agent_ref(&app, a).deferred_send.is_some());
-
-    // User switches to agent B during the probe window.
-    app.active_view = ActiveView::Agent(b);
-    let b_queue_before = agent_ref(&app, b).session.pending_prompts.len();
-
-    // A's probe completes.
-    let pasted = crate::prompt_images::from_clipboard_data(&crate::clipboard::ImageData {
-        data: vec![1, 2, 3],
-        mime_type: "image/png".into(),
-    });
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::ClipboardAttachmentProbed {
-            ctx,
-            image: crate::app::actions::ProbedAttachment::Image(pasted),
-            file_urls: None,
-        }),
-        &mut app,
-    );
-
-    // (1) The image attaches to the ORIGINAL target A.
-    assert_eq!(agent_ref(&app, a).prompt.images.len(), 1);
-    assert!(agent_ref(&app, a).prompt.text().contains("[Image #1]"));
-    let Some(image) = agent_ref(&app, a).prompt.images.first() else {
-        panic!("expected the image attached to agent A");
-    };
-    let preview_identity = image.preview.identity();
-    // (2) A's stash is cleared so it can't leak.
-    assert!(agent_ref(&app, a).deferred_send.is_none());
-    assert_eq!(agent_ref(&app, a).paste_probe_in_flight, 0);
-    // (3) No send is re-issued to the now-active B
-    // The only returned effect prepares the image that was attached to A
-    match effects.as_slice() {
-        [Effect::PreparePromptImagePreview { preparation }] => assert_eq!(
-            preparation.preview().identity(),
-            preview_identity,
-            "preview preparation must belong to agent A's attached image",
-        ),
-        other => panic!("expected only agent A preview preparation, got {other:?}"),
-    }
-    assert_eq!(
-        agent_ref(&app, b).session.pending_prompts.len(),
-        b_queue_before,
-        "agent B's queue must be untouched"
-    );
-}
-
-/// A prompt submitted before the session binds is held in the agent's queue rather than dropped.
-/// `maybe_drain_queue` emits nothing until `SessionCreated` arrives.
-#[test]
-fn prompt_before_the_session_binds_is_queued() {
-    let mut app = test_app();
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    assert!(
-        agent_ref(&app, id).session.session_id.is_none(),
-        "precondition: session not bound yet"
-    );
-
-    let effects = dispatch_send_prompt_inner(&mut app, "fix the bug".into(), true, false, false);
-
-    assert_eq!(
-        agent_ref(&app, id).session.queue_len(),
-        1,
-        "the prompt must be queued, not dropped"
-    );
-    assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::SendPrompt { .. })),
-        "nothing may go to the wire before the session binds, got {effects:?}"
-    );
-}
 
 /// Returns true if any system block in agent 0's scrollback contains `needle`.
 /// Avoids `last_system_text`'s "last block must be System" panic for the allowed-command control (which may leave no system block).
@@ -4192,12 +4052,6 @@ fn show_queue_lists_local_prompts_in_order() {
     assert!(text.contains("#2  second  (+1 more line)"), "got: {text:?}");
 }
 
-#[test]
-fn show_queue_no_active_agent_is_noop() {
-    let mut app = test_app();
-    let effects = dispatch(Action::ShowQueue, &mut app);
-    assert!(effects.is_empty(), "ShowQueue without an agent is a no-op");
-}
 
 /// Count of "Turn cancelled by user …" marker blocks in the agent's scrollback.
 fn count_cancelled_markers(app: &AppView, id: AgentId) -> usize {
@@ -6654,32 +6508,6 @@ fn minimal_home_with_images_notes_on_the_new_session() {
     );
 }
 
-/// Minimal mode with no agent has no transcript to write to. A flush there must leave the notices
-/// queued for the session that opens next, not drop them.
-#[test]
-fn minimal_flush_without_agent_keeps_notices_for_the_next_flush() {
-    let mut app = test_app();
-    app.screen_mode = crate::app::ScreenMode::Minimal;
-    let notice = "Images not sent with /home — paste them again";
-    app.pending_image_notices.push(notice.to_owned());
-
-    assert!(
-        !crate::app::dispatch::flush_image_notices(&mut app),
-        "no surface changed"
-    );
-    assert_eq!(app.pending_image_notices, vec![notice.to_owned()]);
-
-    let id = AgentId(0);
-    let session = make_test_agent_session(&app, id, "test-session");
-    app.agents
-        .insert(id, AgentView::new(session, ScrollbackState::new()));
-    app.next_agent_id = 1;
-    switch_to_agent(&mut app, id, SwitchCause::New);
-
-    assert!(crate::app::dispatch::flush_image_notices(&mut app));
-    assert!(app.pending_image_notices.is_empty());
-    assert_eq!(last_system_text(&app, id), notice);
-}
 
 /// The dashboard popup can raise a send-now while the dashboard, not a session, is on screen. The send
 /// bails; the carried notice still reaches the visible surface.

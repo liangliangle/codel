@@ -378,29 +378,6 @@ pub enum AuthState {
     /// Login required: show login menu on welcome screen.
     /// `error` is set after a failed auth attempt so the user sees what went wrong.
     Pending { error: Option<String> },
-    /// Auth flow is in progress.
-    Authenticating {
-        /// Sequence number for this auth attempt (stale results are ignored).
-        request_seq: u64,
-        /// Abort handle for the in-flight Authenticate task.
-        handle: Option<tokio::task::AbortHandle>,
-        /// Auth URL from the provider (populated by AuthUrlReady).
-        auth_url: Option<String>,
-        /// How the auth flow presents itself to the user.
-        mode: AuthMode,
-    },
-}
-/// How the auth flow presents itself to the user.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthMode {
-    /// Mode not yet determined (waiting for auth URL response).
-    Pending,
-    /// Browser opened automatically by external provider.
-    Command,
-    /// Manual: user must visit URL and paste token.
-    Loopback,
-    /// RFC 8628 device flow: device code and copyable URL, no paste box.
-    Device,
 }
 /// Folder-trust state for the welcome screen.
 /// Mirrors [`AuthState`]: a welcome sub-state that drives the "Do you trust the contents of this directory?" question.
@@ -567,10 +544,6 @@ pub struct AppView {
     /// Taken by whichever path reaches a usable session (or interactive idle) first.
     pub pending_startup: Option<codel_logging::startup::PendingStartup>,
     pub active_view: ActiveView,
-    /// View to return to after a mid-session login flow completes or is cancelled.
-    /// `Some` only while a `/login` (or 401-triggered re-auth) initiated from an active session is in progress.
-    /// `None` at startup so the normal login-then-load flow is preserved.
-    pub auth_return_view: Option<ActiveView>,
     pub agents: IndexMap<AgentId, AgentView>,
     /// Monotonically increasing counter for agent ID allocation.
     /// IDs are never reused after `shift_remove`, to avoid collisions.
@@ -783,16 +756,10 @@ pub struct AppView {
     pub(super) last_cache_evict_at: Option<Instant>,
     /// Hit-test rect for welcome prompt input (populated during render).
     pub welcome_prompt_rect: Option<ratatui::layout::Rect>,
-    /// Hit-test rect for the auth URL (click-to-open during Authenticating).
-    pub welcome_auth_url_rect: Option<ratatui::layout::Rect>,
-    /// Whether the mouse pointer was last over the auth URL (for OSC 22 cursor shape).
-    pub welcome_on_auth_url: bool,
     /// Mouse last over the changelog block (drives hover color and redraws).
     pub welcome_on_changelog_cta: bool,
     /// Per-visit announcement UI state on the welcome screen (expansion, hover, overflow flag, hit-rect).
     pub welcome_announcement: WelcomeAnnouncementState,
-    /// Hit-test rect for the "show full URL" fallback link.
-    pub welcome_auth_fallback_rect: Option<ratatui::layout::Rect>,
     /// Hit-test rect for the "[Refresh]" button on the paywall tier line.
     pub welcome_refresh_rect: Option<ratatui::layout::Rect>,
     /// Hit-test rect for the gate URL link on the paywall CTA.
@@ -830,10 +797,6 @@ pub struct AppView {
     pub welcome_on_upgrade_cta: bool,
     /// Hit-test rect for the clickable changelog info block (opens release notes).
     pub welcome_changelog_cta_rect: Option<ratatui::layout::Rect>,
-    /// Show the raw auth URL with mouse capture disabled for manual copy.
-    pub auth_show_raw_url: bool,
-    /// We turned capture off for native select and owe a restore on leave.
-    pub native_select_hold: bool,
     /// Fetched session list for the session picker (None means not yet fetched).
     pub session_picker_entries: Option<Vec<SessionPickerEntry>>,
     /// Whether the session list is currently being fetched.
@@ -992,8 +955,6 @@ pub struct AppView {
     /// Initially populated from `InitializeResponse.meta.availableCommands` (AlwaysOn builtins only).
     /// Subsequent sessions thus start with the full command catalog immediately.
     pub bootstrap_acp_commands: Vec<agent_client_protocol::AvailableCommand>,
-    /// Auth methods from the ACP connection (preserved for re-login after logout).
-    pub auth_methods: Vec<acp::AuthMethod>,
     /// Authentication state for the welcome screen login flow.
     pub auth_state: AuthState,
     /// Folder-trust state for the welcome screen.
@@ -1004,27 +965,8 @@ pub struct AppView {
     pub consent_state: crate::app::consent::ConsentState,
     /// Scopes the consent answer, the only identity the pager has for it.
     pub account_email: Option<String>,
-    /// Login button label from `AuthMethod.name` (e.g., "codel.dev", "Acme Corp").
-    pub login_label: Option<String>,
-    /// The auth method ID to use for login.
-    pub login_method_id: Option<acp::AuthMethodId>,
-    /// Initial auth mode hint from method metadata.
-    pub auth_start_mode: AuthMode,
-    /// Text buffer for manual auth token paste (loopback mode).
-    pub(crate) auth_code_input: LineEditor,
-    /// Monotonically increasing sequence number for auth requests.
-    pub next_auth_request_seq: u64,
-    /// Abort handle for the in-flight `PollAuthUrl` task (with its request_seq).
-    /// Aborted alongside the Authenticate task in single-flight re-login.
-    pub auth_url_poll_handle: Option<(u64, tokio::task::AbortHandle)>,
     /// Every session/chat/worktree/prompt action deferred behind startup gates.
     pub deferred_startup: crate::app::session_startup::DeferredStartupActions,
-    /// Whether deferred welcome-screen login should force OAuth.
-    pub auth_use_oauth: bool,
-    /// Delivery state from the last clipboard copy during auth.
-    pub auth_clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
-    /// Generation of the current auth copy feedback and its clear timer.
-    pub auth_clipboard_feedback_generation: u64,
     /// Team id from the token: the team principal's id, or a personal account's billing team.
     pub team_id: Option<String>,
     /// The credential is a team principal, so `/user` can resolve `can_administer_team`. A personal account never resolves it.
@@ -1324,7 +1266,7 @@ impl AppView {
             self.paywall_check_started = None;
             codel_logging::session_ctx::log_event(
                 codel_logging::events::SubscriptionActivated {
-                    auth_method: self.login_method_id.as_ref().map(|id| id.0.to_string()),
+                    auth_method: None,
                     upsell_shown_this_session: self.access_gate_shown_logged,
                 },
             );
@@ -1408,7 +1350,6 @@ impl AppView {
         Self {
             pending_startup: None,
             active_view: ActiveView::Welcome,
-            auth_return_view: None,
             agents: IndexMap::new(),
             next_agent_id: 0,
             models,
@@ -1467,11 +1408,8 @@ impl AppView {
             last_scroll_pos: None,
             last_cache_evict_at: None,
             welcome_prompt_rect: None,
-            welcome_auth_url_rect: None,
-            welcome_on_auth_url: false,
             welcome_on_changelog_cta: false,
             welcome_announcement: WelcomeAnnouncementState::default(),
-            welcome_auth_fallback_rect: None,
             welcome_refresh_rect: None,
             welcome_gate_url_rect: None,
             welcome_consent_link_rects: Vec::new(),
@@ -1492,8 +1430,6 @@ impl AppView {
             welcome_on_privacy_banner: false,
             welcome_on_upgrade_cta: false,
             welcome_changelog_cta_rect: None,
-            auth_show_raw_url: false,
-            native_select_hold: false,
             session_picker_entries: None,
             session_picker_loading: false,
             session_picker_state: crate::views::picker::PickerState::with_mode(
@@ -1558,21 +1494,11 @@ impl AppView {
             resume_local_miss: None,
             agent_override: None,
             bootstrap_acp_commands,
-            auth_methods: Vec::new(),
             auth_state: AuthState::Done,
             trust_state: TrustState::Done,
             consent_state: crate::app::consent::ConsentState::Done,
             account_email: None,
-            login_label: None,
-            login_method_id: None,
-            auth_start_mode: AuthMode::Pending,
-            auth_code_input: LineEditor::default(),
-            next_auth_request_seq: 1,
-            auth_url_poll_handle: None,
             deferred_startup: Default::default(),
-            auth_use_oauth: false,
-            auth_clipboard_delivery: None,
-            auth_clipboard_feedback_generation: 0,
             team_id: None,
             is_team_principal: false,
             team_name: None,
@@ -2465,8 +2391,6 @@ impl AppView {
                     consent_hover_link: &mut self.welcome_consent_hover_link,
                     arrived_at,
                     cwd: &self.cwd,
-                    mid_session_login: self.auth_return_view.is_some(),
-                    auth_code_input: &mut self.auth_code_input,
                     prompt: &mut self.welcome_prompt,
                     prompt_focused: &mut self.welcome_prompt_focused,
                     new_worktree_dialog: &mut self.new_worktree_dialog,
@@ -2484,8 +2408,6 @@ impl AppView {
                     },
                     prompt_rect: self.welcome_prompt_rect.as_ref(),
                     import_banner_rect: self.welcome_import_banner_rect.as_ref(),
-                    auth_url_rect: self.welcome_auth_url_rect.as_ref(),
-                    auth_fallback_rect: self.welcome_auth_fallback_rect.as_ref(),
                     refresh_rect: self.welcome_refresh_rect.as_ref(),
                     gate_url_rect: self.welcome_gate_url_rect.as_ref(),
                     upgrade_cta_rect: self.welcome_upgrade_cta_rect.as_ref(),
@@ -2502,7 +2424,6 @@ impl AppView {
                     announcement_rect: self.welcome_announcement.rect.as_ref(),
                     on_announcement_cta: &mut self.welcome_announcement.on_cta,
                     announcement_expanded: &mut self.welcome_announcement.expanded,
-                    show_raw_url: &mut self.auth_show_raw_url,
                     has_access,
                     is_zdr_blocked: zdr_blocked,
                     sp_entries: &mut self.session_picker_entries,
@@ -3120,10 +3041,6 @@ struct WelcomeInputCtx<'a> {
     arrived_at: Instant,
     /// Live working directory (tracks `Effect::SetWorkingDir`), used to pin the current repo's group to the top of the session picker.
     cwd: &'a std::path::Path,
-    /// `true` when the welcome screen is showing only to host a login flow that was started from inside a session.
-    /// Esc / `q` then cancel the login and return to the session rather than quitting the app.
-    mid_session_login: bool,
-    auth_code_input: &'a mut LineEditor,
     prompt: &'a mut PromptWidget,
     prompt_focused: &'a mut bool,
     new_worktree_dialog: &'a mut Option<NewWorktreeDialogState>,
@@ -3132,8 +3049,6 @@ struct WelcomeInputCtx<'a> {
     menu_count: usize,
     prompt_rect: Option<&'a ratatui::layout::Rect>,
     import_banner_rect: Option<&'a ratatui::layout::Rect>,
-    auth_url_rect: Option<&'a ratatui::layout::Rect>,
-    auth_fallback_rect: Option<&'a ratatui::layout::Rect>,
     refresh_rect: Option<&'a ratatui::layout::Rect>,
     gate_url_rect: Option<&'a ratatui::layout::Rect>,
     /// Hit-test rect for the welcome hero upgrade CTA `[label]` button (click opens the promo url).
@@ -3160,7 +3075,6 @@ struct WelcomeInputCtx<'a> {
     on_announcement_cta: &'a mut bool,
     /// Whether the long announcement is currently expanded inline.
     announcement_expanded: &'a mut bool,
-    show_raw_url: &'a mut bool,
     has_access: bool,
     is_zdr_blocked: bool,
     sp_entries: &'a mut Option<Vec<SessionPickerEntry>>,
@@ -3800,98 +3714,24 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 }
             }
             AuthState::Pending { .. } => {
+                // Authentication is a configuration matter — the API key comes
+                // from config — so quitting is the only thing left to offer.
                 if key!('q').matches(key)
                     || key!('c', CONTROL).matches(key)
                     || key!('d', CONTROL).matches(key)
                 {
-                    if ctx.mid_session_login {
-                        return InputOutcome::Action(Action::CancelLogin);
-                    }
-                    return InputOutcome::Action(Action::QuitConfirmed);
-                }
-                if key!('l').matches(key) || key!(Enter).matches(key) {
-                    return InputOutcome::Action(Action::Login);
-                }
-            }
-            AuthState::Authenticating { .. } if *ctx.show_raw_url => {
-                if key!('q', CONTROL).matches(key) || key!('c', CONTROL).matches(key) {
-                    return InputOutcome::Action(Action::HideRawAuthUrl);
-                }
-                return InputOutcome::Unchanged;
-            }
-            AuthState::Authenticating {
-                mode: AuthMode::Loopback,
-                ..
-            } => {
-                if key!(Esc).matches(key)
-                    || key!('q', CONTROL).matches(key)
-                    || key!('c', CONTROL).matches(key)
-                {
-                    if ctx.mid_session_login {
-                        return InputOutcome::Action(Action::CancelLogin);
-                    }
-                    return InputOutcome::Action(Action::QuitConfirmed);
-                }
-                if key!(Enter).matches(key) {
-                    let trimmed = ctx.auth_code_input.text().trim().to_string();
-                    if !trimmed.is_empty() {
-                        return InputOutcome::Action(Action::SubmitAuthCode(trimmed));
-                    }
-                    return InputOutcome::Unchanged;
-                }
-                let outcome = if crate::input::key::is_paste_key(key) {
-                    let Some(text) = crate::clipboard::system_clipboard_get() else {
-                        return InputOutcome::Unchanged;
-                    };
-                    ctx.auth_code_input.insert_paste(&text)
-                } else if key.modifiers.intersects(
-                    crossterm::event::KeyModifiers::CONTROL
-                        | crossterm::event::KeyModifiers::ALT
-                        | crossterm::event::KeyModifiers::SUPER,
-                ) && !crate::input::key::is_altgr(key.modifiers)
-                {
-                    return InputOutcome::Changed;
-                } else {
-                    ctx.auth_code_input
-                        .handle_key_with_insert_policy(key, |character| !character.is_control())
-                };
-                return match outcome {
-                    LineEditOutcome::TextChanged
-                    | LineEditOutcome::CursorChanged
-                    | LineEditOutcome::HandledNoChange => InputOutcome::Changed,
-                    LineEditOutcome::Unhandled => InputOutcome::Unchanged,
-                };
-            }
-            AuthState::Authenticating { .. } => {
-                if key!(Esc).matches(key)
-                    || key!('q', CONTROL).matches(key)
-                    || key!('c', CONTROL).matches(key)
-                {
-                    if ctx.mid_session_login {
-                        return InputOutcome::Action(Action::CancelLogin);
-                    }
                     return InputOutcome::Action(Action::QuitConfirmed);
                 }
             }
         }
     }
-    if let Event::Paste(text) = ev {
-        match ctx.auth_state {
-            AuthState::Done => {
-                if !ctx.has_access || ctx.is_zdr_blocked {
-                    return InputOutcome::Unchanged;
-                }
-                *ctx.prompt_focused = true;
-                return InputOutcome::ActionThenForward(Action::LeaveHome);
-            }
-            AuthState::Authenticating {
-                mode: AuthMode::Loopback,
-                ..
-            } => {
-                let _ = ctx.auth_code_input.insert_paste(text);
-                return InputOutcome::Changed;
-            }
-            _ => {}
+    if let Event::Paste(_text) = ev {
+        if matches!(ctx.auth_state, AuthState::Done)
+            && ctx.has_access
+            && !ctx.is_zdr_blocked
+        {
+            *ctx.prompt_focused = true;
+            return InputOutcome::ActionThenForward(Action::LeaveHome);
         }
     }
     if matches!(ev, Event::Resize(_, _)) {
@@ -3988,18 +3828,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     *ctx.announcement_expanded = !*ctx.announcement_expanded;
                     return InputOutcome::Changed;
                 }
-                if let Some(rect) = ctx.auth_url_rect
-                    && matches!(ctx.auth_state, AuthState::Authenticating { .. })
-                    && rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                {
-                    return InputOutcome::Action(Action::CopyAuthUrl);
-                }
-                if let Some(rect) = ctx.auth_fallback_rect
-                    && matches!(ctx.auth_state, AuthState::Authenticating { .. })
-                    && rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                {
-                    return InputOutcome::Action(Action::ShowRawAuthUrl);
-                }
                 if let Some(rect) = ctx.import_banner_rect
                     && matches!(ctx.auth_state, AuthState::Done)
                     && mouse.column >= rect.x
@@ -4086,11 +3914,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     *ctx.on_announcement_cta = over_ann;
                     return InputOutcome::Changed;
                 }
-                if matches!(ctx.auth_state, AuthState::Authenticating { .. })
-                    && ctx.auth_url_rect.is_some()
-                {
-                    return InputOutcome::Changed;
-                }
             }
             _ => {}
         }
@@ -4148,30 +3971,27 @@ fn handle_menu_nav(
     }
 }
 /// Dispatch an action for a welcome menu item when not yet authenticated.
-/// Menu layout: item 0 is Login, item 1 is Quit.
+/// Menu layout: item 0 is Quit (there is no login to offer).
 fn dispatch_pending_menu_action(index: usize) -> InputOutcome {
     match index {
-        0 => InputOutcome::Action(Action::Login),
-        1 => InputOutcome::Action(Action::Quit),
+        0 => InputOutcome::Action(Action::Quit),
         _ => InputOutcome::Unchanged,
     }
 }
 /// Dispatch an action for a welcome menu item when ZDR-blocked.
-/// Menu layout: item 0 is Switch account, item 1 is Quit.
+/// Menu layout: item 0 is Quit.
 fn dispatch_zdr_menu_action(index: usize) -> InputOutcome {
     match index {
-        0 => InputOutcome::Action(Action::SwitchAccount),
-        1 => InputOutcome::Action(Action::Quit),
+        0 => InputOutcome::Action(Action::Quit),
         _ => InputOutcome::Unchanged,
     }
 }
-/// Menu actions when user is access-gated: item 0 is Subscribe CTA, item 1 is Logout, item 2 is Quit.
+/// Menu actions when user is access-gated: item 0 is the subscribe CTA, item 1 is Quit.
 /// "Refresh" (ctrl-r) is handled as a direct key shortcut, not a menu item.
 fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
     match index {
         0 => InputOutcome::Action(Action::OpenSupercodelUrl),
-        1 => InputOutcome::Action(Action::Logout),
-        2 => InputOutcome::Action(Action::Quit),
+        1 => InputOutcome::Action(Action::Quit),
         _ => InputOutcome::Unchanged,
     }
 }
@@ -4322,35 +4142,6 @@ impl AppView {
         }
         Some(InputOutcome::Changed)
     }
-    /// Release capture while a native-select surface is on screen so the terminal owns drag-select.
-    /// Restore only if we took the hold: a user who already had `/toggle-mouse-reporting` off must stay off.
-    fn sync_native_selection_mouse(&mut self) {
-        if self.screen_mode.is_minimal() {
-            return;
-        }
-        let want_off = self.auth_show_raw_url
-            && matches!(self.active_view, ActiveView::Welcome)
-            && matches!(self.auth_state, AuthState::Authenticating { .. });
-        let capture_on = super::MOUSE_CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Acquire);
-        if want_off && capture_on {
-            self.native_select_hold = true;
-            codel_shell::util::with_locked_stderr(|stderr| {
-                let _ = crossterm::execute!(stderr, crossterm::event::DisableMouseCapture);
-            });
-            #[cfg(windows)]
-            super::win_native_selection::enable_native_selection();
-            super::MOUSE_CAPTURE_ENABLED.store(false, std::sync::atomic::Ordering::Release);
-        } else if !want_off && self.native_select_hold {
-            self.native_select_hold = false;
-            codel_shell::util::with_locked_stderr(|stderr| {
-                let _ = crossterm::execute!(stderr, crossterm::event::EnableMouseCapture);
-            });
-            super::MOUSE_CAPTURE_ENABLED.store(true, std::sync::atomic::Ordering::Release);
-            for agent in self.agents.values_mut() {
-                agent.set_sticky_toast_recursive(None);
-            }
-        }
-    }
     /// Render the current view to the terminal.
     pub fn draw(&mut self, terminal: &mut PagerTerminal) {
         self.draw_inner(terminal);
@@ -4365,23 +4156,6 @@ impl AppView {
             }
             return;
         }
-        if self.welcome_on_auth_url
-            && !matches!(
-                (&self.active_view, &self.auth_state),
-                (ActiveView::Welcome, AuthState::Authenticating { .. })
-            )
-        {
-            self.welcome_on_auth_url = false;
-            if crate::terminal::terminal_context()
-                .hyperlink_capabilities()
-                .osc22_cursor
-            {
-                codel_shell::util::with_locked_stderr(|stderr| {
-                    let _ = crossterm::execute!(stderr, crate::terminal::SetDefaultCursor);
-                });
-            }
-        }
-        self.sync_native_selection_mouse();
         if let ActiveView::Agent(id) = self.active_view
             && let Some(agent) = self.agents.get_mut(&id)
         {
@@ -4545,11 +4319,6 @@ impl AppView {
                                 trust_state: &self.trust_state,
                                 consent_state: &self.consent_state,
                                 consent_hover_link: self.welcome_consent_hover_link,
-                                login_label: self.login_label.as_deref(),
-                                auth_code_input: self.auth_code_input.text(),
-                                auth_code_cursor_byte: self.auth_code_input.cursor_byte(),
-                                clipboard_delivery: self.auth_clipboard_delivery,
-                                show_raw_url: self.auth_show_raw_url,
                                 announcement: hero_announcement,
                                 tip,
                                 model_name: &model_name,
@@ -4617,8 +4386,6 @@ impl AppView {
                             self.welcome_show_changelog_action = result.changelog_action_present;
                             self.welcome_prompt_rect = result.prompt_rect;
                             self.welcome_import_banner_rect = result.import_banner_rect;
-                            self.welcome_auth_url_rect = result.auth_url_rect;
-                            self.welcome_auth_fallback_rect = result.auth_fallback_rect;
                             self.welcome_refresh_rect = result.refresh_rect;
                             self.welcome_gate_url_rect = result.gate_url_rect;
                             self.welcome_consent_link_rects = result.consent_link_rects;
@@ -4697,10 +4464,7 @@ impl AppView {
                                 self.access_gate_shown_logged = true;
                                 codel_logging::session_ctx::log_event(codel_logging::events::SuperCodelUpsellShown {
                                     source: codel_logging::events::SuperCodelUpsell::WelcomeScreen,
-                                    auth_method: self
-                                        .login_method_id
-                                        .as_ref()
-                                        .map(|id| id.0.to_string()),
+                                    auth_method: None,
                                 });
                             }
                             if let Some(tutorial) = self.tutorial.as_mut() {
@@ -4725,38 +4489,7 @@ impl AppView {
                                 } else {
                                     result.cursor_pos
                                 };
-                            let on_url = self.welcome_auth_url_rect.as_ref().is_some_and(|r| {
-                                matches!(self.auth_state, AuthState::Authenticating { .. })
-                                    && self.last_mouse_pos.is_some_and(|(mx, my)| {
-                                        mx >= r.x
-                                            && mx < r.x + r.width
-                                            && my >= r.y
-                                            && my < r.y + r.height
-                                    })
-                            });
-                            let mut post_flush = result.post_flush_escapes;
-                            if crate::terminal::terminal_context()
-                                .hyperlink_capabilities()
-                                .osc22_cursor
-                                && on_url != self.welcome_on_auth_url
-                            {
-                                use crossterm::Command;
-                                let mut buf = String::new();
-                                if on_url {
-                                    let _ = crate::terminal::SetPointerCursor.write_ansi(&mut buf);
-                                } else {
-                                    let _ = crate::terminal::SetDefaultCursor.write_ansi(&mut buf);
-                                }
-                                match post_flush.as_mut() {
-                                    Some(existing) => existing.append_plain(&buf),
-                                    None => {
-                                        post_flush =
-                                            Some(crate::terminal::overlay::PostFlush::plain(buf));
-                                    }
-                                }
-                            }
-                            self.welcome_on_auth_url = on_url;
-                            return (cursor, post_flush);
+                            return (cursor, result.post_flush_escapes);
                         }
                         ActiveView::Agent(id) => {
                             let overlay_focused = false;

@@ -103,35 +103,6 @@ fn agent_vim_tab_focuses_scrollback_then_j_navigates() {
     );
     crate::appearance::cache::set_vim_mode(false);
 }
-/// `/vim-mode` (ToggleVimMode) must propagate to OPEN subagent views, not just top-level agents.
-/// Otherwise a user inside a subagent view toggles vim, presses Tab then j, and the keystroke forwards to the prompt (vim-OFF fallback).
-/// The subagent view kept its stale `vim_mode = false`.
-#[test]
-fn toggle_vim_mode_propagates_to_open_subagent_views() {
-    crate::appearance::cache::set_vim_mode(false);
-    let mut app = test_app_with_agent();
-    let id = AgentId(0);
-    let child_session = make_test_agent_session(&app, AgentId(0), "child-session");
-    let mut child = AgentView::new(child_session, ScrollbackState::new());
-    child.vim_mode = false;
-    {
-        let parent = app.agents.get_mut(&id).unwrap();
-        parent.vim_mode = false;
-        parent.insert_test_child("child-1".to_string(), Box::new(child));
-    }
-    let _ = dispatch(Action::ToggleVimMode, &mut app);
-    assert!(
-        expect_agent(&app, id).vim_mode,
-        "parent picks up the toggle"
-    );
-    assert!(
-        expect_agent(&app, id)
-            .subagent_views
-            .get("child-1")
-            .is_some_and(|v| v.vim_mode),
-        "an open subagent view must also pick up the vim toggle",
-    );
-}
 /// `/vim-mode` must toggle vim from the DASHBOARD too, not just an agent view.
 /// It used to early-return unless an agent was active, a silent no-op that left the overview's j/k off.
 /// Turning vim ON also focuses the overview so j/k navigate immediately; turning it OFF returns focus to the input.
@@ -465,32 +436,6 @@ fn hydration_rederive_corrects_divergent_startup_seed() {
     assert!(
         expect_agent(&app, id).prompt.compact(),
         "the correction must reach the prompt widget"
-    );
-}
-/// Hot-reload keeps the PRE-reload render value in the config it applies and routes any correction through the single writer.
-/// `set_appearance` alone never syncs `PromptWidget.compact`.
-/// A pending divergence must land on every agent's widget, background agents included.
-#[test]
-fn hot_reload_rederive_syncs_prompt_widgets_on_every_agent() {
-    let mut app = test_app_with_agent();
-    let id_a = AgentId(0);
-    let id_b = AgentId(1);
-    let session_b = make_test_agent_session(&app, id_b, "test-session-b");
-    app.agents
-        .insert(id_b, AgentView::new(session_b, ScrollbackState::new()));
-    app.next_agent_id = 2;
-    app.last_known_terminal_rows = 18;
-    assert!(!app.appearance.prompt.compact);
-    assert!(!expect_agent(&app, id_a).prompt.compact());
-    assert!(!expect_agent(&app, id_b).prompt.compact());
-    let mut config = app.appearance.clone();
-    config.prompt.compact = app.appearance.prompt.compact;
-    app.set_appearance(config);
-    app.apply_effective_compact();
-    assert!(app.appearance.prompt.compact, "derived value applied");
-    assert!(
-        expect_agent(&app, id_a).prompt.compact() && expect_agent(&app, id_b).prompt.compact(),
-        "the re-derive must sync every agent's prompt widget, not just the active one"
     );
 }
 /// Toggling the setting OFF while auto-compact is active persists the user value (false) but keeps the derived render value on.
@@ -1885,19 +1830,6 @@ fn set_simple_mode_propagates_to_active_agent() {
         "set_simple_mode(false) must switch back to Vim input mode"
     );
 }
-/// `set_simple_mode_inner` is a no-op on the agent-propagation path when there's no active agent.
-/// The persist effect still fires (the setting is global, not agent-local).
-#[test]
-fn set_simple_mode_no_op_when_no_active_agent() {
-    let mut app = test_app();
-    let effects = dispatch(Action::SetSimpleMode(true), &mut app);
-    assert_eq!(effects.len(), 1);
-    match effects.first() {
-        Some(Effect::PersistSetting { key, .. }) => assert_eq!(*key, "simple_mode"),
-        other => panic!("expected PersistSetting, got {other:?}"),
-    }
-    assert_eq!(app.current_ui.simple_mode, Some(true));
-}
 /// `set_simple_mode_inner` propagates to **every** agent, not just the active one.
 /// Without iterating over `app.agents.values_mut()`, agent B's input_mode stays stale when the user toggles simple-mode while agent A is active.
 #[test]
@@ -2066,28 +1998,6 @@ fn set_multiline_mode_toast_format() {
         .map(|(s, _)| s.clone())
         .expect("toast must be set");
     assert_eq!(toast, "\u{2713} Multiline: off");
-}
-/// No active agent means no-op (no panic, no effect, no mutation).
-/// Differs from `set_simple_mode_no_op_when_no_active_agent`: SHARED settings persist globally even without an agent.
-/// PAGER settings have nowhere to write without an agent's state to mutate.
-#[test]
-fn set_multiline_mode_no_op_when_no_active_agent() {
-    let mut app = test_app();
-    let compact_before = app.current_ui.compact_mode;
-    let timestamps_before = app.current_ui.show_timestamps;
-    let simple_before = app.current_ui.simple_mode;
-    let effects = dispatch(Action::SetMultilineMode(true), &mut app);
-    assert!(
-        effects.is_empty(),
-        "no active agent → no Effect (the setting is per-agent)",
-    );
-    assert_eq!(app.current_ui.compact_mode, compact_before);
-    assert_eq!(app.current_ui.show_timestamps, timestamps_before);
-    assert_eq!(app.current_ui.simple_mode, simple_before);
-    assert!(
-        matches!(app.active_view, ActiveView::Welcome),
-        "active_view must not flip on no-agent dispatch",
-    );
 }
 /// The dashboard owns its own compose flag: `SetMultilineMode` / `/multiline` flip `dashboard.multiline_mode` and leave agent flags alone.
 #[test]

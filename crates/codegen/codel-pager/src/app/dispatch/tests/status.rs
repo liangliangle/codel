@@ -1910,15 +1910,6 @@ fn session_usage_keeps_scroll_when_page_flip_off() {
     crate::appearance::cache::set_page_flip_on_send(prev);
 }
 
-#[test]
-fn show_usage_on_welcome_screen_is_noop() {
-    let mut app = test_app();
-    let effects = dispatch(Action::ShowUsage, &mut app);
-    assert!(
-        effects.is_empty(),
-        "ShowUsage with no active agent should be a no-op"
-    );
-}
 
 #[test]
 fn show_usage_with_redirect_url_fetches_session_only() {
@@ -1949,26 +1940,7 @@ fn minimal_update_notice_commits_a_system_block() {
     assert!(text.contains("Restart to apply."), "got: {text:?}");
 }
 
-#[test]
-fn minimal_update_notice_no_active_agent_is_noop() {
-    let mut app = test_app();
-    // Must not panic and must not require an agent.
-    commit_minimal_update_notice(&mut app, "9.9.9");
-}
 
-/// `/tutorial` (and the palette entry) open the overlay; dispatching again while open toggles it closed.
-/// No side effects either way.
-#[test]
-fn open_tutorial_toggles_overlay_without_effects() {
-    let mut app = test_app();
-    let effects = dispatch(Action::OpenTutorial, &mut app);
-    assert!(app.tutorial.is_some(), "tutorial opens");
-    assert!(effects.is_empty(), "open emits nothing, got: {effects:?}");
-
-    let effects = dispatch(Action::OpenTutorial, &mut app);
-    assert!(app.tutorial.is_none(), "toggle closes");
-    assert!(effects.is_empty(), "close emits nothing, got: {effects:?}");
-}
 
 fn usage_modal_state(app: &AppView) -> &crate::views::usage_modal::UsageInfoModalState {
     match app

@@ -46,14 +46,6 @@ pub(crate) fn wait_for_exit_not_supported(context: &str) -> acp::Error {
 }
 /// Initial auth mode hint from the agent's auth method metadata.
 /// Determined at startup from `AuthMethod.meta.external_provider`.
-/// Used by the welcome screen to decide whether to show a browser-opening message or a manual token paste input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthStartMode {
-    /// Mode not yet known (will be resolved after AuthenticateRequest).
-    Pending,
-    /// External provider (meta.external_provider == true); the browser opens automatically.
-    Command,
-}
 /// The pager's connection to an agent that is running but has not been set up yet.
 /// It holds the channel for sending requests to the agent, the channel for receiving its replies, the token that stops the agent, and the place the agent runs.
 /// `initialize_connection` sends `initialize` over these channels and returns the finished `AcpConnection`.
@@ -100,15 +92,8 @@ pub struct AcpConnection {
     /// ACP-advertised slash commands parsed from `InitializeResponse.meta.availableCommands`.
     /// Seeded into every new `AgentSession` so autocomplete has shell builtins and skills immediately, before any `AvailableCommandsUpdate` arrives.
     pub available_commands: Vec<acp::AvailableCommand>,
-    pub needs_login: bool,
-    /// Login button label from `AuthMethod.name` (e.g., "codel.dev", "Acme Corp").
-    pub login_label: Option<String>,
-    /// The auth method ID to use for login (copied from the first advertised method).
-    pub login_method_id: Option<acp::AuthMethodId>,
-    /// Initial auth mode hint (Command vs Pending) from method metadata.
-    pub auth_start_mode: AuthStartMode,
-    /// Auth response metadata from eager authentication (cached token or API key).
-    /// Contains `team_name`, etc. `None` when interactive login is required.
+    /// Auth response metadata from eager authentication.
+    /// Contains `team_name`, etc. `None` when the agent had nothing to report.
     pub auth_meta: Option<serde_json::Value>,
     /// Leader connection status. `Some` only when connected via leader.
     pub leader_status_rx: Option<tokio::sync::watch::Receiver<leader_bridge::ConnectionStatus>>,
@@ -241,20 +226,13 @@ pub(in crate::acp) async fn initialize_connection(
     };
     startup::enter(StartupPhase::AcpInitialize);
     let agent = initialize(&tx, flags).await?;
-    let (needs_login, login_label, login_method_id, auth_start_mode) =
-        startup_auth_metadata(&agent.auth_methods);
     startup::enter(StartupPhase::EagerAuth);
-    let (needs_login, login_label, login_method_id, auth_start_mode, auth_meta) =
-        bounded_eager_auth(
-            &tx,
-            &agent.auth_methods,
-            agent.default_auth_method_id.as_ref(),
-            needs_login,
-            login_label,
-            login_method_id,
-            auth_start_mode,
-        )
-        .await;
+    let auth_meta = bounded_eager_auth(
+        &tx,
+        &agent.auth_methods,
+        agent.default_auth_method_id.as_ref(),
+    )
+    .await;
     Ok(AcpConnection {
         tx,
         rx,
@@ -264,10 +242,6 @@ pub(in crate::acp) async fn initialize_connection(
         cancel,
         agent_thread,
         available_commands: agent.available_commands,
-        needs_login,
-        login_label,
-        login_method_id,
-        auth_start_mode,
         auth_meta,
         leader_status_rx,
         cancel_rewind_enabled: agent.cancel_rewind_enabled,
@@ -553,110 +527,21 @@ pub fn parse_feedback_trace_offer(meta: Option<&acp::Meta>) -> bool {
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
-/// Whether interactive login is needed, plus the method to present.
-///
-/// The fork advertises at most the API-key method, which is not interactive, so
-/// this is always the "authenticate eagerly" answer.
-pub fn startup_auth_metadata(
-    _auth_methods: &[acp::AuthMethod],
-) -> (bool, Option<String>, Option<acp::AuthMethodId>, AuthStartMode) {
-    (false, None, None, AuthStartMode::Pending)
-}
-/// No method is interactive in this fork, so there is never a login method to find.
-pub fn find_interactive_login_method(
-    _auth_methods: &[acp::AuthMethod],
-) -> (Option<String>, Option<acp::AuthMethodId>, AuthStartMode) {
-    (None, None, AuthStartMode::Pending)
-}
-/// Attempt eager auth; on failure fall back to the interactive login screen. The shell owns unpinned fallthrough,
-/// and a failed api_key must not open a browser. Otherwise hand the interactive method for the login screen. Empty
-/// `auth_methods` is fail-closed: needs_login without an interactive method.
-async fn eager_auth_or_login_fallback(
-    tx: &AcpAgentTx,
-    auth_methods: &[acp::AuthMethod],
-    default_auth_method_id: Option<&acp::AuthMethodId>,
-    needs_login: bool,
-    login_label: Option<String>,
-    login_method_id: Option<acp::AuthMethodId>,
-    auth_start_mode: AuthStartMode,
-) -> (
-    bool,
-    Option<String>,
-    Option<acp::AuthMethodId>,
-    AuthStartMode,
-    Option<serde_json::Value>,
-) {
-    if auth_methods.is_empty() {
-        return (true, None, None, AuthStartMode::Pending, None);
-    }
-    if needs_login {
-        return (
-            needs_login,
-            login_label,
-            login_method_id,
-            auth_start_mode,
-            None,
-        );
-    }
-    match authenticate(tx, auth_methods, default_auth_method_id).await {
-        Ok(meta) => (
-            needs_login,
-            login_label,
-            login_method_id,
-            auth_start_mode,
-            meta,
-        ),
-        Err(_) => {
-            let has_api_key = auth_methods
-                .iter()
-                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::CodelApiKey);
-            if has_api_key {
-                return (false, login_label, login_method_id, auth_start_mode, None);
-            }
-            let (label, method_id, mode) = find_interactive_login_method(auth_methods);
-            (true, label, method_id, mode, None)
-        }
-    }
-}
-/// [`eager_auth_or_login_fallback`] bounded by `STARTUP_AUTH_REFRESH_TIMEOUT`, so a hung agent cannot gate the first draw.
-/// On timeout the inputs pass through unchanged and the agent finishes authentication in the background.
+/// [`authenticate`] bounded by `STARTUP_AUTH_REFRESH_TIMEOUT`, so a hung agent cannot gate the first draw.
+/// On timeout the agent finishes authenticating in the background.
 async fn bounded_eager_auth(
     tx: &AcpAgentTx,
     auth_methods: &[acp::AuthMethod],
     default_auth_method_id: Option<&acp::AuthMethodId>,
-    needs_login: bool,
-    login_label: Option<String>,
-    login_method_id: Option<acp::AuthMethodId>,
-    auth_start_mode: AuthStartMode,
-) -> (
-    bool,
-    Option<String>,
-    Option<acp::AuthMethodId>,
-    AuthStartMode,
-    Option<serde_json::Value>,
-) {
+) -> Option<serde_json::Value> {
     match tokio::time::timeout(
         codel_shell::http::STARTUP_AUTH_REFRESH_TIMEOUT,
-        eager_auth_or_login_fallback(
-            tx,
-            auth_methods,
-            default_auth_method_id,
-            needs_login,
-            login_label.clone(),
-            login_method_id.clone(),
-            auth_start_mode,
-        ),
+        authenticate(tx, auth_methods, default_auth_method_id),
     )
     .await
     {
-        Ok(resolved) => resolved,
-        Err(_) => (
-            needs_login,
-            login_label,
-            login_method_id,
-            auth_start_mode,
-            None,
-        ),
+        Ok(Ok(meta)) => meta,
+        _ => None,
     }
 }
 /// Authenticate with the agent using the agent's chosen default method. Do not re-derive api_key vs session
@@ -778,102 +663,6 @@ mod tests {
             agent = agent.meta(m);
         }
         acp::AuthMethod::Agent(agent)
-    }
-    #[test]
-    fn startup_auth_empty_methods_no_login() {
-        let (needs, label, method_id, mode) = startup_auth_metadata(&[]);
-        assert!(!needs);
-        assert!(label.is_none());
-        assert!(method_id.is_none());
-        assert_eq!(mode, AuthStartMode::Pending);
-    }
-    #[test]
-    fn startup_auth_codel_com_no_provider_needs_login_pending() {
-        let methods = vec![make_auth_method("codel.dev", "codel.dev", None)];
-        let (needs, label, method_id, mode) = startup_auth_metadata(&methods);
-        assert!(needs);
-        assert_eq!(label.as_deref(), Some("codel.dev"));
-        assert_eq!(method_id.as_ref().unwrap().0.as_ref(), "codel.dev");
-        assert_eq!(mode, AuthStartMode::Pending);
-    }
-    #[test]
-    fn startup_auth_codel_com_with_external_provider_command() {
-        let meta = serde_json::json!({ "external_provider": true });
-        let methods = vec![make_auth_method("codel.dev", "Acme Corp", Some(meta))];
-        let (needs, label, method_id, mode) = startup_auth_metadata(&methods);
-        assert!(needs);
-        assert_eq!(label.as_deref(), Some("Acme Corp"));
-        assert_eq!(method_id.as_ref().unwrap().0.as_ref(), "codel.dev");
-        assert_eq!(mode, AuthStartMode::Command);
-    }
-    #[test]
-    fn startup_auth_non_codel_com_no_login() {
-        let methods = vec![make_auth_method("api-key", "API Key", None)];
-        let (needs, label, method_id, mode) = startup_auth_metadata(&methods);
-        assert!(!needs);
-        assert!(label.is_none());
-        assert!(method_id.is_none());
-        assert_eq!(mode, AuthStartMode::Pending);
-    }
-    /// Enterprise/BYOK configs MUST. It calls the shell-side `build_auth_methods()` with the exact inputs
-    /// `MvpAgent::initialize()` would compute for an enterprise user. It fails because `startup_auth_metadata()`
-    /// returns `needs_login = true`.
-    #[test]
-    fn shell_built_auth_methods_for_byok_user_skip_login_screen() {
-        use codel_shell::agent::auth_method::{AuthMethodsBuildInputs, build_auth_methods};
-        let built = build_auth_methods(AuthMethodsBuildInputs {
-            has_external_api_key: true,
-            has_cached_token: false,
-            has_enterprise_oidc: false,
-            enterprise_oidc_issuer: None,
-            login_label: None,
-            has_auth_provider_command: false,
-            preferred_method: None,
-        });
-        let (needs, label, method_id, mode) = startup_auth_metadata(&built.methods);
-        assert!(
-            !needs,
-            "shell built auth_methods for a BYOK user, but the pager still \
-             reports needs_login = true. Either the shell stopped putting \
-             codel.api_key first or the pager stopped treating codel.api_key as \
-             a no-login method.",
-        );
-        assert!(label.is_none());
-        assert!(method_id.is_none());
-        assert_eq!(mode, AuthStartMode::Pending);
-    }
-    /// Inverse direction: when `codel.api_key` is NOT in the list, the pager MUST show the login screen. The pager only
-    /// inspects `auth_methods.first()`. This locks the failure mode of the regression. It then either passes or fails
-    /// on a meaningful new code path.
-    #[test]
-    fn startup_auth_codel_api_key_not_first_still_requires_login() {
-        use codel_shell::agent::auth_method::{CODEL_COM_METHOD_ID, CODEL_API_KEY_METHOD_ID};
-        let methods = vec![
-            make_auth_method(CODEL_COM_METHOD_ID, "Codel", None),
-            make_auth_method(CODEL_API_KEY_METHOD_ID, "codel.api_key", None),
-        ];
-        let (needs, _, _, _) = startup_auth_metadata(&methods);
-        assert!(
-            needs,
-            "with codel.dev first, the pager must require login -- pinning \
-             the BAD-ordering failure mode (codel.api_key not first)",
-        );
-    }
-    #[test]
-    fn startup_auth_method_id_is_copied_not_synthesized() {
-        let methods = vec![make_auth_method("codel.dev", "My Login", None)];
-        let (_, _, method_id, _) = startup_auth_metadata(&methods);
-        let Some(first) = methods.first() else {
-            panic!("expected an auth method");
-        };
-        assert_eq!(&method_id.unwrap(), first.id());
-    }
-    #[test]
-    fn startup_auth_external_provider_false_is_pending() {
-        let meta = serde_json::json!({ "external_provider": false });
-        let methods = vec![make_auth_method("codel.dev", "codel.dev", Some(meta))];
-        let (_, _, _, mode) = startup_auth_metadata(&methods);
-        assert_eq!(mode, AuthStartMode::Pending);
     }
     #[test]
     fn unsupported_leader_flags_empty_when_none_set() {

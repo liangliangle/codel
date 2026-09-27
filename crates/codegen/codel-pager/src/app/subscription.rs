@@ -162,7 +162,7 @@ impl AppView {
         );
         codel_logging::session_ctx::log_event(
             codel_logging::events::SubscriptionActivated {
-                auth_method: self.login_method_id.as_ref().map(|id| id.0.to_string()),
+                auth_method: None,
                 upsell_shown_this_session: self.access_gate_shown_logged,
             },
         );

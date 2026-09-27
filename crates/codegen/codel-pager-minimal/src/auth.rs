@@ -16,12 +16,6 @@ use codel_pager::theme::Theme;
 /// What the minimal live region shows when there is no active agent yet.
 /// Computed before the draw closure so the closure can own it.
 pub(super) enum MinimalAuthHint {
-    /// Interactive sign-in underway: show the URL (when known) and the device code (when the URL carries one).
-    /// Covers device flow and the external command flow, where the provider opens its own browser and `url` may be `None`.
-    SigningIn {
-        url: Option<String>,
-        code: Option<String>,
-    },
     /// The last sign-in attempt failed; show the error.
     Failed(String),
     /// Authenticated, but the cwd has untrusted repo-local config: ask before creating a session.
@@ -41,19 +35,14 @@ pub(super) fn minimal_auth_hint(
     is_zdr_blocked: bool,
 ) -> MinimalAuthHint {
     match auth {
-        AuthState::Authenticating { auth_url, .. } => MinimalAuthHint::SigningIn {
-            url: auth_url.clone(),
-            code: auth_url
-                .as_deref()
-                .and_then(device_user_code)
-                .map(str::to_owned),
-        },
         AuthState::Pending { error: Some(err) } => MinimalAuthHint::Failed(err.clone()),
-        // Login is starting (auto-triggered at startup); the URL arrives via AuthUrlReady, which flips us to `Authenticating`
-        AuthState::Pending { error: None } => MinimalAuthHint::SigningIn {
-            url: None,
-            code: None,
-        },
+        // Nothing is in flight: authentication is a configuration matter, so the
+        // hint names what to do rather than waiting for a flow that never starts.
+        AuthState::Pending { error: None } => {
+            MinimalAuthHint::Failed(
+                codel_shell::agent::auth_method::AUTH_ERROR_API_KEY.to_owned(),
+            )
+        }
         AuthState::Done if has_access && !is_zdr_blocked => {
             if let TrustState::Pending { workspace } = trust {
                 MinimalAuthHint::TrustFolder {
@@ -67,33 +56,6 @@ pub(super) fn minimal_auth_hint(
     }
 }
 
-/// Rows the no-agent live region needs for `hint` (before path wrap).
-/// Used by the overlay host so the viewport grows enough to show the trust question instead of clipping to the idle prompt height.
-pub(super) fn auth_hint_rows(hint: &MinimalAuthHint, width: u16) -> u16 {
-    match hint {
-        // header + blank + "Opening browser…"
-        MinimalAuthHint::SigningIn { url: None, code: _ } => 3,
-        // header + blank + "Open this URL" + url rows + optional code block + blank + "Waiting…"
-        MinimalAuthHint::SigningIn {
-            url: Some(url),
-            code,
-        } => {
-            let url_rows = wrapped_char_rows(url, width);
-            let code_rows = if code.is_some() { 2 } else { 0 }; // blank + "Code: …"
-            3 + url_rows + code_rows + 2
-        }
-        // "Sign-in failed" + blank + error
-        MinimalAuthHint::Failed(_) => 3,
-        // question + path rows + blank + 2 warning + blank + 2 menu + blank + hint
-        MinimalAuthHint::TrustFolder { workspace } => {
-            let path = workspace.display().to_string();
-            let path_rows = wrapped_char_rows(&path, width);
-            1 + path_rows + 1 + 2 + 1 + 2 + 1 + 1
-        }
-        MinimalAuthHint::Starting => 1,
-    }
-}
-
 /// How many rows `text` needs when painted char-by-char at `width` (no wrap-inserted spaces); same layout as [`render_url`].
 fn wrapped_char_rows(text: &str, width: u16) -> u16 {
     let width = width.max(1) as usize;
@@ -104,25 +66,19 @@ fn wrapped_char_rows(text: &str, width: u16) -> u16 {
     chars.div_ceil(width) as u16
 }
 
-/// Parse the device-flow `user_code` from a verification URL (`None` if absent or malformed).
-/// Mirrors `views::welcome::extract_user_code`, kept local so minimal does not depend on welcome-screen internals.
-fn device_user_code(url: &str) -> Option<&str> {
-    let code = url
-        .split('?')
-        .nth(1)?
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("user_code="))?;
-    (!code.is_empty() && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-        .then_some(code)
-}
-
-/// Write `line` at row `y` (when it fits) and return the next row.
-fn put_line(buf: &mut Buffer, area: Rect, y: u16, bottom: u16, line: Line<'_>) -> u16 {
-    if y < bottom {
-        buf.set_line(area.x, y, &line, area.width);
-        y + 1
-    } else {
-        y
+/// Rows the no-agent live region needs for `hint` (before path wrap).
+/// Used by the overlay host so the viewport grows enough to show the trust question instead of clipping to the idle prompt height.
+pub(super) fn auth_hint_rows(hint: &MinimalAuthHint, width: u16) -> u16 {
+    match hint {
+        // "Sign-in failed" + blank + error
+        MinimalAuthHint::Failed(_) => 3,
+        // question + path rows + blank + 2 warning + blank + 2 menu + blank + hint
+        MinimalAuthHint::TrustFolder { workspace } => {
+            let path = workspace.display().to_string();
+            let path_rows = wrapped_char_rows(&path, width);
+            1 + path_rows + 1 + 2 + 1 + 2 + 1 + 1
+        }
+        MinimalAuthHint::Starting => 1,
     }
 }
 
@@ -169,6 +125,16 @@ fn render_url(
     y.saturating_add(1)
 }
 
+/// Write `line` at row `y` (when it fits) and return the next row.
+fn put_line(buf: &mut Buffer, area: Rect, y: u16, bottom: u16, line: Line<'_>) -> u16 {
+    if y < bottom {
+        buf.set_line(area.x, y, &line, area.width);
+        y + 1
+    } else {
+        y
+    }
+}
+
 /// Render the sign-in / trust flow (or transient status) in the live region when no agent exists yet.
 /// Top-aligned in `area`; clips to its height.
 pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &MinimalAuthHint) {
@@ -184,71 +150,6 @@ pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &Mi
         .bg(Color::Reset);
 
     match hint {
-        MinimalAuthHint::SigningIn { url, code } => {
-            y = put_line(
-                buf,
-                area,
-                y,
-                bottom,
-                Line::from(Span::styled("Sign in to Codel", bold)),
-            );
-            y = put_line(buf, area, y, bottom, Line::default());
-            match url {
-                Some(url) => {
-                    y = put_line(
-                        buf,
-                        area,
-                        y,
-                        bottom,
-                        Line::from(Span::styled(
-                            "Open this URL in your browser to approve:",
-                            gray,
-                        )),
-                    );
-                    y = render_url(
-                        buf,
-                        area,
-                        y,
-                        bottom,
-                        url,
-                        Style::default().fg(theme.accent_user).bg(Color::Reset),
-                    );
-                    if let Some(code) = code {
-                        y = put_line(buf, area, y, bottom, Line::default());
-                        y = put_line(
-                            buf,
-                            area,
-                            y,
-                            bottom,
-                            Line::from(vec![
-                                Span::styled("Code: ", gray),
-                                Span::styled(code.clone(), bold),
-                            ]),
-                        );
-                    }
-                    y = put_line(buf, area, y, bottom, Line::default());
-                    let _ = put_line(
-                        buf,
-                        area,
-                        y,
-                        bottom,
-                        Line::from(Span::styled("Waiting for approval\u{2026}", gray)),
-                    );
-                }
-                None => {
-                    let _ = put_line(
-                        buf,
-                        area,
-                        y,
-                        bottom,
-                        Line::from(Span::styled(
-                            "Opening your browser to sign in\u{2026}",
-                            gray,
-                        )),
-                    );
-                }
-            }
-        }
         MinimalAuthHint::Failed(err) => {
             let warn = Style::default()
                 .fg(theme.warning)
@@ -360,123 +261,9 @@ pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &Mi
 mod tests {
     use super::*;
 
-    #[test]
-    fn device_user_code_parses_verification_url() {
-        assert_eq!(
-            device_user_code("https://accounts.codel/oauth2/device?user_code=ABCD-EFGH"),
-            Some("ABCD-EFGH")
-        );
-        assert_eq!(
-            device_user_code("https://accounts.codel/oauth2/device"),
-            None
-        );
-        assert_eq!(device_user_code("https://x/device?other=1"), None);
-    }
 
-    #[test]
-    fn auth_hint_maps_auth_state() {
-        use codel_pager::app::app_view::AuthMode;
 
-        let trust_done = TrustState::Done;
 
-        // Device flow maps to SigningIn carrying the URL and the parsed code
-        let st = AuthState::Authenticating {
-            request_seq: 1,
-            handle: None,
-            auth_url: Some("https://accounts.codel/device?user_code=ABCD-EFGH".into()),
-            mode: AuthMode::Device,
-        };
-        match minimal_auth_hint(&st, &trust_done, true, false) {
-            MinimalAuthHint::SigningIn { url, code } => {
-                assert_eq!(
-                    url.as_deref(),
-                    Some("https://accounts.codel/device?user_code=ABCD-EFGH")
-                );
-                assert_eq!(code.as_deref(), Some("ABCD-EFGH"));
-            }
-            _ => panic!("expected SigningIn"),
-        }
-
-        // External command flow maps to SigningIn with the URL and no code
-        let st = AuthState::Authenticating {
-            request_seq: 2,
-            handle: None,
-            auth_url: Some("https://provider.example/login".into()),
-            mode: AuthMode::Command,
-        };
-        match minimal_auth_hint(&st, &trust_done, true, false) {
-            MinimalAuthHint::SigningIn { url, code } => {
-                assert_eq!(url.as_deref(), Some("https://provider.example/login"));
-                assert!(code.is_none());
-            }
-            _ => panic!("expected SigningIn"),
-        }
-
-        assert!(matches!(
-            minimal_auth_hint(&AuthState::Done, &trust_done, true, false),
-            MinimalAuthHint::Starting
-        ));
-        assert!(matches!(
-            minimal_auth_hint(
-                &AuthState::Pending {
-                    error: Some("nope".into())
-                },
-                &trust_done,
-                true,
-                false
-            ),
-            MinimalAuthHint::Failed(_)
-        ));
-    }
-
-    #[test]
-    fn auth_hint_maps_pending_trust_after_auth() {
-        let trust = TrustState::Pending {
-            workspace: PathBuf::from("/tmp/untrusted-repo"),
-        };
-        match minimal_auth_hint(&AuthState::Done, &trust, true, false) {
-            MinimalAuthHint::TrustFolder { workspace } => {
-                assert_eq!(workspace, PathBuf::from("/tmp/untrusted-repo"));
-            }
-            _ => panic!("expected TrustFolder"),
-        }
-
-        // Access / ZDR gates suppress the trust question (matches welcome and the input interceptor)
-        assert!(matches!(
-            minimal_auth_hint(&AuthState::Done, &trust, false, false),
-            MinimalAuthHint::Starting
-        ));
-        assert!(matches!(
-            minimal_auth_hint(&AuthState::Done, &trust, true, true),
-            MinimalAuthHint::Starting
-        ));
-
-        // Trust is not offered while auth is still in flight.
-        assert!(matches!(
-            minimal_auth_hint(&AuthState::Pending { error: None }, &trust, true, false),
-            MinimalAuthHint::SigningIn { .. }
-        ));
-    }
-
-    #[test]
-    fn render_auth_shows_url_and_code() {
-        let theme = Theme::current();
-        let area = Rect::new(0, 0, 80, 12);
-        let mut buf = Buffer::empty(area);
-        let hint = MinimalAuthHint::SigningIn {
-            url: Some("https://accounts.codel/device?user_code=ABCD-EFGH".into()),
-            code: Some("ABCD-EFGH".into()),
-        };
-        render_auth(&mut buf, area, &theme, &hint);
-        let text = crate::buffer_text(&buf);
-        assert!(text.contains("Sign in to Codel"), "header: {text:?}");
-        assert!(text.contains("accounts.codel/device"), "url: {text:?}");
-        assert!(text.contains("ABCD-EFGH"), "device code: {text:?}");
-        assert!(
-            text.contains("Waiting for approval"),
-            "waiting line: {text:?}"
-        );
-    }
 
     #[test]
     fn render_auth_shows_trust_question() {

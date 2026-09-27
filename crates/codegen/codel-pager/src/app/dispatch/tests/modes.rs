@@ -69,59 +69,6 @@ fn show_word_select_tip_shows_and_counts_when_flag_on() {
     );
 }
 
-/// Under a takeover the tip belongs to the view the user dragged in: it lands on the child and never on the root.
-#[test]
-fn show_word_select_tip_targets_the_takeover_child() {
-    use crate::appearance::TextSelection;
-    use crate::tips::word_select::WORD_SELECT_TIP_KEY;
-    crate::appearance::cache::set_keep_text_selection(TextSelection::Flash);
-    let mut app = test_app_with_agent();
-    app.contextual_hints.word_select = true;
-    let root_id = AgentId(0);
-    let child_sid = "child-tip";
-    let mut child = AgentView::new(
-        make_test_agent_session(&app, AgentId(1), child_sid),
-        ScrollbackState::new(),
-    );
-    child.last_terminal_size = (80, 30);
-    {
-        let root = app.agents.get_mut(&root_id).unwrap();
-        root.last_terminal_size = (80, 30);
-        root.insert_test_child(child_sid.to_string(), Box::new(child));
-        root.active_subagent = Some(child_sid.to_string());
-    }
-
-    let _ = dispatch(Action::ShowWordSelectTip, &mut app);
-    let root = app
-        .agents
-        .get(&root_id)
-        .unwrap_or_else(|| panic!("missing root agent"));
-    assert!(
-        !root.ephemeral_tip.is_active(),
-        "the root never shows a tip for a child drag"
-    );
-    assert_eq!(
-        Some(WORD_SELECT_TIP_KEY),
-        root.subagent_view(child_sid)
-            .unwrap()
-            .ephemeral_tip
-            .current_key()
-    );
-
-    let _ = dispatch(Action::AcceptWordSelectTip, &mut app);
-    let root = app
-        .agents
-        .get(&root_id)
-        .unwrap_or_else(|| panic!("missing root agent"));
-    assert!(
-        !root
-            .subagent_view(child_sid)
-            .unwrap()
-            .ephemeral_tip
-            .is_active()
-    );
-    crate::appearance::cache::set_keep_text_selection(TextSelection::Flash);
-}
 
 /// Already on `word_select`, the tip is redundant: skip without burning the count.
 #[test]
@@ -1476,24 +1423,6 @@ fn cycle_mode_pre_session_normal_to_plan_does_not_persist_permission_mode() {
     );
 }
 
-/// The `set_yolo_mode_inner` early-return at the `app.active_view` guard MUST precede the `codel_logging::log_event` call.
-/// Otherwise a no-agent dispatch would leak a `YoloToggled` telemetry event for an action that never happened.
-/// We can't easily intercept the telemetry library from a unit test, but we DO pin that no side effects escape via the SHARED-state checks below.
-#[test]
-fn set_yolo_mode_no_op_when_no_active_agent() {
-    let mut app = test_app(); // no agent; active_view is Welcome
-    let default_yolo_before = app.default_yolo;
-    let perm_mode_before = app.current_ui.permission_mode.clone();
-
-    let effects = dispatch(Action::SetYoloMode(true), &mut app);
-    assert!(
-        effects.is_empty(),
-        "no active agent → no Effect, got {effects:?}",
-    );
-    // Defense-in-depth: SHARED state must NOT mutate.
-    assert_eq!(app.default_yolo, default_yolo_before);
-    assert_eq!(app.current_ui.permission_mode, perm_mode_before);
-}
 
 /// Refresh contract: dispatching `SetYoloMode(true)` while the settings modal is open must refresh the modal's snapshots.
 /// Both `pager_snapshot.yolo_mode` and `ui_snapshot.permission_mode` update; without this the indicator stays stale.

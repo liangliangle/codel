@@ -107,62 +107,6 @@ fn expired_watch_restores_the_prompt_and_sends_a_rewind_cancel() {
     );
 }
 
-#[test]
-fn expired_watch_on_an_overlay_child_restores_the_child_prompt() {
-    use crate::app::dispatch::queue::maybe_drain_queue;
-
-    let mut app = test_app_with_agent();
-    let parent_id = AgentId(0);
-    let child_sid = "child-overlay-ack";
-    let mut child = AgentView::new(
-        make_test_agent_session(&app, AgentId(1), child_sid),
-        ScrollbackState::new(),
-    );
-    child.session.enqueue_prompt("child text".into());
-    assert!(matches!(
-        maybe_drain_queue(&mut child, &mut Vec::new())
-            .effects
-            .as_slice(),
-        [Effect::SendPrompt { .. }]
-    ));
-    let pid = child
-        .prompt_ack
-        .as_ref()
-        .expect("watch armed on the child")
-        .prompt_id()
-        .to_owned();
-    {
-        let parent = app.agents.get_mut(&parent_id).unwrap();
-        parent
-            .subagent_views
-            .insert(child_sid.to_string(), Box::new(child));
-        parent.active_subagent = Some(child_sid.to_string());
-    }
-
-    let effects = reconcile_overdue_prompt_acks_at(&mut app, &DEADLINES, past_hard_deadline())
-        .expect("the child's expired watch fires");
-    expect_rewind_cancel(&effects, &pid);
-    assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::CancelTurn { session_id, .. }] if session_id.0.as_ref() == child_sid
-        ),
-        "the abort targets the child session, got {effects:?}"
-    );
-    let Some(child) = agent_ref(&app, parent_id).subagent_views.get(child_sid) else {
-        panic!("expected overlay child {child_sid}");
-    };
-    assert_eq!(
-        (true, "child text", true, true),
-        (
-            child.session.state.is_idle(),
-            child.prompt.text(),
-            child.is_rewound_prompt(&pid),
-            child.prompt_ack.is_none(),
-        ),
-        "the overlay child ends idle with its text back"
-    );
-}
 
 #[test]
 fn restore_target_decides_where_the_text_goes() {

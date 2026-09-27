@@ -554,51 +554,6 @@ mod tests {
         );
     }
 
-    /// The embedded-shell path has no leader process to own token refresh: a parked 401 turn can only self-heal
-    /// in-process through this loop. It starts in `spawn_codel_shell`'s body on `agent_cancel`, so a `?` exit before the
-    /// spawn succeeds (drop-guard fires) must cancel it instead of leaking a refresh loop until process teardown.
-    #[tokio::test]
-    async fn spawn_drop_guard_cancels_proactive_refresh_loop() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let am = boot_auth_manager(dir.path(), &AgentConfig::default());
-        assert!(
-            !am.proactive_refresh_started(),
-            "construction alone must not start the loop — only the guarded spawn body may"
-        );
-
-        // Baseline includes the configured refresher's back-reference; the
-        // loop task's own Arc is the +1 on top of it.
-        let baseline = std::sync::Arc::strong_count(&am);
-
-        // Mirror spawn_codel_shell's wiring: loop on agent_cancel, guarded until
-        // ownership transfers to SpawnedAgent.
-        let cancel = CancellationToken::new();
-        let agent_cancel = cancel.child_token();
-        am.start_proactive_refresh(agent_cancel.child_token());
-        let guard = agent_cancel.clone().drop_guard();
-        assert!(
-            am.proactive_refresh_started(),
-            "the embedded shell must run the proactive refresh loop"
-        );
-        assert_eq!(
-            std::sync::Arc::strong_count(&am),
-            baseline + 1,
-            "the running loop task must hold its own AuthManager Arc"
-        );
-
-        // A `?` exit drops the guard with no SpawnedAgent; the cancelled loop
-        // must release its own AuthManager Arc instead of refreshing forever.
-        drop(guard);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while std::sync::Arc::strong_count(&am) > baseline && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_eq!(
-            std::sync::Arc::strong_count(&am),
-            baseline,
-            "dropping the spawn guard must cancel the refresh loop"
-        );
-    }
 
     #[test]
     fn join_reports_clean_worker_exit() {

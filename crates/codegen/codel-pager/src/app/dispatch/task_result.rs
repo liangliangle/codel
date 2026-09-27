@@ -1,8 +1,5 @@
 //! Async task-result application: routes task results into state.
-use super::auth::{
-    ensure_login_method, handle_auth_complete, handle_auth_url_ready, handle_mcp_auth_trigger_done,
-    handle_mcp_setup_submit_done,
-};
+use super::auth::{handle_mcp_auth_trigger_done, handle_mcp_setup_submit_done};
 use super::billing::{
     PAYWALL_AUTO_CHECK_TIMEOUT, apply_auto_topup, handle_billing_fetched,
     handle_check_subscription_complete, handle_credit_limit_recheck_complete,
@@ -1162,29 +1159,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::AuthComplete { request_seq, meta } => {
-            handle_auth_complete(app, request_seq, meta)
-        }
-        TaskResult::AuthFailed { request_seq, error } => {
-            if let AuthState::Authenticating {
-                request_seq: current_seq,
-                ..
-            } = &app.auth_state
-                && *current_seq == request_seq
-            {
-                app.auth_state = AuthState::Pending { error: Some(error) };
-                app.auth_code_input.reset();
-            }
-            vec![]
-        }
-        TaskResult::AuthUrlReady {
-            request_seq,
-            auth_url,
-            external,
-            mode,
-        } => handle_auth_url_ready(app, request_seq, auth_url, external, mode),
-        TaskResult::AuthCodeSubmitted { .. } => vec![],
-        TaskResult::AuthCancelComplete => vec![],
         TaskResult::McpsListLoaded { agent_id, result } => {
             use crate::views::extensions_modal::TabDataState;
             if let Some(agent) = app.agents.get_mut(&agent_id)
@@ -2115,12 +2089,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             app.on_status_line_command_finished(id, outcome);
             vec![]
         }
-        TaskResult::AuthCopyFeedbackTimeout { generation } => {
-            if generation == app.auth_clipboard_feedback_generation {
-                app.auth_clipboard_delivery = None;
-            }
-            vec![]
-        }
         TaskResult::PaywallCheckTick => {
             let timed_out = app
                 .paywall_check_started
@@ -2153,20 +2121,6 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::GateVerifyTimeout { generation } => handle_gate_verify_timeout(app, generation),
         TaskResult::CreditLimitRecheckComplete { agent_id, meta } => {
             handle_credit_limit_recheck_complete(app, agent_id, meta)
-        }
-        TaskResult::LogoutComplete => {
-            app.auth_state = AuthState::Pending { error: None };
-            app.access_gate_shown_logged = false;
-            app.announcement_cta_impressions_logged.clear();
-            app.gate = None;
-            app.pending_gate_verification = None;
-            app.last_subscription_check_at = None;
-            app.login_method_id = None;
-            ensure_login_method(app);
-            app.auth_clipboard_delivery = None;
-            let effects = dispatch_exit_session(app);
-            app.welcome_prompt_focused = false;
-            effects
         }
         TaskResult::DeepSearchResults {
             host,

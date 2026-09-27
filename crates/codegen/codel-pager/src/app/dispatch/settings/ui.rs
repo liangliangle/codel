@@ -492,7 +492,6 @@ pub(in crate::app::dispatch) fn dispatch_toggle_mouse_capture(app: &mut AppView)
     use std::sync::atomic::Ordering;
 
     // User took ownership; do not restore our previous hold when the native-select surface closes.
-    app.native_select_hold = false;
     let was_enabled = crate::app::MOUSE_CAPTURE_ENABLED.load(Ordering::Acquire);
     let enable = !was_enabled;
     crate::unified_log::info(

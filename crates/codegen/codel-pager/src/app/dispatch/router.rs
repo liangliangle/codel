@@ -1,8 +1,4 @@
 //! Top-level action router: maps actions and action results to handlers.
-use super::auth::{
-    dispatch_cancel_login, dispatch_login, dispatch_logout, dispatch_submit_auth_code,
-    dispatch_switch_account,
-};
 use super::billing::dispatch_open_supercodel_url;
 use super::ctx::{
     active_agent_session_id, get_active_agent_mut, navigate_clearing_selection, open_url_or_show,
@@ -122,23 +118,6 @@ use crate::app::consent::ConsentState;
 use crate::scrollback::types::DisplayMode;
 use crate::views::session_picker::CONTENT_EXPAND_OFFSET;
 use codel_logging::session_ctx::log_event;
-pub(super) fn dispatch_copy_auth_url(
-    app: &mut AppView,
-    copy: impl FnOnce(&str) -> crate::clipboard::ClipboardDelivery,
-) -> Vec<Effect> {
-    let AuthState::Authenticating {
-        auth_url: Some(url),
-        ..
-    } = &app.auth_state
-    else {
-        return vec![];
-    };
-    app.auth_clipboard_delivery = Some(copy(url));
-    app.auth_clipboard_feedback_generation = app.auth_clipboard_feedback_generation.wrapping_add(1);
-    vec![Effect::ScheduleClearAuthCopyFeedback {
-        generation: app.auth_clipboard_feedback_generation,
-    }]
-}
 /// Dispatch an action: mutate state, return effects to execute.
 /// The returned `Vec<Effect>` may be empty (pure state mutation) or contain async work that the event loop should spawn.
 /// Do not extract a returning arm into a handler: as a delegation its `return`s become plain arm values and start flowing through the tail.
@@ -1182,8 +1161,6 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PermissionSelect(option_id) => dispatch_permission_select(app, option_id),
         Action::PermissionFollowup(text) => dispatch_permission_followup(app, text),
         Action::PermissionCancel => dispatch_permission_cancel(app),
-        Action::Logout => dispatch_logout(app),
-        Action::SwitchAccount => dispatch_switch_account(app),
         Action::CheckSubscription => vec![Effect::CheckSubscription { verify: None }],
         Action::OpenSupercodelUrl => dispatch_open_supercodel_url(app),
         Action::RetryCreditLimitPrompt => super::billing::dispatch_retry_credit_limit_prompt(app),
@@ -1238,20 +1215,6 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::OpenPrevLink => {
             with_active_agent(app, |agent| agent.cycle_highlighted_link(false));
-            vec![]
-        }
-        Action::Login => dispatch_login(app),
-        Action::CancelLogin => dispatch_cancel_login(app),
-        Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
-        Action::CopyAuthUrl => {
-            dispatch_copy_auth_url(app, crate::clipboard::SystemClipboard::try_set)
-        }
-        Action::ShowRawAuthUrl => {
-            app.auth_show_raw_url = true;
-            vec![]
-        }
-        Action::HideRawAuthUrl => {
-            app.auth_show_raw_url = false;
             vec![]
         }
         Action::TrustFolder => dispatch_trust_folder(app),
