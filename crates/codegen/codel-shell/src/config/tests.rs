@@ -3144,54 +3144,6 @@ fn config_layers_user_overrides_managed() {
             cfg.features.telemetry
         );
 }
-/// A provider in a trusted disk layer resolves through the real `ConfigLayers` and `effective_config_disk_only` parse path.
-/// The direct-TOML parse tests bypass that path.
-/// (`ConfigLayers` has no project slot, so a repo `.codel/config.toml` structurally cannot supply one.)
-#[test]
-fn auth_provider_honored_only_from_trusted_disk_layers() {
-    let layers = ConfigLayers {
-        managed: toml::from_str(
-                "[auth_provider.corp]\ncommand = \"/usr/local/bin/corp-token\"\n",
-            )
-            .unwrap(),
-        ..Default::default()
-    };
-    let cfg = crate::agent::config::Config::new_from_toml_cfg(
-            &layers.effective_config_disk_only(),
-        )
-        .unwrap();
-    assert_eq!(
-            cfg.auth_providers.get("corp").map(|c| c.command.as_str()),
-            Some("/usr/local/bin/corp-token"),
-            "a provider in a trusted disk layer is honored"
-        );
-}
-#[test]
-fn model_provider_honored_only_from_trusted_disk_layers() {
-    let layers = ConfigLayers {
-        managed: toml::from_str(
-                "[model_providers.gateway]\nbase_url = \"https://gateway.example/v1\"\n\
-                 [model_providers.gateway.auth]\ncommand = \"/usr/local/bin/gw-token\"\n",
-            )
-            .unwrap(),
-        ..Default::default()
-    };
-    let cfg = crate::agent::config::Config::new_from_toml_cfg(
-            &layers.effective_config_disk_only(),
-        )
-        .unwrap();
-    assert!(
-            cfg.model_providers.contains_key("gateway"),
-            "a model provider in a trusted disk layer is honored"
-        );
-    assert_eq!(
-            cfg.auth_providers
-                .get("model_provider:gateway")
-                .map(|c| c.command.as_str()),
-            Some("/usr/local/bin/gw-token"),
-            "its inline auth registers as a synthetic auth provider"
-        );
-}
 /// REGRESSION: the real enterprise two-file merge must resolve the deployment-config fetch to cli-chat-proxy, never the model host. It must also preserve the customer's S3 trace-upload endpoint.
 /// The merge layers `managed_config.toml` (proxy and BYO model host) with `requirements.toml` (deployment key and S3 trace upload). It runs via the actual `ConfigLayers::effective_config()` path.
 #[test]

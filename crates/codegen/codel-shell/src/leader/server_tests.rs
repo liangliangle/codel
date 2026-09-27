@@ -214,56 +214,6 @@ async fn workspace_start_errors_when_cancelled_before_auth() {
     );
 }
 
-/// A hub-less exposure never arms a metric pump, and every teardown path (pause, a second pause,
-/// stop) drains without hanging and leaves the slot empty. The pump itself has no test
-/// constructor, so a real drain-once assertion is out of reach here.
-#[tokio::test]
-async fn hubless_workspace_exposure_arms_no_metric_pump_and_tears_down_cleanly() {
-    let handle = codel_workspace::WorkspaceHandle::for_test();
-    assert!(arm_metric_donation(&handle).await.is_none());
-
-    let state = default_test_control_state(Path::new("/tmp/codel-ws-metric-test.sock"));
-    state
-        .workspace
-        .exposure
-        .store(Some(Arc::new(WorkspaceExposure {
-            handle,
-            hub_url: "wss://hub.example/v1/tools".to_owned(),
-            cwd: PathBuf::from("/repo"),
-            started_at: Instant::now(),
-            paused: AtomicBool::new(false),
-            metric_donation: Mutex::new(None),
-        })));
-
-    for _ in 0..2 {
-        let payload = tokio::time::timeout(
-            Duration::from_secs(5),
-            handle_workspace_pause(state.clone()),
-        )
-        .await
-        .expect("pause drains promptly")
-        .unwrap();
-        assert!(matches!(
-            payload,
-            ControlPayload::WorkspaceStatus {
-                state: ref s, ..
-            } if s == "paused"
-        ));
-        let exposure = state.workspace.exposure.load_full().unwrap();
-        assert!(exposure.metric_donation.lock().is_none());
-    }
-
-    let payload =
-        tokio::time::timeout(Duration::from_secs(5), handle_workspace_stop(state.clone()))
-            .await
-            .expect("stop drains promptly")
-            .unwrap();
-    assert!(matches!(
-        payload,
-        ControlPayload::WorkspaceStatus { state: ref s, .. } if s == "none"
-    ));
-    assert!(state.workspace.exposure.load().is_none());
-}
 
 async fn setup_test_server(
     temp: &TempDir,

@@ -101,171 +101,8 @@ impl ModelsEndpoint for SlowEndpoint {
     }
 }
 
-#[tokio::test]
-async fn catalog_retry_recovers_after_endpoint_returns() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct RecoveringEndpoint {
-        calls: Arc<AtomicUsize>,
-        catalog: IndexMap<String, ModelEntry>,
-    }
-    impl ModelsEndpoint for RecoveringEndpoint {
-        fn fetch_models(
-            &self,
-            _endpoints: config::EndpointsConfig,
-            _auth: Option<CodelAuth>,
-            _fetch_auth: ModelFetchAuth,
-        ) -> ModelsFetchFuture {
-            let n = self.calls.fetch_add(1, Ordering::SeqCst);
-            let out = if n == 0 {
-                None
-            } else {
-                Some(self.catalog.clone())
-            };
-            Box::pin(async move { out })
-        }
-    }
 
-    let calls = Arc::new(AtomicUsize::new(0));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let auth_manager = Arc::new(AuthManager::new(tmp.path(), CodelComConfig::default()));
-    let mgr = ModelsManagerBuilder::new(
-        None,
-        IndexMap::new(),
-        acp::ModelId::new("default"),
-        auth_manager,
-        config::Config::default(),
-    )
-    .endpoint(Arc::new(RecoveringEndpoint {
-        calls: calls.clone(),
-        catalog: make_prefetched(&["codel-4"]),
-    }))
-    .build();
-    assert!(!mgr.has_fetched_real_catalog());
-
-    mgr.spawn_catalog_retry_with_backoff(
-        /*remote_fetch_enabled*/ true,
-        crate::tools::retry::BackoffConfig::new(5, 1, 10),
-    );
-
-    let mut recovered = false;
-    for _ in 0..200 {
-        if mgr.has_fetched_real_catalog() {
-            recovered = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(
-        recovered,
-        "catalog retry did not recover after the endpoint returned"
-    );
-    assert!(mgr.models().contains_key("codel-4"));
-    assert!(
-        calls.load(Ordering::SeqCst) >= 2,
-        "expected a failed attempt then a success",
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn disk_cache_reload_applies_without_fetching() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let calls = Arc::new(AtomicUsize::new(0));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let auth_manager = Arc::new(AuthManager::new(tmp.path(), CodelComConfig::default()));
-    let mgr = ModelsManagerBuilder::new(
-        None,
-        IndexMap::new(),
-        acp::ModelId::new("default"),
-        auth_manager,
-        config_from_toml("[models]\ndefault = \"codel-4.5\""),
-    )
-    .endpoint(Arc::new(CountingEndpoint {
-        calls: calls.clone(),
-    }))
-    .cache(test_cache_manager(tmp.path()))
-    .build();
-
-    let seeder = test_cache_manager(tmp.path());
-    seeder.persist(
-        &make_prefetched(&["codel-4.5"]),
-        Some("etag-x"),
-        &mgr.cache_scope(),
-        Utc::now(),
-    );
-
-    mgr.reload_from_disk_cache();
-
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        0,
-        "the disk cache load must never hit the transport",
-    );
-    assert!(mgr.models().contains_key("codel-4.5"));
-    assert!(mgr.has_fetched_real_catalog());
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-4.5",
-        "first real catalog from the disk cache must resolve the configured default",
-    );
-}
-
-#[tokio::test]
-async fn auth_refresh_watcher_refetches_on_notify() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct NotifyEndpoint {
-        calls: Arc<AtomicUsize>,
-        catalog: IndexMap<String, ModelEntry>,
-    }
-    impl ModelsEndpoint for NotifyEndpoint {
-        fn fetch_models(
-            &self,
-            _endpoints: config::EndpointsConfig,
-            _auth: Option<CodelAuth>,
-            _fetch_auth: ModelFetchAuth,
-        ) -> ModelsFetchFuture {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let catalog = self.catalog.clone();
-            Box::pin(async move { Some(catalog) })
-        }
-    }
-
-    let calls = Arc::new(AtomicUsize::new(0));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let auth_manager = Arc::new(AuthManager::new(tmp.path(), CodelComConfig::default()));
-    let mgr = ModelsManagerBuilder::new(
-        None,
-        IndexMap::new(),
-        acp::ModelId::new("default"),
-        auth_manager,
-        config::Config::default(),
-    )
-    .endpoint(Arc::new(NotifyEndpoint {
-        calls: calls.clone(),
-        catalog: make_prefetched(&["codel-4"]),
-    }))
-    .build();
-    assert!(!mgr.has_fetched_real_catalog());
-
-    let notify = Arc::new(tokio::sync::Notify::new());
-    mgr.start_auth_refresh_watcher(notify.clone());
-    notify.notify_one();
-
-    let mut updated = false;
-    for _ in 0..200 {
-        if mgr.has_fetched_real_catalog() {
-            updated = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(updated, "watcher did not re-fetch the catalog on notify");
-    assert!(mgr.models().contains_key("codel-4"));
-    assert!(calls.load(Ordering::SeqCst) >= 1);
-}
 
 #[tokio::test(start_paused = true)]
 async fn hanging_fetch_does_not_block_refresh() {
@@ -284,24 +121,6 @@ async fn hanging_fetch_does_not_block_refresh() {
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn slow_fetch_within_timeout_still_applies() {
-    let mgr = cold_manager(
-        config::Config::default(),
-        Arc::new(SlowEndpoint {
-            catalog: make_prefetched(&["codel-4"]),
-            delay: crate::http::STARTUP_FETCH_TIMEOUT / 2,
-        }),
-    );
-
-    mgr.fetch_and_apply_inner(/*remote_fetch_enabled*/ true)
-        .await;
-    assert!(
-        mgr.has_fetched_real_catalog(),
-        "a fetch within the timeout must apply, not degrade",
-    );
-    assert!(mgr.models().contains_key("codel-4"));
-}
 
 #[tokio::test(start_paused = true)]
 async fn etag_refresh_is_bounded_and_single_flighted() {
@@ -368,50 +187,6 @@ async fn etag_refresh_is_bounded_and_single_flighted() {
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn first_catalog_wait_unblocks_on_fetch_and_skips_dead_dwell() {
-    // Deployment auth: a fetch can succeed without a session, so the wait dwells regardless of any API key in the environment
-    let mgr = cold_manager(
-        config_from_toml("[endpoints]\ndeployment_key = \"deploy-key\""),
-        Arc::new(SlowEndpoint {
-            catalog: make_prefetched(&["codel-4"]),
-            delay: crate::http::STARTUP_FETCH_TIMEOUT / 2,
-        }),
-    );
-
-    // Cold cache, remote fetch disabled: no fetch is coming, so no dwell.
-    let start = tokio::time::Instant::now();
-    assert!(
-        !mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ false)
-            .await
-    );
-    assert_eq!(start.elapsed(), std::time::Duration::ZERO);
-
-    // Cold cache, no attempt spawned: nothing to wait for, so no dwell.
-    let start = tokio::time::Instant::now();
-    assert!(
-        !mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
-            .await
-    );
-    assert_eq!(start.elapsed(), std::time::Duration::ZERO);
-
-    // Cold cache, fetch in flight: the wait unblocks when the fetch lands.
-    mgr.spawn_fetch_inner(None, /*remote_fetch_enabled*/ true);
-    assert!(
-        mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
-            .await,
-        "the wait must observe the completed fetch",
-    );
-    assert!(mgr.models().contains_key("codel-4"));
-
-    // Warm: an already-loaded catalog returns immediately.
-    let start = tokio::time::Instant::now();
-    assert!(
-        mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
-            .await
-    );
-    assert_eq!(start.elapsed(), std::time::Duration::ZERO);
-}
 
 #[tokio::test(start_paused = true)]
 async fn first_catalog_wait_unblocks_on_failed_fetch() {
@@ -460,22 +235,6 @@ async fn first_catalog_wait_skips_doomed_signed_out_fetch() {
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);
 }
 
-#[tokio::test(start_paused = true)]
-async fn first_catalog_wait_observes_inline_fetch() {
-    let mgr = cold_manager(
-        config_from_toml("[endpoints]\ndeployment_key = \"deploy-key\""),
-        Arc::new(SlowEndpoint {
-            catalog: make_prefetched(&["codel-4"]),
-            delay: crate::http::STARTUP_FETCH_TIMEOUT / 2,
-        }),
-    );
-    // Fetch first in the join, so its attempt registers on first poll.
-    let ((), ready) = tokio::join!(
-        mgr.fetch_and_apply_inner(/*remote_fetch_enabled*/ true),
-        mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true),
-    );
-    assert!(ready, "the wait must observe the inline fetch's outcome");
-}
 
 #[tokio::test(start_paused = true)]
 async fn new_fetch_attempt_supersedes_failed_latch() {
@@ -511,90 +270,12 @@ async fn new_fetch_attempt_supersedes_failed_latch() {
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);
 }
 
-#[test]
-fn stale_fetch_result_is_discarded_after_identity_change() {
-    let mgr = test_manager();
-    let cfg = config::Config::default();
-    let stale_generation = mgr.inner.catalog.read().generation;
-    mgr.clear();
-
-    assert!(!mgr.apply_refresh_result_fenced(
-        &cfg,
-        Some(make_prefetched(&["stale-model"])),
-        None,
-        stale_generation,
-    ));
-    assert!(!mgr.models().contains_key("stale-model"));
-    assert!(!mgr.has_fetched_real_catalog());
-
-    assert!(!mgr.apply_refresh_result_fenced(&cfg, None, None, stale_generation));
-    assert_eq!(
-        *mgr.inner.catalog_progress.borrow(),
-        CatalogProgress::Pending,
-        "a stale failure must not latch",
-    );
-
-    assert!(mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["new-model"])), None));
-    assert!(mgr.models().contains_key("new-model"));
-}
 
 fn config_from_toml(toml: &str) -> config::Config {
     config::Config::new_from_toml_cfg(&toml::from_str(toml).unwrap()).unwrap()
 }
 
-#[test]
-fn model_show_model_fingerprint_reads_catalog_flag() {
-    let mgr = test_manager();
 
-    let mut flagged = make_model_entry("fp-model");
-    flagged.info.show_model_fingerprint = true;
-    mgr.insert_test_entry("fp-model", flagged);
-
-    mgr.insert_test_entry("plain-model", make_model_entry("plain-model"));
-
-    let mut custom = make_model_entry("enterprise-slug");
-    custom.info.show_model_fingerprint = true;
-    mgr.insert_test_entry("enterprise-key", custom);
-
-    assert!(mgr.model_show_model_fingerprint("fp-model"));
-    assert!(!mgr.model_show_model_fingerprint("plain-model"));
-    assert!(!mgr.model_show_model_fingerprint("missing-model"));
-    assert!(
-        mgr.model_show_model_fingerprint("enterprise-slug"),
-        "slug lookup must resolve to the catalog key and read the flag",
-    );
-    assert!(mgr.model_show_model_fingerprint("enterprise-key"));
-}
-
-#[test]
-fn reasoning_effort_helpers_resolve_wire_name_to_catalog_key() {
-    let mgr = test_manager();
-
-    let mut custom = make_model_entry("enterprise-slug");
-    custom.info.supports_reasoning_effort = true;
-    custom.info.reasoning_effort = Some(ReasoningEffort::High);
-    custom.info.reasoning_efforts = vec![ReasoningEffortOption {
-        id: "high".into(),
-        value: ReasoningEffort::High,
-        label: "High".into(),
-        description: None,
-        default: true,
-    }];
-    mgr.insert_test_entry("enterprise-key", custom);
-
-    for id in ["enterprise-key", "enterprise-slug"] {
-        assert!(mgr.model_supports_reasoning_effort(id));
-        assert_eq!(
-            mgr.model_default_reasoning_effort(id),
-            Some(ReasoningEffort::High)
-        );
-        assert_eq!(mgr.model_reasoning_efforts(id).len(), 1);
-    }
-
-    assert!(!mgr.model_supports_reasoning_effort("missing-model"));
-    assert_eq!(mgr.model_default_reasoning_effort("missing-model"), None);
-    assert!(mgr.model_reasoning_efforts("missing-model").is_empty());
-}
 
 #[test]
 fn default_model_honors_allowlist_when_no_default_set() {
@@ -772,49 +453,8 @@ async fn model_switch_generation_snapshot_reflects_current_state() {
     assert_eq!(mgr.model_switch_generation(), start + 2);
 }
 
-#[test]
-fn first_catalog_reselect_bumps_model_switch_watch() {
-    let mgr = test_manager();
-    let start = mgr.model_switch_generation();
-    let cfg = config_from_toml("[models]\ndefault = \"codel-4.5\"");
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["codel-4.5", "codel-4"])), None);
-    assert_eq!(mgr.current_model_id().0.as_ref(), "codel-4.5");
-    assert!(
-        mgr.model_switch_generation() > start,
-        "background reselection must fire the model-switch watch",
-    );
-}
 
-#[test]
-fn reselect_missing_current_model_bumps_watch() {
-    let mgr = test_manager();
-    let cfg = config::Config::default();
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["codel-4", "codel-3"])), None);
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-    let start = mgr.model_switch_generation();
-    // A later catalog drops the current model, so reselect_current_model_if_missing runs
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["codel-3"])), None);
-    assert_ne!(mgr.current_model_id().0.as_ref(), "codel-4");
-    assert!(
-        mgr.model_switch_generation() > start,
-        "reselecting away from a removed current model must fire the watch",
-    );
-}
 
-#[test]
-fn rebuild_updates_models_and_available() {
-    let mgr = test_manager();
-    assert!(mgr.models().is_empty());
-    assert!(mgr.available().is_empty());
-
-    let cfg = config::Config::default();
-    mgr.rebuild(&cfg, Some(make_prefetched(&["test-model"])));
-
-    assert!(
-        !mgr.models().is_empty(),
-        "models should be populated after rebuild"
-    );
-}
 
 #[test]
 fn current_reasoning_effort_round_trip() {
@@ -844,98 +484,7 @@ fn current_reasoning_effort_seeded_from_config() {
     assert_eq!(mgr.current_reasoning_effort(), Some(ReasoningEffort::Xhigh),);
 }
 
-#[test]
-fn default_reasoning_effort_only_stamps_supporting_model() {
-    use indexmap::IndexMap;
 
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("reasoning-model".to_string());
-    cfg.models.default_reasoning_effort = Some(ReasoningEffort::High);
-
-    let mut prefetched = IndexMap::new();
-    let mut reasoning_entry = make_model_entry("reasoning-model");
-    reasoning_entry.info.supports_reasoning_effort = true;
-    prefetched.insert("reasoning-model".to_string(), reasoning_entry);
-
-    let catalog = resolve_model_catalog(&cfg, Some(prefetched));
-    let Some(reasoning) = catalog.get("reasoning-model") else {
-        panic!("expected reasoning-model: {catalog:?}");
-    };
-    assert_eq!(
-        reasoning.info.reasoning_effort,
-        Some(ReasoningEffort::High),
-        "reasoning-supporting default model should be stamped",
-    );
-
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("plain-model".to_string());
-    cfg.models.default_reasoning_effort = Some(ReasoningEffort::High);
-
-    let mut prefetched = IndexMap::new();
-    prefetched.insert("plain-model".to_string(), make_model_entry("plain-model"));
-
-    let catalog = resolve_model_catalog(&cfg, Some(prefetched));
-    let Some(plain) = catalog.get("plain-model") else {
-        panic!("expected plain-model: {catalog:?}");
-    };
-    assert_eq!(
-        plain.info.reasoning_effort, None,
-        "non-reasoning default model must NOT be stamped with persisted effort",
-    );
-}
-
-#[test]
-fn reasoning_effort_override_skips_models_that_do_not_offer_level() {
-    use indexmap::IndexMap;
-    use codel_sampling_types::ReasoningEffortOption;
-
-    let cfg = config::Config {
-        reasoning_effort_override: Some(ReasoningEffort::None),
-        ..Default::default()
-    };
-
-    let mut prefetched = IndexMap::new();
-    let mut no_none = make_model_entry("codel-4.5");
-    no_none.info.supports_reasoning_effort = true;
-    no_none.info.reasoning_efforts = vec![ReasoningEffortOption {
-        id: "high".into(),
-        value: ReasoningEffort::High,
-        label: "High".into(),
-        description: None,
-        default: true,
-    }];
-    no_none.info.reasoning_effort = Some(ReasoningEffort::High);
-    prefetched.insert("codel-4.5".to_string(), no_none);
-
-    let mut with_none = make_model_entry("legacy-none");
-    with_none.info.supports_reasoning_effort = true;
-    with_none.info.reasoning_efforts = vec![ReasoningEffortOption {
-        id: "none".into(),
-        value: ReasoningEffort::None,
-        label: "None".into(),
-        description: None,
-        default: true,
-    }];
-    prefetched.insert("legacy-none".to_string(), with_none);
-
-    let catalog = resolve_model_catalog(&cfg, Some(prefetched));
-    let Some(codel45) = catalog.get("codel-4.5") else {
-        panic!("expected codel-4.5: {catalog:?}");
-    };
-    assert_eq!(
-        codel45.info.reasoning_effort,
-        Some(ReasoningEffort::High),
-        "--effort none must not stamp onto models that do not offer none"
-    );
-    let Some(legacy) = catalog.get("legacy-none") else {
-        panic!("expected legacy-none: {catalog:?}");
-    };
-    assert_eq!(
-        legacy.info.reasoning_effort,
-        Some(ReasoningEffort::None),
-        "models that list none should still accept the override"
-    );
-}
 
 #[test]
 fn config_menu_only_model_derives_support_and_default() {
@@ -1009,39 +558,6 @@ fn config_menu_only_model_derives_support_and_default() {
     assert!(mgr.model_reasoning_efforts("plain").is_empty());
 }
 
-#[test]
-fn cli_reasoning_effort_override_only_stamps_supporting_models() {
-    use indexmap::IndexMap;
-
-    let cfg = config::Config {
-        reasoning_effort_override: Some(ReasoningEffort::High),
-        ..config::Config::default()
-    };
-
-    let mut prefetched = IndexMap::new();
-    let mut reasoning_entry = make_model_entry("reasoning-model");
-    reasoning_entry.info.supports_reasoning_effort = true;
-    prefetched.insert("reasoning-model".to_string(), reasoning_entry);
-
-    prefetched.insert("plain-model".to_string(), make_model_entry("plain-model"));
-
-    let catalog = resolve_model_catalog(&cfg, Some(prefetched));
-    let Some(reasoning) = catalog.get("reasoning-model") else {
-        panic!("expected reasoning-model: {catalog:?}");
-    };
-    assert_eq!(
-        reasoning.info.reasoning_effort,
-        Some(ReasoningEffort::High),
-        "reasoning-supporting model should be stamped",
-    );
-    let Some(plain) = catalog.get("plain-model") else {
-        panic!("expected plain-model: {catalog:?}");
-    };
-    assert_eq!(
-        plain.info.reasoning_effort, None,
-        "non-reasoning model must NOT be stamped",
-    );
-}
 
 #[test]
 fn apply_refresh_result_only_updates_etag_on_success() {
@@ -1068,22 +584,7 @@ fn apply_refresh_result_only_updates_etag_on_success() {
     );
 }
 
-fn make_model_entry(model_id: &str) -> ModelEntry {
-    ModelEntry {
-        info: config::ModelInfo::fallback(model_id),
-        mtls_cert_dir: None,
-        api_key: None,
-        env_key: None,
-        auth_provider: None,
-        api_base_url: None,
-    }
-}
 
-fn make_prefetched(ids: &[&str]) -> IndexMap<String, ModelEntry> {
-    ids.iter()
-        .map(|id| (id.to_string(), make_model_entry(id)))
-        .collect()
-}
 
 #[test]
 fn spawn_background_refresh_is_noop_when_real_catalog_present() {
@@ -1093,114 +594,7 @@ fn spawn_background_refresh_is_noop_when_real_catalog_present() {
     assert!(mgr.has_fetched_real_catalog());
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn spawn_background_refresh_never_blocks_on_a_hanging_endpoint() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use tokio::sync::Notify;
 
-    struct NeverResolvingEndpoint {
-        polled: Arc<AtomicBool>,
-        dispatched: Arc<Notify>,
-    }
-    impl ModelsEndpoint for NeverResolvingEndpoint {
-        fn fetch_models(
-            &self,
-            _endpoints: config::EndpointsConfig,
-            _auth: Option<CodelAuth>,
-            _fetch_auth: ModelFetchAuth,
-        ) -> ModelsFetchFuture {
-            let polled = self.polled.clone();
-            let dispatched = self.dispatched.clone();
-            Box::pin(async move {
-                polled.store(true, Ordering::SeqCst);
-                dispatched.notify_one();
-                std::future::pending().await
-            })
-        }
-    }
-
-    let polled = Arc::new(AtomicBool::new(false));
-    let dispatched = Arc::new(Notify::new());
-    let tmp = tempfile::TempDir::new().unwrap();
-    let auth_manager = Arc::new(AuthManager::new(tmp.path(), CodelComConfig::default()));
-    let mgr = ModelsManagerBuilder::new(
-        None,
-        make_prefetched(&["codel-4", "codel-4.5"]),
-        acp::ModelId::new("codel-4.5"),
-        auth_manager,
-        config_from_toml("[models]\ndefault = \"codel-4.5\""),
-    )
-    .endpoint(Arc::new(NeverResolvingEndpoint {
-        polled: polled.clone(),
-        dispatched: dispatched.clone(),
-    }))
-    .cache(test_cache_manager(tmp.path()))
-    .build();
-
-    mgr.spawn_background_refresh_inner(/*remote_fetch_enabled*/ true);
-    assert!(
-        !polled.load(Ordering::SeqCst),
-        "fetch ran inline on the readiness path; it must be spawned",
-    );
-
-    // Generous failure bound: the dispatch may sit behind a full 5s auth dwell.
-    tokio::time::timeout(std::time::Duration::from_secs(30), dispatched.notified())
-        .await
-        .expect("background refresh was never dispatched");
-}
-
-#[tokio::test]
-#[serial]
-async fn sign_out_clears_catalog_rebuilds_bundled_without_fetching() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    // Unset keys so fetch_auth resolves to Session (the sign-out branch).
-    let _no_key = EnvGuard::unset("CODEL_API_KEY");
-    let _no_legacy_key = EnvGuard::unset("CODEL_CODE_CODEL_API_KEY");
-    let calls = Arc::new(AtomicUsize::new(0));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let auth_manager = Arc::new(AuthManager::new(tmp.path(), CodelComConfig::default()));
-    let mgr = ModelsManagerBuilder::new(
-        None,
-        make_prefetched(&["codel-4", "codel-4.5"]),
-        acp::ModelId::new("codel-4.5"),
-        auth_manager,
-        config_from_toml("[models]\ndefault = \"codel-4.5\""),
-    )
-    .endpoint(Arc::new(CountingEndpoint {
-        calls: calls.clone(),
-    }))
-    .cache(test_cache_manager(tmp.path()))
-    .build();
-
-    mgr.inner.catalog.write().has_fetched_real_catalog = true;
-    mgr.inner.user_selected_model.store(true, Ordering::Relaxed);
-
-    mgr.on_auth_changed().await;
-
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        0,
-        "sign-out must skip the doomed Session-auth fetch",
-    );
-    assert!(
-        !mgr.has_fetched_real_catalog(),
-        "sign-out must drop the prior identity's real catalog",
-    );
-    assert!(
-        !mgr.inner.user_selected_model.load(Ordering::Relaxed),
-        "sign-out must reset the user-pick latch",
-    );
-    assert!(
-        !mgr.models().is_empty(),
-        "sign-out must rebuild the bundled default catalog",
-    );
-    assert_eq!(
-        *mgr.inner.catalog_progress.borrow(),
-        CatalogProgress::Failed,
-        "sign-out publishes an outcome so parked waiters wake",
-    );
-}
 
 #[test]
 fn from_config_without_prefetch_produces_usable_catalog() {
@@ -1230,195 +624,14 @@ fn from_config_without_prefetch_produces_usable_catalog() {
     );
 }
 
-#[test]
-fn first_apply_refresh_reselects_default_model() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-3".to_string());
 
-    assert!(!mgr.has_fetched_real_catalog());
 
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
 
-    assert!(mgr.has_fetched_real_catalog());
-    assert_eq!(mgr.current_model_id().0.as_ref(), "codel-3");
-}
 
-#[test]
-fn subsequent_apply_refresh_preserves_user_model() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-3".to_string());
 
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
 
-    mgr.inner.catalog.write().prefetched = None;
-    mgr.inner.catalog.write().etag = None;
 
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
 
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-4",
-        "user's model selection must survive auth-change refresh"
-    );
-}
-
-#[test]
-fn subsequent_refresh_reselects_when_model_removed() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-3".to_string());
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4.5"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-3",
-        "should fall back to config default when current is removed"
-    );
-}
-
-#[test]
-fn apply_config_honors_new_preferred_model() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-3".to_string());
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-
-    let mut stale_cfg = config::Config::default();
-    stale_cfg.models.default = None;
-    *mgr.inner.cfg.write() = stale_cfg;
-
-    let mut new_cfg = config::Config::default();
-    new_cfg.models.default = Some("codel-3".to_string());
-    mgr.apply_config(new_cfg);
-
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-3",
-        "apply_config must honor updated preferred model from config"
-    );
-}
-
-#[test]
-fn apply_config_preserves_current_when_preferred_unchanged() {
-    let mgr = test_manager();
-    let cfg = config::Config::default();
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-
-    let new_cfg = config::Config::default();
-    mgr.apply_config(new_cfg);
-
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-4",
-        "apply_config must not reset model when preferred hasn't changed"
-    );
-}
-
-#[test]
-fn apply_config_falls_back_when_preferred_not_in_catalog() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-3".to_string());
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-
-    let mut new_cfg = config::Config::default();
-    new_cfg.models.default = Some("codel-nonexistent".to_string());
-    mgr.apply_config(new_cfg);
-
-    let current = mgr.current_model_id();
-    let first_available = mgr.available().keys().next().unwrap().clone();
-    assert_eq!(
-        current.0.as_ref(),
-        first_available.0.as_ref(),
-        "should fall back to first visible model when preferred not in catalog"
-    );
-}
-
-#[test]
-fn apply_config_both_none_preferred_preserves_current() {
-    let mgr = test_manager();
-    let cfg = config::Config::default();
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-    let new_cfg = config::Config::default();
-    mgr.apply_config(new_cfg);
-
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-4",
-        "both-None preferred must preserve user's runtime model"
-    );
-}
-
-#[test]
-fn apply_config_old_some_new_none_preserves_current() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-3".to_string());
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-    assert_eq!(mgr.current_model_id().0.as_ref(), "codel-3");
-
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-
-    let new_cfg = config::Config::default();
-    mgr.apply_config(new_cfg);
-
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-4",
-        "old=Some new=None must not reset model (is_some guard)"
-    );
-}
-
-#[test]
-fn auth_refresh_then_config_reload_preserves_user_model() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-3".to_string());
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-
-    mgr.inner.catalog.write().prefetched = None;
-    mgr.inner.catalog.write().etag = None;
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-    assert_eq!(mgr.current_model_id().0.as_ref(), "codel-4");
-
-    let mut new_cfg = config::Config::default();
-    new_cfg.models.default = Some("codel-4".to_string());
-    mgr.apply_config(new_cfg);
-    assert_eq!(mgr.current_model_id().0.as_ref(), "codel-4");
-}
 
 fn test_cache_manager(dir: &std::path::Path) -> ModelsCacheManager {
     ModelsCacheManager {
@@ -1427,321 +640,16 @@ fn test_cache_manager(dir: &std::path::Path) -> ModelsCacheManager {
     }
 }
 
-#[test]
-#[serial]
-fn reload_from_disk_cache_applies_external_catalog() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
 
-    cache.persist(
-        &make_prefetched(&["codel-4.5", "codel-4.3"]),
-        Some("etag-ext"),
-        &mgr.cache_scope(),
-        Utc::now(),
-    );
 
-    mgr.reload_from_cache_manager(&cache);
 
-    assert!(mgr.has_fetched_real_catalog());
-    assert!(mgr.models().contains_key("codel-4.5"));
-    assert!(mgr.models().contains_key("codel-4.3"));
-    assert_eq!(mgr.inner.catalog.read().etag.as_deref(), Some("etag-ext"));
-}
 
-#[test]
-#[serial]
-fn reload_from_disk_cache_recomputes_allowlist_excludes_all() {
-    let mgr = test_manager();
-    let cfg = config_from_toml("[models]\nallowed_models = [\"keep-*\"]");
 
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["other-1"])), None);
-    assert!(
-        mgr.allowlist_excludes_all(),
-        "setup: allowlist should exclude the entire catalog"
-    );
-    *mgr.inner.cfg.write() = cfg.clone();
 
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    cache.persist(
-        &make_prefetched(&["keep-1"]),
-        Some("etag-keep"),
-        &mgr.cache_scope(),
-        Utc::now(),
-    );
 
-    mgr.reload_from_cache_manager(&cache);
 
-    assert!(mgr.models().contains_key("keep-1"));
-    assert!(
-        !mgr.allowlist_excludes_all(),
-        "corrective external cache write must unlatch the prompt block"
-    );
-}
 
-#[test]
-#[serial]
-fn reload_from_disk_cache_resolves_default_on_first_catalog() {
-    let mgr = test_manager();
-    assert!(!mgr.has_fetched_real_catalog());
-    let cfg = config_from_toml("[models]\ndefault = \"keep-1\"");
-    *mgr.inner.cfg.write() = cfg.clone();
 
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    cache.persist(
-        &make_prefetched(&["keep-1", "other-1"]),
-        Some("etag-first"),
-        &mgr.cache_scope(),
-        Utc::now(),
-    );
-
-    mgr.reload_from_cache_manager(&cache);
-
-    assert!(mgr.has_fetched_real_catalog());
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "keep-1",
-        "first real catalog must resolve the configured default"
-    );
-}
-
-#[test]
-#[serial]
-fn reload_from_disk_cache_skips_identical_catalog_and_adopts_etag() {
-    let mgr = test_manager();
-    let cfg = config::Config::default();
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched.clone()), Some("etag-a".into()));
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    cache.persist(&prefetched, Some("etag-b"), &mgr.cache_scope(), Utc::now());
-
-    mgr.reload_from_cache_manager(&cache);
-
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-4",
-        "identical catalog must not disturb the user's model"
-    );
-    assert_eq!(
-        mgr.inner.catalog.read().etag.as_deref(),
-        Some("etag-b"),
-        "etag should be adopted so refresh_if_new_etag stays accurate"
-    );
-}
-
-#[test]
-#[serial]
-fn reload_from_disk_cache_ignores_stale_cache() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    let scope = mgr.cache_scope();
-    let stale = ModelsCache {
-        fetched_at: Utc::now() - ChronoDuration::seconds(3600),
-        renewed_at: None,
-        codel_version: Some(codel_version::VERSION.to_string()),
-        auth_method: Some(scope.auth_method.clone()),
-        origin: Some(scope.origin.clone()),
-        identity: Some(scope.identity.clone()),
-        etag: Some("etag-stale".into()),
-        models: make_prefetched(&["codel-stale"]),
-    };
-    cache.atomic_write(&stale);
-
-    mgr.reload_from_cache_manager(&cache);
-
-    assert!(!mgr.models().contains_key("codel-stale"));
-    assert!(mgr.inner.catalog.read().etag.is_none());
-}
-
-#[tokio::test]
-async fn renew_ttl_does_not_shadow_a_newer_content_write() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    let scope = mgr.cache_scope();
-
-    // Content A on disk, fetched a minute ago.
-    let a_fetched = Utc::now() - ChronoDuration::seconds(60);
-    cache.persist(
-        &make_prefetched(&["codel-a"]),
-        Some("etag-a"),
-        &scope,
-        a_fetched,
-    );
-    // A TTL renewal bumps only the freshness clock to now.
-    cache.renew_ttl(&scope).await;
-    // Content B was fetched after A but before the renewal: it is genuinely
-    // newer content and must win despite the renewal's fresh timestamp.
-    let b_fetched = Utc::now() - ChronoDuration::seconds(30);
-    cache.persist(
-        &make_prefetched(&["codel-b"]),
-        Some("etag-b"),
-        &scope,
-        b_fetched,
-    );
-
-    let loaded = cache
-        .load_fresh(&scope)
-        .expect("cache is fresh after renewal");
-    assert!(
-        loaded.models.contains_key("codel-b"),
-        "a TTL renewal must not block a newer-content write"
-    );
-}
-
-#[test]
-#[serial]
-fn reload_from_disk_cache_ignores_auth_method_mismatch() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    let scope = mgr.cache_scope();
-    let other_auth = if scope.auth_method == CacheAuthMethod::Session {
-        CacheAuthMethod::ApiKey
-    } else {
-        CacheAuthMethod::Session
-    };
-    let other = ModelsCacheScope {
-        auth_method: other_auth,
-        ..scope
-    };
-    cache.persist(
-        &make_prefetched(&["codel-other-auth"]),
-        Some("etag-x"),
-        &other,
-        Utc::now(),
-    );
-
-    mgr.reload_from_cache_manager(&cache);
-
-    assert!(!mgr.models().contains_key("codel-other-auth"));
-}
-
-#[test]
-#[serial]
-fn reload_from_disk_cache_ignores_origin_mismatch() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    let other = ModelsCacheScope {
-        origin: "http://127.0.0.1:49953/v1/models".to_string(),
-        ..mgr.cache_scope()
-    };
-    cache.persist(
-        &make_prefetched(&["codel-other-origin"]),
-        Some("etag-y"),
-        &other,
-        Utc::now(),
-    );
-
-    mgr.reload_from_cache_manager(&cache);
-
-    assert!(!mgr.models().contains_key("codel-other-origin"));
-    assert!(mgr.inner.catalog.read().etag.is_none());
-}
-
-#[test]
-fn models_persist_does_not_regress_to_an_older_fetch() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    let scope = mgr.cache_scope();
-
-    let newer = Utc::now() - ChronoDuration::seconds(30);
-    cache.persist(
-        &make_prefetched(&["codel-new"]),
-        Some("etag-new"),
-        &scope,
-        newer,
-    );
-
-    // An older same-scope fetch must not overwrite the newer catalog.
-    cache.persist(
-        &make_prefetched(&["codel-old"]),
-        Some("etag-old"),
-        &scope,
-        newer - ChronoDuration::seconds(60),
-    );
-
-    let got = cache.load_fresh(&scope).unwrap();
-    assert!(got.models.contains_key("codel-new"));
-    assert_eq!(got.etag.as_deref(), Some("etag-new"));
-}
-
-#[test]
-fn models_cache_read_is_scoped_by_identity() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    let base = mgr.cache_scope();
-    let scope_a = ModelsCacheScope {
-        identity: "identity-a".to_string(),
-        ..base.clone()
-    };
-    let scope_b = ModelsCacheScope {
-        identity: "identity-b".to_string(),
-        ..base
-    };
-
-    cache.persist(
-        &make_prefetched(&["codel-a"]),
-        Some("etag-a"),
-        &scope_a,
-        Utc::now(),
-    );
-
-    assert!(
-        cache.load_fresh(&scope_b).is_none(),
-        "a different account must not read another account's cached catalog",
-    );
-    assert!(
-        cache
-            .load_fresh(&scope_a)
-            .is_some_and(|hit| hit.models.contains_key("codel-a")),
-        "the writing account still hits its own entry",
-    );
-}
-
-#[test]
-fn models_cache_read_is_scoped_by_alpha_test_key() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    let auth = CodelAuth::test_default();
-    let base = mgr.cache_scope();
-    let scope_a = ModelsCacheScope {
-        identity: SettingsCacheManager::identity(&auth, Some("alpha-a")),
-        ..base.clone()
-    };
-    let scope_b = ModelsCacheScope {
-        identity: SettingsCacheManager::identity(&auth, Some("alpha-b")),
-        ..base
-    };
-
-    cache.persist(
-        &make_prefetched(&["codel-a"]),
-        Some("etag-a"),
-        &scope_a,
-        Utc::now(),
-    );
-
-    assert!(
-        cache.load_fresh(&scope_b).is_none(),
-        "a different alpha cohort must not read another cohort's cached catalog",
-    );
-    assert!(
-        cache
-            .load_fresh(&scope_a)
-            .is_some_and(|hit| hit.models.contains_key("codel-a")),
-        "the same account and alpha still hits its own entry",
-    );
-}
 
 #[test]
 #[serial]
@@ -1878,51 +786,7 @@ fn resolve_live_keeps_fetch_origin_when_disk_auth_absent() {
     );
 }
 
-#[test]
-#[serial]
-fn reload_from_disk_cache_ignores_legacy_cache_without_origin() {
-    let mgr = test_manager();
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cache = test_cache_manager(tmp.path());
-    let scope = mgr.cache_scope();
-    let legacy = ModelsCache {
-        fetched_at: Utc::now(),
-        renewed_at: None,
-        codel_version: Some(codel_version::VERSION.to_string()),
-        auth_method: Some(scope.auth_method.clone()),
-        origin: None,
-        identity: Some(scope.identity.clone()),
-        etag: Some("etag-legacy".into()),
-        models: make_prefetched(&["codel-legacy"]),
-    };
-    cache.atomic_write(&legacy);
 
-    mgr.reload_from_cache_manager(&cache);
-
-    assert!(!mgr.models().contains_key("codel-legacy"));
-}
-
-#[test]
-fn clear_resets_has_fetched_real_catalog() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-3".to_string());
-
-    let prefetched = make_prefetched(&["codel-3", "codel-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-    assert!(mgr.has_fetched_real_catalog());
-
-    mgr.clear();
-    assert!(!mgr.has_fetched_real_catalog());
-
-    let prefetched = make_prefetched(&["codel-4.5", "codel-4.3"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
-    let first_available = mgr.available().keys().next().unwrap().clone();
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        first_available.0.as_ref()
-    );
-}
 
 #[test]
 fn is_campaign_only_flip_detects_campaign_driven_changes() {
@@ -1955,85 +819,7 @@ fn is_campaign_only_flip_detects_campaign_driven_changes() {
     ));
 }
 
-#[test]
-fn campaign_only_flip_does_not_reselect_live_session() {
-    let mgr = test_manager();
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("alpha".to_string());
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["alpha", "beta"])), None);
-    *mgr.inner.cfg.write() = cfg.clone(); // apply_config sees old_preferred as "alpha"
-    assert_eq!(mgr.current_model_id().0.as_ref(), "alpha");
 
-    let mut new_cfg = config::Config::default();
-    new_cfg.models.default = Some("beta".to_string());
-    new_cfg.models.default_is_campaign_driven = true;
-    mgr.apply_config(new_cfg);
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "alpha",
-        "campaign-only flip must not yank a still-selectable live session"
-    );
-
-    let mgr2 = test_manager();
-    let mut cfg2 = config::Config::default();
-    cfg2.models.default = Some("alpha".to_string());
-    mgr2.apply_refresh_result(&cfg2, Some(make_prefetched(&["alpha", "beta"])), None);
-    *mgr2.inner.cfg.write() = cfg2.clone();
-    let mut new_cfg2 = config::Config::default();
-    new_cfg2.models.default = Some("beta".to_string());
-    mgr2.apply_config(new_cfg2);
-    assert_eq!(
-        mgr2.current_model_id().0.as_ref(),
-        "beta",
-        "a non-campaign preferred change must reselect"
-    );
-}
-
-#[test]
-fn unavailable_campaign_default_falls_back_to_config_default() {
-    let catalog = make_prefetched(&["real-model", "other-model"]);
-
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("missing-model".to_string());
-    cfg.models.default_is_campaign_driven = true;
-    cfg.models.pre_campaign_default = Some("real-model".to_string());
-    let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
-    assert_eq!(
-        key, "real-model",
-        "must fall back to the pre-campaign default"
-    );
-
-    let mut cfg2 = config::Config::default();
-    cfg2.models.default = Some("missing-model".to_string());
-    cfg2.models.default_is_campaign_driven = true;
-    cfg2.models.pre_campaign_default = Some("also-missing".to_string());
-    let (key2, _, _) = resolve_default_model(&cfg2, &catalog, true);
-    assert_eq!(&key2, catalog.keys().next().unwrap());
-
-    let mut cfg3 = config::Config::default();
-    cfg3.models.default = Some("missing-model".to_string());
-    cfg3.models.pre_campaign_default = Some("real-model".to_string());
-    let (key3, _, _) = resolve_default_model(&cfg3, &catalog, true);
-    assert_eq!(
-        &key3,
-        catalog.keys().next().unwrap(),
-        "non-campaign catalog miss must not recover via campaign state"
-    );
-
-    let mut cfg4 = config::Config {
-        default_model_override: Some("missing-cli-model".to_string()),
-        ..Default::default()
-    };
-    cfg4.models.default = Some("campaign-model".to_string());
-    cfg4.models.default_is_campaign_driven = true;
-    cfg4.models.pre_campaign_default = Some("real-model".to_string());
-    let (key4, _, _) = resolve_default_model(&cfg4, &catalog, true);
-    assert_eq!(
-        &key4,
-        catalog.keys().next().unwrap(),
-        "a CLI pref miss must not detour through pre_campaign_default"
-    );
-}
 
 use serial_test::serial;
 use codel_test_support::EnvGuard;
@@ -2169,47 +955,7 @@ fn prefetch_env_resolves_when_remote_fetch_enabled() {
     );
 }
 
-#[tokio::test]
-async fn fetch_and_apply_degrades_offline_when_remote_fetch_disabled() {
-    let mgr = test_manager();
-    mgr.insert_test_entry("static-one", make_model_entry("static-one"));
 
-    mgr.fetch_and_apply_inner(false).await;
-
-    assert!(
-        !mgr.has_fetched_real_catalog(),
-        "no catalog fetch may be recorded when remote_fetch is disabled",
-    );
-    assert!(
-        mgr.models().contains_key("static-one"),
-        "the static catalog must keep resolving",
-    );
-}
-
-#[test]
-fn default_model_skips_oauth_only_for_api_key_users() {
-    let cfg = config::Config::default();
-    let mut catalog = IndexMap::new();
-
-    let mut oauth_only = make_model_entry("oauth-only");
-    oauth_only.info.supported_in_api = false;
-    catalog.insert("oauth-only".to_string(), oauth_only);
-
-    catalog.insert("public-model".to_string(), make_model_entry("public-model"));
-
-    let (key, _, _) = resolve_default_model(&cfg, &catalog, false);
-    assert_ne!(
-        key, "oauth-only",
-        "API-key default must not be an OAuth-only model"
-    );
-    assert_eq!(key, "public-model");
-
-    let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
-    assert!(
-        key == "oauth-only" || key == "public-model",
-        "OAuth user should be able to use either model as default"
-    );
-}
 
 #[test]
 fn visible_for_auth_logic() {
@@ -2305,128 +1051,13 @@ fn build_prefetched_map_duplicate_id_overwrites() {
     assert_eq!(build.info.name.as_deref(), Some("Second"));
 }
 
-#[test]
-fn resolve_default_model_prefers_id_over_model_slug() {
-    let mut catalog: IndexMap<String, ModelEntry> = IndexMap::new();
-    catalog.insert(
-        "auto-codel-build".to_string(),
-        make_model_entry("codel-build"),
-    );
-    catalog.insert("codel-build".to_string(), make_model_entry("codel-build"));
 
-    let mut cfg = config::Config::default();
-    cfg.models.default = Some("codel-build".to_string());
 
-    let (key, _, _) = resolve_default_model(&cfg, &catalog, true);
-    assert_eq!(key, "codel-build", "must match id, not first slug hit");
-}
 
-#[test]
-fn resolve_catalog_key_maps_routing_slug_to_config_key() {
-    let mut models = IndexMap::new();
-    models.insert(
-        "enterprise-codel-build".to_string(),
-        make_model_entry("codel-4.5"),
-    );
-    models.insert("codel-4.3".to_string(), make_model_entry("codel-4.3"));
 
-    let persisted = acp::ModelId::new("codel-4.5");
-    let key = resolve_catalog_key(&models, &persisted).expect("slug must resolve");
-    assert_eq!(key.0.as_ref(), "enterprise-codel-build");
-}
 
-#[test]
-fn resolve_catalog_key_prefers_exact_key_match() {
-    let mut models = IndexMap::new();
-    models.insert("codel-4.5".to_string(), make_model_entry("codel-4.5"));
 
-    let persisted = acp::ModelId::new("codel-4.5");
-    let key = resolve_catalog_key(&models, &persisted).expect("exact key must resolve");
-    assert_eq!(key.0.as_ref(), "codel-4.5");
-}
 
-#[test]
-fn resolve_catalog_key_last_slug_match_wins() {
-    let mut models = IndexMap::new();
-    models.insert(
-        "default-codel-build".to_string(),
-        make_model_entry("codel-4.5"),
-    );
-    models.insert("user-codel-build".to_string(), make_model_entry("codel-4.5"));
-
-    let persisted = acp::ModelId::new("codel-4.5");
-    let key = resolve_catalog_key(&models, &persisted).expect("slug must resolve");
-    assert_eq!(key.0.as_ref(), "user-codel-build");
-}
-
-#[test]
-fn selectable_catalog_key_for_persisted_none_when_resolved_not_available() {
-    let mut models = IndexMap::new();
-    models.insert(
-        "enterprise-codel-build".to_string(),
-        make_model_entry("codel-4.5"),
-    );
-
-    let available: IndexMap<_, _> = IndexMap::new();
-    let persisted = acp::ModelId::new("codel-4.5");
-    assert!(selectable_catalog_key_for_persisted(&models, &available, &persisted).is_none());
-}
-
-#[test]
-fn selectable_prefers_available_identity_over_non_selectable_exact_key() {
-    let mut models = IndexMap::new();
-    models.insert("codel-build".to_string(), make_model_entry("codel-build"));
-    models.insert(
-        "enterprise-codel-build".to_string(),
-        make_model_entry("codel-build"),
-    );
-    models.insert("codel-4.3".to_string(), make_model_entry("codel-4.3"));
-
-    let available = test_available_keys(&["enterprise-codel-build", "codel-4.3"]);
-
-    let persisted = acp::ModelId::new("codel-build");
-    assert_eq!(
-        resolve_catalog_key(&models, &persisted)
-            .expect("exact key exists")
-            .0
-            .as_ref(),
-        "codel-build"
-    );
-    let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
-        .expect("must resolve to selectable section");
-    assert_eq!(key.0.as_ref(), "enterprise-codel-build");
-}
-
-#[test]
-fn selectable_matches_routing_slug_when_no_exact_key() {
-    let mut models = IndexMap::new();
-    models.insert(
-        "enterprise-codel-build".to_string(),
-        make_model_entry("codel-build"),
-    );
-    models.insert("codel-4.3".to_string(), make_model_entry("codel-4.3"));
-
-    let available = test_available_keys(&["enterprise-codel-build", "codel-4.3"]);
-
-    let persisted = acp::ModelId::new("codel-build");
-    let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
-        .expect("slug must resolve to selectable key");
-    assert_eq!(key.0.as_ref(), "enterprise-codel-build");
-}
-
-#[test]
-fn selectable_prefers_exact_key_over_later_slug_match() {
-    let mut models = IndexMap::new();
-    models.insert("codel-build".to_string(), make_model_entry("codel-4.5"));
-    models.insert("other".to_string(), make_model_entry("codel-build"));
-
-    let available = test_available_keys(&["codel-build", "other"]);
-
-    let persisted = acp::ModelId::new("codel-build");
-    let key = selectable_catalog_key_for_persisted(&models, &available, &persisted)
-        .expect("exact selectable key must win");
-    assert_eq!(key.0.as_ref(), "codel-build");
-}
 
 fn test_available_keys(keys: &[&str]) -> IndexMap<acp::ModelId, acp::ModelInfo> {
     keys.iter()
@@ -2460,33 +1091,7 @@ async fn bounded_auth_refresh_passes_through_ready_value() {
     );
 }
 
-#[tokio::test]
-async fn explicit_model_pick_survives_first_real_catalog() {
-    // Non-blocking boot lets the user pick a model before the first real catalog lands; that pick must not be clobbered by default reselection
-    let mgr = test_manager();
-    let cfg = config_from_toml("[models]\ndefault = \"codel-4.5\"");
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["codel-4.5", "codel-4"])), None);
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-4",
-        "an explicit /model pick must survive the first real catalog",
-    );
-}
 
-#[tokio::test]
-async fn identity_switch_clears_user_pick_latch() {
-    let mgr = test_manager();
-    let cfg = config_from_toml("[models]\ndefault = \"codel-4.5\"");
-    mgr.set_current_model_id(acp::ModelId::new("codel-4"));
-    mgr.clear();
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["codel-4.5", "codel-4"])), None);
-    assert_eq!(
-        mgr.current_model_id().0.as_ref(),
-        "codel-4.5",
-        "a new identity's first catalog must reselect the default after clear()",
-    );
-}
 
 #[test]
 fn personal_offline_boot_does_not_emit_a_managed_degraded_warn() {

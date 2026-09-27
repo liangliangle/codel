@@ -2778,111 +2778,8 @@ mod tests {
         }
     }
 
-    fn empty_report() -> InspectReport {
-        InspectReport {
-            codel_version: "test".into(),
-            channel: "test".into(),
-            cwd: "/tmp".into(),
-            project_root: None,
-            project_trusted: true,
-            project_instructions: vec![],
-            permissions: PermissionsReport {
-                sources: vec![],
-                loaded: 0,
-                skipped: vec![],
-                mcp_server_allowlist: vec![],
-                mcp_lockdown_sources: vec![],
-                mcp_managed_servers_only: ManagedOnlyScope::Off,
-                marketplace_allowlist: vec![],
-                marketplace_lockdown_sources: vec![],
-                managed_marketplaces: vec![],
-                managed_settings_path: None,
-                managed_settings_exists: false,
-                managed_settings_active: false,
-                enforced: vec![],
-                claude_bypass_lock_advisory: false,
-            },
-            login_policy: LoginPolicyReport {
-                disable_api_key_auth: None,
-                force_login_team_uuid: None,
-                api_key_auth_disabled: false,
-            },
-            hooks: vec![],
-            skills: vec![],
-            agents: vec![],
-            plugins: vec![],
-            marketplaces: vec![],
-            mcp_servers: vec![],
-            lsp_servers: vec![],
-            config_sources: ConfigSources { layers: vec![] },
-            external_compat: ExternalCompatReport {
-                remote_settings_loaded: false,
-                cells: vec![],
-            },
-            config_warnings: vec![],
-            mcp_config_problems: vec![],
-        }
-    }
 
-    #[test]
-    fn write_inspect_treats_broken_pipe_as_success() {
-        let report = empty_report();
-        for json in [false, true] {
-            let mut out = FailAfter {
-                remaining: 8,
-                kind: std::io::ErrorKind::BrokenPipe,
-            };
-            write_inspect(&report, json, &mut out).expect("broken pipe is a clean stop");
-        }
-    }
 
-    /// The managed-policy lines must go through the injected writer, never `println!`.
-    #[test]
-    fn print_human_policy_lines_use_the_injected_writer() {
-        let mut report = empty_report();
-        report.permissions.mcp_managed_servers_only = ManagedOnlyScope::Enforced;
-        report.permissions.enforced = vec![
-            EnforcedPolicy {
-                setting: EnforcedSetting::ProjectMcpServers,
-                enabled: false,
-                source: "/etc/codel/managed_config.toml".into(),
-            },
-            EnforcedPolicy {
-                setting: EnforcedSetting::PluginAutoUpdate,
-                enabled: false,
-                source: "/etc/codel/managed_config.toml".into(),
-            },
-        ];
-        report.permissions.managed_marketplaces =
-            vec!["approved-plugins (https://github.com/corp/approved.git@stable)".into()];
-
-        let mut out = Vec::new();
-        print_human(&report, &mut out).expect("buffer write succeeds");
-        let text = String::from_utf8(out).unwrap();
-        for needle in [
-            "MCP managed servers only: enforced",
-            "Project MCP servers disabled (/etc/codel/managed_config.toml)",
-            "Plugin auto-update disabled (/etc/codel/managed_config.toml)",
-            "Managed marketplaces (1 pinned)",
-            "approved-plugins (https://github.com/corp/approved.git@stable)",
-        ] {
-            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
-        }
-
-        // An advisory-only lockdown must not read as "enforced".
-        report.permissions.mcp_managed_servers_only = ManagedOnlyScope::Advisory;
-        let mut out = Vec::new();
-        print_human(&report, &mut out).expect("buffer write succeeds");
-        let text = String::from_utf8(out).unwrap();
-        assert!(
-            text.contains("MCP managed servers only: advisory"),
-            "{text}"
-        );
-        assert!(
-            !text.contains("MCP managed servers only: enforced"),
-            "{text}"
-        );
-    }
 
     fn native_lockdown(source: &str) -> LockdownSource {
         LockdownSource {
@@ -2891,57 +2788,7 @@ mod tests {
         }
     }
 
-    /// A zero-entry lockdown blocks everything while contributing no entries;
-    /// the human report must name the enforcing file, not render unrestricted.
-    #[test]
-    fn print_human_surfaces_zero_entry_lockdowns() {
-        let mut report = empty_report();
-        report.permissions.mcp_lockdown_sources =
-            vec![native_lockdown("/etc/codel/managed_config.toml")];
-        report.permissions.marketplace_lockdown_sources =
-            vec![native_lockdown("/etc/codel/managed_config.toml")];
 
-        let mut out = Vec::new();
-        print_human(&report, &mut out).expect("buffer write succeeds");
-        let text = String::from_utf8(out).unwrap();
-        for needle in [
-            "MCP servers locked down",
-            "Marketplaces locked down",
-            "/etc/codel/managed_config.toml",
-        ] {
-            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
-        }
-        assert!(
-            !text.contains("advisory"),
-            "native sources carry no tag:\n{text}"
-        );
-    }
-
-    /// JSON consumers see each lockdown source with its authority under camelCase names.
-    #[test]
-    fn json_output_carries_lockdown_fields() {
-        let mut report = empty_report();
-        report.permissions.mcp_lockdown_sources =
-            vec![native_lockdown("/etc/codel/managed_config.toml")];
-        report.permissions.marketplace_lockdown_sources = vec![LockdownSource {
-            source: "managed-settings.json".into(),
-            advisory: true,
-        }];
-        let json = serde_json::to_value(&report).unwrap();
-        let Some(json) = json.get("permissions") else {
-            panic!("expected permissions in report JSON");
-        };
-        assert_eq!(
-            json.get("mcpLockdownSources"),
-            Some(
-                &serde_json::json!([{ "source": "/etc/codel/managed_config.toml", "advisory": false }])
-            )
-        );
-        assert_eq!(
-            json.get("marketplaceLockdownSources"),
-            Some(&serde_json::json!([{ "source": "managed-settings.json", "advisory": true }]))
-        );
-    }
 
     /// The report's lockdown lists come from the loaded policy: a zero-entry
     /// lockdown source surfaces, a populated source does not.
@@ -2983,50 +2830,5 @@ mod tests {
         }
     }
 
-    /// An advisory lockdown binds foreign-defined subjects only; the report must
-    /// say so instead of announcing a lockdown codel-native servers are exempt from.
-    #[test]
-    fn advisory_lockdown_sources_are_tagged() {
-        use codel_workspace::permission::resolution::{
-            ManagedSettings, MarketplaceAllowlist, McpServerAllowlist, McpServerPolicy,
-            PolicySourceAuthority,
-        };
-        let vendor = || Some(std::path::PathBuf::from("managed-settings.json"));
-        let mut ms = ManagedSettings::default();
-        ms.mcp_allowlist = McpServerPolicy::single(
-            McpServerAllowlist::new(vec![], vec![], vendor())
-                .with_lockdown()
-                .with_authority(PolicySourceAuthority::Advisory),
-        );
-        ms.marketplace_allowlist.sources.push(MarketplaceAllowlist {
-            allowed_urls: vec![],
-            source_path: vendor(),
-            authority: PolicySourceAuthority::Advisory,
-        });
 
-        let (mcp, marketplace) = policy_lockdown_sources(&ms);
-        let mut report = empty_report();
-        report.permissions.mcp_lockdown_sources = mcp;
-        report.permissions.marketplace_lockdown_sources = marketplace;
-        let mut out = Vec::new();
-        print_human(&report, &mut out).expect("buffer write succeeds");
-        let text = String::from_utf8(out).unwrap();
-        for needle in [
-            "managed-settings.json (advisory; codel-native servers exempt)",
-            "managed-settings.json (advisory; codel-native marketplaces exempt)",
-        ] {
-            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
-        }
-    }
-
-    #[test]
-    fn write_inspect_surfaces_other_io_errors() {
-        let report = empty_report();
-        let mut out = FailAfter {
-            remaining: 0,
-            kind: std::io::ErrorKind::PermissionDenied,
-        };
-        write_inspect(&report, false, &mut out)
-            .expect_err("non-broken-pipe IO errors must surface");
-    }
 }

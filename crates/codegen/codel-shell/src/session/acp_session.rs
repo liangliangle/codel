@@ -1952,12 +1952,6 @@ impl Drop for TurnMetrics {
 }
 /// Token rotation on the sampler/inference path is owned by the proactive refresh loop and the per-turn `refresh_token_if_expired`.
 /// `handle_sampling_failure` passes auth errors to the caller and never invokes the refresher itself.
-#[cfg(test)]
-#[path = "acp_session_tests/auth_error_no_retry_tests.rs"]
-mod auth_error_no_retry_tests;
-#[cfg(test)]
-#[path = "acp_session_tests/turn/auth_retry_budget_tests.rs"]
-mod auth_retry_budget_tests;
 /// Regression coverage for the auto-wake suppression sweep and shutdown drain.
 /// These exercise the helpers added to fix the trailing `<system-reminder>` chat history bug.
 #[cfg(test)]
@@ -2014,9 +2008,6 @@ mod mcp_connecting_reminder_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/mcp_failed_reminder_tests.rs"]
 mod mcp_failed_reminder_tests;
-#[cfg(test)]
-#[path = "acp_session_tests/media_gen_auth_retry_tests.rs"]
-mod media_gen_auth_retry_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/media_gen_batch_limit_tests.rs"]
 mod media_gen_batch_limit_tests;

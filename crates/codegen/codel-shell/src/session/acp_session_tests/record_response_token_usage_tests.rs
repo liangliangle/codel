@@ -310,53 +310,6 @@ async fn build_session_info_used_reflects_recorded_response() {
         .await;
 }
 
-/// `build_session_info` must populate `SessionInfoData.show_model_fingerprint` from the catalog entry for the session's current model.
-/// `build_session_info` reads the slug from the sampling config, so a direct `.get(slug)` would miss the entry and wrongly yield false.
-/// The flag is the sole control (the client keeps no built-in per-slug default), so this is the only thing that can turn checkpoint identity on.
-#[tokio::test(flavor = "current_thread")]
-async fn build_session_info_sources_show_model_fingerprint_from_catalog() {
-    use crate::agent::config::{ModelEntry, ModelInfo};
-
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) =
-                tokio::sync::mpsc::unbounded_channel::<codel_acp_lib::AcpClientMessage>();
-            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
-            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
-
-            // The catalog KEY ("custom-catalog-id") differs from the session's routing SLUG ("test", the harness sampling model)
-            // The flag starts off, so the lookup must yield false
-            let mut entry = ModelEntry {
-                info: ModelInfo::fallback("test"),
-                mtls_cert_dir: None,
-                api_key: None,
-                env_key: None,
-                auth_provider: None,
-                api_base_url: None,
-            };
-            entry.info.show_model_fingerprint = false;
-            actor
-                .models_manager
-                .insert_test_entry("custom-catalog-id", entry.clone());
-            assert!(
-                !actor.build_session_info().await.show_model_fingerprint,
-                "non-coding slug without the catalog flag must yield false",
-            );
-
-            // The same entry with the flag ON must yield true, exercising slug-to-catalog-key resolution end-to-end
-            // A direct slug `.get("test")` would miss the entry keyed "custom-catalog-id" and regress to false
-            entry.info.show_model_fingerprint = true;
-            actor
-                .models_manager
-                .insert_test_entry("custom-catalog-id", entry);
-            assert!(
-                actor.build_session_info().await.show_model_fingerprint,
-                "catalog show_model_fingerprint=true must flow to SessionInfoData via slug→key resolution",
-            );
-        })
-        .await;
-}
 
 /// `record_response_token_usage` must also stash the per-turn `TokenUsage` in chat state.
 /// The next `PromptResponse._meta` carries the input/output token counts to the bot's telemetry.

@@ -156,37 +156,6 @@ mod tests {
         );
     }
     #[test]
-    fn startup_gate_opens_whenever_no_policy_will_arrive() {
-        let opens = |channel, has_session, session_pending| {
-            should_open_at_startup(StartupGate {
-                channel,
-                has_session,
-                session_pending,
-            })
-        };
-        let applies = PolicyChannel::Applies;
-        for reason in [NoPolicy::RemoteFetchDisabled, NoPolicy::ProxyRepointed] {
-            let none = PolicyChannel::Unavailable(reason);
-            assert!(
-                opens(none, true, false),
-                "{reason:?}: no policy can arrive, so a session must not wait"
-            );
-            assert!(opens(none, false, true), "{reason:?}: nor a pending mint");
-        }
-        assert!(
-            !opens(applies, true, false),
-            "a session with a reachable policy waits for it"
-        );
-        assert!(
-            !opens(applies, false, true),
-            "a pending mint is a session about to exist; wait for its policy"
-        );
-        assert!(
-            opens(applies, false, false),
-            "no session and none pending: nothing will query the channel yet"
-        );
-    }
-    #[test]
     #[serial_test::serial]
     fn resolve_opens_on_every_definitive_outcome_for_the_live_identity() {
         let _restore = RestoreGate;

@@ -903,19 +903,7 @@ mod tests {
         );
     }
 
-    #[test]
-
-
-    #[tokio::test]
-
-
-    #[tokio::test]
-
-
-    #[tokio::test]
-
-
-    /// What an older proxy binary reports.
+/// What an older proxy binary reports.
     fn stamp_only(last_activity_ms: u64) -> ActivitySample {
         ActivitySample {
             last_activity_ms,

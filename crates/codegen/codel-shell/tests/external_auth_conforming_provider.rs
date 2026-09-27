@@ -61,20 +61,6 @@ fn invocations(home: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn seed_expired_credential(home: &Path, scope: &str) {
-    let expired = CodelAuth {
-        key: STALE_TOKEN.to_owned(),
-        auth_mode: AuthMode::External,
-        expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
-        ..CodelAuth::default()
-    };
-    let store: BTreeMap<String, CodelAuth> = [(scope.to_owned(), expired)].into_iter().collect();
-    std::fs::write(
-        home.join("auth.json"),
-        serde_json::to_string(&store).expect("serialize auth store"),
-    )
-    .expect("write auth.json");
-}
 
 fn dead_endpoint() -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -83,77 +69,3 @@ fn dead_endpoint() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-#[tokio::test]
-async fn a_provider_that_declines_the_headless_run_can_still_sign_the_user_in() {
-    let home = tempfile::tempdir().expect("codel home");
-    let provider = write_conforming_provider(home.path());
-    let dead = dead_endpoint();
-
-    // SAFETY: single-threaded test entry, before any thread that reads the
-    // environment is spawned. `codel_home()` memoizes, so this must stay the
-    // only test in the binary.
-    unsafe {
-        std::env::set_var("CODEL_HOME", home.path());
-        std::env::set_var("CODEL_CLI_CHAT_PROXY_BASE_URL", &dead);
-        std::env::set_var("CODEL_CODEL_API_BASE_URL", &dead);
-        std::env::remove_var("CODEL_API_KEY");
-        std::env::remove_var("CODEL_CODE_CODEL_API_KEY");
-        std::env::set_var("CODEL_TELEMETRY_ENABLED", "false");
-        std::env::set_var("CODEL_FEEDBACK_ENABLED", "false");
-        std::env::set_var("CODEL_TRACE_UPLOAD", "false");
-    }
-
-    let config = CodelComConfig {
-        auth_provider_command: Some(provider),
-        ..CodelComConfig::default()
-    };
-    seed_expired_credential(home.path(), &config.auth_scope());
-
-    assert!(
-        try_ensure_fresh_auth(
-            &config,
-            codel_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_string(),
-        )
-        .await
-        .is_none(),
-        "the provider declines a run it cannot complete silently"
-    );
-    assert_eq!(
-        invocations(home.path()),
-        ["expired=1"],
-        "the headless refresh is the run the flag exists for"
-    );
-
-    let started = Instant::now();
-    let auth = tokio::time::timeout(
-        LOGIN_BUDGET,
-        ensure_authenticated(
-            &config,
-            None,
-            codel_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_string(),
-            false,
-            None,
-        ),
-    )
-    .await
-    .expect("the sign-in must reach the provider's interactive branch, not the browser login")
-    .expect("the provider mints when it is allowed to prompt");
-    let elapsed = started.elapsed();
-
-    assert_eq!(
-        auth.key, SSO_TOKEN,
-        "the credential must come from the operator's binary, not a fallback"
-    );
-    assert_eq!(auth.auth_mode, AuthMode::External);
-    assert_eq!(
-        invocations(home.path()),
-        ["expired=1", "expired=unset"],
-        "a sign-in is not a headless run, whatever the state of the credential \
-         it replaces"
-    );
-    assert!(
-        elapsed < NO_SELF_CONTENTION,
-        "the sign-in must not wait on a lock this process is already holding; \
-         took {elapsed:?}"
-    );
-}

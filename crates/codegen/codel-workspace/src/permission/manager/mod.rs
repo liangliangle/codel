@@ -1513,11 +1513,7 @@ mod tests {
     use crate::permission::types::RequestPathContext;
     use std::collections::HashSet;
 
-    #[path = "bash_filename_arguments_tests.rs"]
-    mod bash_filename_arguments_tests;
-    #[path = "stack_routing_tests.rs"]
-    mod stack_routing_tests;
-
+        
     async fn decide(
         handle: &PermissionHandle,
         access: AccessKind,

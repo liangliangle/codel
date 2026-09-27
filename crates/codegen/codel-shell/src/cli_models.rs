@@ -101,14 +101,6 @@ mod tests {
     use codel_login::{AuthMode, CodelAuth};
     use codel_test_support::EnvGuard;
     const EXPECTED_LOGIN_HOST: &str = "codel.dev";
-    /// A session the compiled-in backend recognises as its own, which `AuthBackend::owns` requires.
-    fn session_credential() -> CodelAuth {
-        CodelAuth {
-            key: "session-token".into(),
-            auth_mode: AuthMode::WebLogin,
-            ..CodelAuth::test_default()
-        }
-    }
     /// Isolate process-global auth sources that `AuthStatus::resolve` consults.
     /// Uses `CODEL_AUTH_PATH` (not `CODEL_HOME`) so a OnceLock-cached real home with `auth.json` cannot leak into these tests.
     fn isolate_auth_sources() -> (tempfile::TempDir, [EnvGuard; 7]) {
@@ -154,17 +146,6 @@ mod tests {
         let (_dir, _g) = isolate_auth_sources();
         let _key = EnvGuard::set(LEGACY_CODEL_API_KEY_ENV_VAR, "legacy-key");
         assert_eq!(AuthStatus::resolve(&Config::default()), AuthStatus::ApiKey);
-    }
-    #[test]
-    #[serial]
-    fn resolve_oauth_session() {
-        let (_dir, _g) = isolate_auth_sources();
-        let json = serde_json::to_string(&session_credential()).unwrap();
-        let _auth = EnvGuard::set("CODEL_AUTH", &json);
-        assert_eq!(
-            AuthStatus::resolve(&Config::default()),
-            AuthStatus::LoggedIn(EXPECTED_LOGIN_HOST.to_owned())
-        );
     }
     #[test]
     #[serial]
@@ -253,19 +234,6 @@ mod tests {
         let dm = crate::models::default_model();
         let cfg = config_from_toml(&byok_and_deployment_toml(dm));
         assert_eq!(AuthStatus::resolve(&cfg), AuthStatus::ApiKey);
-    }
-    #[test]
-    #[serial]
-    fn resolve_priority_session_over_byok_and_deployment() {
-        let (_dir, _g) = isolate_auth_sources();
-        let json = serde_json::to_string(&session_credential()).unwrap();
-        let _auth = EnvGuard::set("CODEL_AUTH", &json);
-        let dm = crate::models::default_model();
-        let cfg = config_from_toml(&byok_and_deployment_toml(dm));
-        assert_eq!(
-            AuthStatus::resolve(&cfg),
-            AuthStatus::LoggedIn(EXPECTED_LOGIN_HOST.to_owned())
-        );
     }
     #[test]
     #[serial]

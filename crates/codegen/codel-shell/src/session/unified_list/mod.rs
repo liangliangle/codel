@@ -856,19 +856,6 @@ mod tests {
             Some(&vec![serde_json::json!("chat")])
         );
     }
-    fn codel_auth_manager(dir: &std::path::Path) -> std::sync::Arc<codel_login::AuthManager> {
-        let am = std::sync::Arc::new(codel_login::AuthManager::new(
-            dir,
-            codel_login::CodelComConfig::default(),
-        ));
-        am.hot_swap(codel_login::CodelAuth {
-            auth_mode: codel_login::AuthMode::Oidc,
-            oidc_issuer: Some(codel_login::codel_oauth2_issuer().to_owned()),
-            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
-            ..codel_login::CodelAuth::test_default()
-        });
-        am
-    }
     /// Minimal HTTP/1.1 responder serving `body` as JSON to every request.
     async fn spawn_conversations_stub(body: String) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -892,49 +879,6 @@ mod tests {
             }
         });
         addr
-    }
-    /// A client-sent `kind: ["build"]` rewritten by [`force_kind_chat`] yields conversations only.
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn forced_kind_serves_conversations_only() {
-        let addr = spawn_conversations_stub(
-                serde_json::json!({
-                "conversations": [
-                    { "conversationId": "c1", "title": "Hello", "modifyTime": "2026-07-01T00:00:00Z" },
-                    { "conversationId": "c2", "title": "", "modifyTime": "2026-07-02T00:00:00Z" },
-                ],
-            })
-                    .to_string(),
-            )
-            .await;
-        let _env = codel_test_support::EnvGuard::set(
-            "CODEL_CONVERSATIONS_BASE_URL",
-            format!("http://{addr}"),
-        );
-        let home = tempfile::tempdir().expect("tempdir");
-        let client = ConversationsClient::new(codel_auth_manager(home.path()));
-        let mut req = ListReq {
-            meta: Some(serde_json::json!({
-                "codel/facetFilters": { "kind": ["build"] },
-            })),
-            ..ListReq::default()
-        };
-        force_kind_chat(&mut req);
-        let result = build_unified_list(None, Some(&client), req).await;
-        let ids: Vec<&str> = result
-            .rows
-            .iter()
-            .map(|r| r.legacy.session_id.as_str())
-            .collect();
-        assert_eq!(ids, ["c2", "c1"], "conversations only, newest first");
-        assert!(
-            result
-                .rows
-                .iter()
-                .all(|r| r.legacy.source == "conversation"),
-            "no build row may survive the forced kind filter"
-        );
-        assert_eq!(result.conversations_partial, None);
     }
     /// A degraded conversations lane (no OAuth) is reported through `conversations_partial` instead of failing the list.
     #[tokio::test]

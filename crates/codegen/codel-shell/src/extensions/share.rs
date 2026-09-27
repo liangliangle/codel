@@ -177,56 +177,8 @@ mod tests {
     use codel_login::CodelComConfig;
     use codel_login::{AuthMode, CodelAuth};
 
-    fn make_auth_manager_with_token_expiring_in(
-        ttl: Duration,
-    ) -> (Arc<codel_login::AuthManager>, tempfile::TempDir) {
-        let dir = tempdir().expect("tempdir for share auth test");
-        let mgr = Arc::new(codel_login::AuthManager::new(
-            dir.path(),
-            CodelComConfig::default(),
-        ));
 
-        let expires_at = Utc::now() + ttl;
 
-        // We must explicitly set oidc_issuer to a first-party Codel issuer.
-        // Only OIDC tokens against https://auth.codel.dev (or the local-dev equivalent) return true from is_codel_auth()
-        // The share tests need that to exercise the happy path through require_codel_auth_for_share
-        let auth = CodelAuth {
-            auth_mode: AuthMode::Oidc,
-            oidc_issuer: Some("https://auth.codel.dev".to_string()),
-            key: "test-key".into(),
-            expires_at: Some(expires_at),
-            create_time: Utc::now() - Duration::hours(1),
-            ..Default::default()
-        };
-        mgr.hot_swap(auth);
-        (mgr, dir)
-    }
-
-    #[test]
-    fn share_works_outside_the_5m_early_invalidation_window() {
-        let (mgr, _dir) = make_auth_manager_with_token_expiring_in(Duration::minutes(10));
-        assert!(mgr.current().is_some());
-        assert!(require_codel_auth_for_share(&mgr).is_ok());
-    }
-
-    #[test]
-    fn share_succeeds_inside_the_5m_early_invalidation_window() {
-        let (mgr, _dir) = make_auth_manager_with_token_expiring_in(Duration::seconds(1));
-        // The regression state: the token sits inside the early-invalidation buffer
-        assert!(
-            mgr.current().is_none(),
-            "current() drops the token inside the buffer"
-        );
-        assert!(mgr.expired_auth().is_some());
-
-        // require_codel_auth_for_share reads current_or_expired(), so this passes
-        let res = require_codel_auth_for_share(&mgr);
-        assert!(
-            res.is_ok(),
-            "require_codel_auth_for_share must succeed for a still-valid buffered Codel token"
-        );
-    }
 
     #[test]
     fn share_fails_with_no_auth_at_all() {

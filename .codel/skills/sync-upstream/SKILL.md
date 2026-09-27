@@ -98,14 +98,53 @@ python3 /tmp/theirs_resolve.py $(cat /tmp/conflict_remaining.txt)
    `codel-workspace` handle 入口、`codel-workspace-daemon` 的 metrics scraper、
    `codel-shell` leader 的 pump、`workspace-server` 的 wiring、
    `codel-tool-protocol` 的 `*Donate` 帧与方法。参考 `/tmp/excise_donation.py`。
-3. **登录/登出**：删除 `/login` `/logout` slash 命令、OIDC / device-code /
-   external-auth 流程；鉴权只保留 API key。
+3. **登录/登出与鉴权收敛**：鉴权只保留 API key，其余全链删除：
+   - `/login` `/logout` slash 命令、CLI `codel login` / `codel logout` 子命令、
+     pre-TUI 登录钩子、auth 扩展的 `submit_code`/`get_url`/`cancel`/`logout` 方法
+   - `codel-login` 的 `oidc/`、`device_code.rs`、`external_auth.rs`、`pre_tui.rs`、
+     `auth_provider.rs`、`single_flight.rs`、`refresh/`（OIDC/外部 refresher）；
+     `flow.rs` 收缩为"读配置里的 API key，读不到就报错"
+   - `AuthMode` 收到只剩 `ApiKey`（用 `#[serde(other)]` 兜住旧 auth.json），
+     `TokenType` 收到 `ApiKey | None`
+   - `AuthManager` 去掉 refresher / `refresh_chain*` / `configure_refresher` /
+     主动刷新循环 / 休眠唤醒闸门 / 电源监听；`requires_manual_reauth`、
+     `auth_remedy` 改为 API key 语义
+   - `CodelComConfig` 去掉 `oidc`、`oauth2`、`auth_provider_command/label`、
+     `auth_token_ttl`、`force_login_team_uuid`、`preferred_method`；
+     `codel-config-types` 删掉 `AuthProviderConfig`
+   - `[auth_provider.<name>]` 与 `ModelEntry.auth_provider` 这条 BYOK 外部命令链
+     整条删除（其执行器 `external_auth.rs` 已删）
+   - ACP `authenticate` 只认 `codel.api_key`；pager 不再生成交互式登录提示
+     （`startup_auth_metadata` 恒为"直接认证"，`find_interactive_login_method`
+     恒返回 none）
 4. **订阅套餐**：删除 `SuperCodel` 各档位、upsell 文案与 `codel.dev/supercodel`
-   链接、JWT tier 映射；保留用量/配额这类功能性记账。
+   链接、JWT tier 映射、tier 门禁（pager 的 restricted-command deny list、
+   `codel-shell/src/tier.rs`）、`tier_restricted` 媒体能力标记、订阅检查里的
+   JWT 刷新；保留用量/配额这类功能性记账。
 5. **内置模型名**：`crates/codegen/codel-models/default_models.json` 保持空目录
    `{"models": []}`，`default_model()` 返回 `Option`；模型只能来自配置。
 6. **关键字**：全仓（含注释、常量、环境变量、文档）不得出现 `grok` / `xai` /
-   `x.ai`；环境变量统一 `CODEL_*`，不考虑兼容旧名。
+   `x.ai`；环境变量统一 `CODEL_*`，不考虑兼容旧名。JWT 头部 `eyJ0eXAi` 之类是
+   base64 误报，保留。
+
+### 5b. 清理被删除能力的测试
+
+删掉能力后，它的单元测试会一起编译失败。`/tmp/fix_loop.py` 每轮只删一个
+「测试专属 item」（`#[test]`/`#[tokio::test]` 函数，或 `_tests.rs`、`tests/`、
+`benches/`、`#[cfg(test)] mod tests` 里的任意 item），删前校验大括号平衡，
+删后再编译一次，所以不会批量删坏文件。整文件只测已删能力的（登录重试、刷新
+预算等），直接删文件并去掉它的 `#[path]` 声明。
+
+```bash
+python3 /tmp/fix_loop.py <crate>
+```
+
+注意：
+- 不要用早先的 `prune_tests.py`（批量删会破坏大括号平衡），用 `fix_loop.py`。
+- `benches/` 的失败可能是上游自带的（如 `session_list.rs` 里重复的 `agent_id`
+  字段）；`cargo check` 默认不编译 benches，不必追。
+- `#[path = "..."]` 指向的文件缺失时先看上游：上游有就补回来（我方漏建的新
+  文件），没有就删声明（codel 的删除项）。
 
 ### 6. 编译与验证
 

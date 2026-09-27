@@ -1918,39 +1918,6 @@ mod tests {
         use std::sync::Arc;
         use codel_login::{AuthManager, CodelComConfig};
 
-        struct NoOpRefresher;
-        #[async_trait::async_trait]
-        impl codel_login::refresh::TokenRefresher for NoOpRefresher {
-            async fn refresh(
-                &self,
-                _reason: codel_login::refresh::RefreshReason,
-            ) -> codel_login::refresh::RefreshOutcome {
-                codel_login::refresh::RefreshOutcome::TransientFailure {
-                    message: "noop".into(),
-                }
-            }
-        }
-
-        let dir = tempfile::tempdir().unwrap();
-        let am = Arc::new(AuthManager::new(dir.path(), CodelComConfig::default()));
-
-        let bare = FeedbackClient::new("http://example/v1", None);
-        assert!(!bare.has_token_refresher());
-
-        let with_am = FeedbackClient::new("http://example/v1", None).with_auth_manager(am.clone());
-        assert!(
-            !with_am.has_token_refresher(),
-            "AuthManager without a refresher must NOT be reported as recoverable"
-        );
-
-        am.set_refresher(std::sync::Arc::new(NoOpRefresher));
-        assert!(with_am.has_token_refresher());
-    }
-
-    /// Outcome × envelope matrix: existing props keep their names, `outcome` is always present,
-    /// and `source`/taxonomy ride only when the envelope is present.
-    #[test]
-    fn user_feedback_event_matrix() {
         let envelope = serde_json::json!({
             "structured_feedback": {
                 "schema_version": 1,

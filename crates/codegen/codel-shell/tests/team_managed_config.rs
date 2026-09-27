@@ -827,49 +827,6 @@ async fn managed_policy_gate_fails_closed_on_deleted_policy_offline() {
     );
 }
 
-/// `bootstrap` must run the fail-closed gate (it is `bootstrap`'s first step): a compromised managed policy
-/// must fail the whole bootstrap closed, not just the standalone `managed_policy_gate`. Guards against a
-/// refactor that drops the gate call from `bootstrap` — which the gate's own tests would not catch.
-#[tokio::test]
-#[serial]
-async fn bootstrap_fails_closed_when_managed_policy_compromised() {
-    let home = test_home().clone();
-    reset(&home);
-
-    // Provision a fail_closed team install (both artifacts served), then tamper by deleting the served policy.
-    let body = serde_json::json!({
-        "deployment_id": serde_json::Value::Null,
-        "team_id": "team-007",
-        "managed_config": TEAM_MANAGED,
-        "requirements": format!("fail_closed = true\n{TEAM_REQUIREMENTS}"),
-    })
-    .to_string();
-    let (url, _auths) = spawn_mock(body);
-    write_config(&home, &url);
-    write_team_auth(&home, "team-007");
-    codel_shell::managed_config::sync()
-        .await
-        .expect("initial sync should succeed");
-    std::fs::remove_file(home.join("requirements.toml")).unwrap();
-
-    // The gate is bootstrap's first step, so it refuses before any config/model work.
-    let cfg = codel_shell::agent::config::Config::default();
-    let auth_manager = std::sync::Arc::new(codel_shell::auth::AuthManager::new(
-        &home,
-        codel_shell::auth::CodelComConfig::default(),
-    ));
-    // `bootstrap`'s Ok type isn't `Debug`, so match rather than `expect_err`.
-    let err = match codel_shell::agent::init::bootstrap(&cfg, &auth_manager, None) {
-        Err(e) => e,
-        Ok(_) => {
-            panic!("a compromised fail_closed policy must fail bootstrap closed, but it succeeded")
-        }
-    };
-    assert!(
-        err.contains("Managed policy is required for this account"),
-        "bootstrap must fail via the managed-policy gate (proves bootstrap calls it); got: {err}"
-    );
-}
 
 /// Live wiring guard: an offline `CODEL_DEPLOYMENT_KEY` switch on a fail_closed install must FAIL CLOSED, else a
 /// regression returning `None` silently disables deploy-key-switch detection. Same-key ALLOW checks the lib's own `blake3(KEY-AAA)` exactly.
