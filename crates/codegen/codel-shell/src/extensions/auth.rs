@@ -16,10 +16,6 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         "codel/auth/getBearerToken" => handle_get_bearer_token(agent).await,
         "codel/getApiKey" => handle_get_api_key(),
         "codel/setApiKey" => handle_set_api_key(args),
-        "codel/auth/submit_code" => handle_submit_code(agent, args),
-        "codel/auth/get_url" => handle_get_url(agent).await,
-        "codel/auth/cancel" => handle_cancel(agent, args),
-        "codel/auth/logout" => handle_logout(agent, args).await,
         "codel/auth/info" => handle_info(agent),
         "codel/auth/check_subscription" => handle_check_subscription(agent).await,
         "codel/auth/hydrate_team_capability" => handle_hydrate_team_capability(agent, args).await,
@@ -56,23 +52,7 @@ async fn handle_hydrate_team_capability(agent: &MvpAgent, args: &acp::ExtRequest
     })
 }
 
-/// Stop an in-flight interactive login (device poll or loopback wait).
-/// Calling it when nothing is waiting does nothing.
-/// When `request_seq` is present, only that attempt is cancelled, so a delayed cancel cannot cancel a newer login that already replaced it.
-fn handle_cancel(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
-    #[derive(Deserialize)]
-    struct CancelParams {
-        #[serde(default)]
-        request_seq: Option<u64>,
-    }
-    let params: CancelParams =
-        serde_json::from_str(args.params.get()).unwrap_or(CancelParams { request_seq: None });
-    match params.request_seq {
-        Some(seq) => agent.interactive_auth.cancel_for_client_seq(seq),
-        None => agent.interactive_auth.cancel(),
-    }
-    to_raw_response(&serde_json::json!({ "cancelled": true }))
-}
+
 
 async fn handle_get_bearer_token(agent: &MvpAgent) -> ExtResult {
     // Fail closed for session tokens: desktop resume treats non-null as success. Never return a hard-expired access token
@@ -118,76 +98,11 @@ fn handle_set_api_key(args: &acp::ExtRequest) -> ExtResult {
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))
 }
 
-/// Handles an auth code submitted from the TUI.
-fn handle_submit_code(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
-    #[derive(Deserialize)]
-    struct SubmitCodeParams {
-        code: String,
-    }
 
-    let params: SubmitCodeParams = serde_json::from_str(args.params.get())
-        .map_err(|e| acp::Error::invalid_params().data(format!("invalid params: {e}")))?;
 
-    match agent.interactive_auth.submit_code(params.code) {
-        Ok(()) => to_raw_response(&serde_json::json!({ "submitted": true })),
-        Err(codel_login::single_flight::SubmitCodeError::SendFailed(e)) => {
-            Err(acp::Error::internal_error().data(format!("failed to submit auth code: {e}")))
-        }
-        Err(codel_login::single_flight::SubmitCodeError::NoPendingAttempt) => {
-            Err(acp::Error::invalid_params().data("no pending auth session"))
-        }
-    }
-}
 
-/// Awaits the auth URL from the oneshot channel (blocks until ready).
-async fn handle_get_url(agent: &MvpAgent) -> ExtResult {
-    let rx = agent.interactive_auth.take_url_rx();
-    // `None` when no URL was sent (cached credentials, early error, second poll): report mode as `null` rather than mislabeling it `loopback`
-    let (auth_url, mode) = match rx {
-        Some(rx) => match rx.await {
-            Ok(info) => (Some(info.url), Some(info.mode)),
-            Err(_) => (None, None),
-        },
-        None => (None, None),
-    };
-    to_raw_response(&serde_json::json!({
-        "auth_url": auth_url,
-        // `external_provider` kept for older clients; `mode` is authoritative.
-        "external_provider": mode.is_some_and(|m| m.is_external_provider()),
-        "mode": mode.map(|m| m.as_wire_str()),
-    }))
-}
 
-async fn handle_logout(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
-    #[derive(Deserialize)]
-    struct LogoutParams {
-        scope: Option<String>,
-    }
 
-    let params: LogoutParams = serde_json::from_str(args.params.get())
-        .map_err(|e| acp::Error::invalid_params().data(format!("invalid params: {e}")))?;
-
-    // Stop any in-flight login so it cannot write credentials back after logout.
-    agent.interactive_auth.cancel();
-
-    let result = codel_login::perform_logout(
-        &agent.auth_manager,
-        params.scope.as_deref(),
-        crate::managed_config::clear_orphan,
-    )
-    .map_err(|e| acp::Error::internal_error().data(format!("failed to logout: {e}")))?;
-    // `auth.lifecycle` (not `auth`) avoids colliding with the pre-existing per-request `AuthManager::auth()` `#[instrument]` span
-    codel_logging::event_span!("auth.lifecycle", action = "logout", success = true);
-
-    agent.models_manager.on_auth_changed().await;
-
-    to_raw_response(&serde_json::json!({
-        "ok": true,
-        "was_logged_in": result.was_logged_in,
-        "email": result.email,
-        "api_key_still_set": result.api_key_still_set,
-    }))
-}
 
 /// Re-checks the subscription once, for the retry button on the paywall screen.
 /// Returns the updated auth response with gate info so the pager can refresh the gate state.

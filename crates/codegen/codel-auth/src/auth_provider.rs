@@ -32,7 +32,7 @@ pub struct CredentialSnapshot {
 #[async_trait::async_trait]
 pub trait AuthCredentialProvider: HttpAuth + Send + Sync + 'static {
     /// Implementations should issue a cheap disk re-read (`AuthManager::refresh`) before snapshotting.
-    /// This lets callers see updates from sibling processes (`codel-desktop`, `codel login`).
+    /// This lets callers see updates from sibling processes (`codel-desktop`).
     /// The `token` field MUST mirror the bearer that `HttpAuth::apply` would send on the wire so 401-attribution prefixes match the actual request.
     fn snapshot(&self) -> CredentialSnapshot;
 

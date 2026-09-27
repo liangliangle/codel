@@ -35,32 +35,38 @@ static DEFAULTS: LazyLock<DefaultModels> = LazyLock::new(|| {
         .expect("default_models.json: invalid JSON")
 });
 
-/// Primary model for coding tasks. Returns `None` if no built-in default
-/// is configured — the user must specify a model in config.toml.
-pub fn default_model() -> Option<&'static str> {
-    DEFAULTS.default.as_deref()
+/// Primary model for coding tasks.
+///
+/// Empty when no built-in default is configured: the fork ships an empty
+/// catalogue, so the model must come from `config.toml`, a CLI flag, or the
+/// environment. Callers treat the empty string as "unset".
+pub fn default_model() -> &'static str {
+    DEFAULTS.default.as_deref().unwrap_or("")
 }
 
-/// Model for web search tool synthesis. Falls back to default model.
-pub fn default_web_search_model() -> Option<&'static str> {
+/// Model for web search tool synthesis. Falls back to the default model.
+pub fn default_web_search_model() -> &'static str {
     DEFAULTS
         .web_search
         .as_deref()
         .or(DEFAULTS.default.as_deref())
+        .unwrap_or("")
 }
 
-/// Model for image describe. Falls back to default model.
-pub fn default_image_description_model() -> Option<&'static str> {
+/// Model for image describe. Falls back to the default model.
+pub fn default_image_description_model() -> &'static str {
     DEFAULTS
         .image_description
         .as_deref()
         .or(DEFAULTS.default.as_deref())
+        .unwrap_or("")
 }
 
-/// Model for session title generation. Falls back to default model.
-pub fn default_session_summary_model() -> Option<&'static str> {
+/// Model for session title generation. Falls back to the default model.
+pub fn default_session_summary_model() -> &'static str {
     DEFAULTS
         .session_summary
         .as_deref()
         .or(DEFAULTS.default.as_deref())
+        .unwrap_or("")
 }

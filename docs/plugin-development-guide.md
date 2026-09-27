@@ -569,7 +569,7 @@ agents/
 ---
 name: code-reviewer
 description: 专注于代码审查的代理
-model: grok-4
+model: <your-model-id>
 tools:
   - read_file
   - grep

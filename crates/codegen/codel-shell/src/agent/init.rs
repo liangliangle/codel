@@ -527,58 +527,8 @@ pub fn build_default_otel_layer_config() -> codel_logging::otel_layer::OtelLayer
         exporter,
     }
 }
-/// Sync this principal's config now rather than waiting for the background tick.
-/// Stay quiet about absence or failure during login; confirm only when config was actually applied.
-/// Driven by the login callers here so auth does not reach into managed config.
-pub async fn apply_post_login_config(
-    authenticated: codel_login::CodelAuth,
-) -> anyhow::Result<()> {
-    let outcome = crate::managed_config::post_login_sync(Some(authenticated)).await;
-    match outcome {
-        crate::managed_config::ManagedConfigSync::Updated { is_team: true } => {
-            eprintln!("Applied your team's managed configuration.");
-        }
-        crate::managed_config::ManagedConfigSync::Updated { is_team: false } => {
-            eprintln!("Applied your deployment's managed configuration.");
-        }
-        crate::managed_config::ManagedConfigSync::Staged => {
-            eprintln!(
-                "Managed configuration update verified; it takes effect the next time Codel starts."
-            );
-        }
-        _ => {}
-    }
-    Ok(())
-}
-/// `codel logout` CLI subcommand: clear the cached session and, when one was cleared, drop any orphaned synced files.
-/// The orphan cleanup runs here in shell so auth stays out of managed config.
-pub fn run_cli_logout(codel_com_config: &codel_login::CodelComConfig) -> anyhow::Result<()> {
-    let codel_home = codel_shell_base::util::codel_home::codel_home();
-    let auth_manager = codel_login::AuthManager::new_with_proxy_base_url(
-        &codel_home,
-        codel_com_config.clone(),
-        crate::agent::config::EndpointsConfig::from_effective_config().proxy_url(),
-    );
-    let result =
-        codel_login::perform_logout(&auth_manager, None, crate::managed_config::clear_orphan)
-            .map_err(|e| anyhow::anyhow!("Failed to clear auth: {e}"))?;
-    if !result.was_logged_in {
-        eprintln!("No cached session to log out of.");
-        if result.api_key_still_set {
-            eprintln!("You are authenticated via CODEL_API_KEY (environment variable).");
-        }
-        return Ok(());
-    }
-    if let Some(email) = result.email {
-        eprintln!("Logged out (was signed in as {email})");
-    } else {
-        eprintln!("Logged out");
-    }
-    if result.api_key_still_set {
-        eprintln!("CODEL_API_KEY is still set and will be used for authentication.");
-    }
-    Ok(())
-}
+
+
 #[cfg(test)]
 #[path = "init_tests.rs"]
 mod tests;

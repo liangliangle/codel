@@ -55,12 +55,10 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
     let (entrypoint, interactivity) = match command {
         Some(Command::Agent(_)) => return None,
         Some(Command::Dashboard) => return None,
-        Some(Command::Login { .. }) => (Entrypoint::Cli, Interactivity::Interactive),
         Some(
             Command::Inspect { .. }
             | Command::Doctor(_)
             | Command::Leader(_)
-            | Command::Logout
             | Command::Mcp(_)
             | Command::Plugin(_)
             | Command::Memory(_)
@@ -100,8 +98,6 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
             Command::Inspect { .. }
             | Command::Doctor(_)
             | Command::Leader(_)
-            | Command::Logout
-            | Command::Login { .. }
             | Command::Mcp(_)
             | Command::Plugin(_)
             | Command::Memory(_)
@@ -269,7 +265,7 @@ async fn run_setup_command(json: bool) {
     if !managed_config::has_principal() {
         eprintln!("No deployment key or team sign-in found.");
         eprintln!();
-        eprintln!("To install managed configuration, sign in with a team using `codel login`,");
+        eprintln!("To install managed configuration, configure a team API key,");
         eprintln!("or set a deployment key:");
         eprintln!();
         if cfg!(unix) {
@@ -609,7 +605,7 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
         WorkspaceGate::Unknown => {
             anyhow::bail!(
                 "Could not load your settings for `codel workspace`. Check your \
-             network connection (run `codel login` if you are signed out), then \
+             network connection (set an API key if you are unauthenticated), then \
              try again."
             )
         }
@@ -718,7 +714,7 @@ async fn spawn_and_connect_leader(
         agent_config.login_device_flow,
         agent_config.endpoints.proxy_url(),
         false,
-        Some("No cached credentials found. Run `codel login` first."),
+        Some("No cached credentials found. Configure an API key first."),
     )
     .await?;
     let env_urls = LeaderEnvUrls::from(&agent_config.codel_com_config);
@@ -2374,39 +2370,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     &update_config,
                 )
                 .await;
-            }
-            Command::Login {
-                legacy: _,
-                oauth,
-                device_auth,
-                devbox,
-            } => {
-                init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
-                let config = codel_shell::config::load_agent_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                let authenticated = codel_login::run_cli_login(
-                    config.codel_com_config.clone(),
-                    config.login_device_flow,
-                    config.endpoints.proxy_url(),
-                    oauth,
-                    device_auth,
-                    devbox,
-                    |auth_manager| {
-                        codel_shell::agent::init::update_telemetry_config(&config, auth_manager)
-                    },
-                )
-                .await?;
-                codel_shell::agent::init::apply_post_login_config(authenticated).await?;
-                println!();
-                codel_shell::instrumentation::finalize_and_exit(0);
-            }
-            Command::Logout => {
-                init_tracing_simple("cli");
-                let config = codel_shell::config::load_agent_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                codel_shell::agent::init::run_cli_logout(&config.codel_com_config)?;
-                codel_shell::instrumentation::finalize_and_exit(0);
             }
             Command::Wrap(ref wrap_args) => {
                 return codel_pager::wrap_cmd::run(wrap_args);

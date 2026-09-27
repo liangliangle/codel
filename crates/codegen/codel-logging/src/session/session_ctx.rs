@@ -456,7 +456,7 @@ mod tests {
         );
     }
 
-    /// What a command exiting right after emitting (`codel login`) relies on.
+    /// What a short-lived command that exits right after emitting relies on.
     /// Asserts on the wait, not on the gauge: it is process-global and other tests in this binary emit concurrently.
     #[tokio::test]
     async fn drain_pending_waits_for_in_flight_posts() {

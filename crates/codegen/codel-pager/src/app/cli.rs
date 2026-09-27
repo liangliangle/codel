@@ -18,28 +18,6 @@ pub enum Command {
     Doctor(crate::doctor_cmd::DoctorArgs),
     /// Manage running leader processes
     Leader(LeaderMgmtArgs),
-    /// Sign out and clear cached credentials
-    Logout,
-    /// Sign in to Codel
-    Login {
-        /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
-        #[arg(long, hide = true)]
-        legacy: bool,
-        /// Use Codel OAuth via auth.codel.dev.
-        #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
-        oauth: bool,
-        /// Use device-code authentication for headless/remote environments.
-        #[arg(
-            long = "device-auth",
-            visible_alias = "device-code",
-            conflicts_with_all = ["oauth"]
-        )]
-        device_auth: bool,
-        /// Authenticate for remote development environments (hidden).
-        /// Field is always present so match arms stay feature-unification-safe; clap registers `--devbox` only when that feature is enabled (`arg(skip)` otherwise → always false).
-        #[arg(skip)]
-        devbox: bool,
-    },
     /// Manage MCP server configurations
     Mcp(crate::mcp_cmd::McpArgs),
     /// Manage plugins and marketplace sources
@@ -1388,8 +1366,8 @@ mod tests {
     }
     #[test]
     fn subcommand_takes_precedence_over_positional_prompt() {
-        let args = PagerArgs::try_parse_from(["codel", "logout"]).expect("subcommand parses");
-        assert!(matches!(args.command, Some(Command::Logout)));
+        let args = PagerArgs::try_parse_from(["codel", "doctor"]).expect("subcommand parses");
+        assert!(matches!(args.command, Some(Command::Doctor(_))));
         assert!(args.prompt.is_none());
     }
     #[test]

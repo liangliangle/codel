@@ -687,18 +687,6 @@ pub async fn run(
                 )
             }
         };
-    if let codel_login::PreTuiLoginOutcome::SignedIn(auth) =
-        codel_login::maybe_run_pre_tui_external_login(
-            &codel_com_config,
-            proxy_base_url.clone(),
-            args.force_login,
-            io::stdin().is_terminal(),
-        )
-        .await?
-    {
-        codel_shell::agent::init::apply_post_login_config(*auth).await?;
-        args.force_login = false;
-    }
     codel_tty_utils::redirect_native_stderr();
     let refreshed_auth = tokio::time::timeout(
         codel_shell::http::STARTUP_AUTH_REFRESH_TIMEOUT,

@@ -20,7 +20,7 @@ pub enum VoiceAuthError {
         "voice needs an Codel credential for this account: sign in with an Codel login or set CODEL_API_KEY"
     )]
     ForeignSession,
-    #[error("not signed in — run `codel login`, set CODEL_API_KEY, or set a model api_key/env_key")]
+    #[error("not authenticated — set CODEL_API_KEY, or set a model api_key/env_key")]
     NotSignedIn,
 }
 

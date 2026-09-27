@@ -86,7 +86,7 @@ pub fn default_auth_path() -> anyhow::Result<PathBuf> {
     Ok(codel.join("auth.json"))
 }
 
-/// The `codel login` session [`provider`] would build from an auth file: which scope entry, and whose.
+/// The session [`provider`] would build from an auth file: which scope entry, and whose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginSession {
     /// The `auth.json` scope key the entry lives under; refreshes are persisted back to it.
@@ -119,7 +119,7 @@ pub fn login_session(auth_path: &Path) -> anyhow::Result<Option<LoginSession>> {
 
 /// The session under one scope key of `auth_path`, or `None` when there is no file, no such entry,
 /// or the entry is not an OIDC session. For watching the entry a provider was built from: a
-/// `codel logout` removes it, a `codel login` as someone else replaces its identity.
+/// Re-authenticating as someone else replaces its identity.
 ///
 /// # Errors
 ///
@@ -143,13 +143,13 @@ pub fn login_session_at(auth_path: &Path, scope_key: &str) -> anyhow::Result<Opt
 fn read_auth_entry(path: &Path) -> anyhow::Result<(String, AuthEntry)> {
     let Some(entries) = read_auth_entries_if_present(path)? else {
         anyhow::bail!(
-            "No auth credentials found at {}. Run `codel login` first.",
+            "No auth credentials found at {}. Configure an API key first.",
             path.display()
         );
     };
     select_login_entry(entries).ok_or_else(|| {
         anyhow::anyhow!(
-            "no OIDC auth entry found in {}. Run `codel login` first.",
+            "no API-key auth entry found in {}. Configure an API key first.",
             path.display()
         )
     })
