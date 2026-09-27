@@ -1,8 +1,8 @@
-//! `codel/session/usage` — cumulative session token/cost as [`PromptUsage`].
+//! `codel/session/usage`: cumulative session token and cost totals as [`PromptUsage`].
 //!
-//! Projects the in-memory [`codel_chat_state::UsageLedger`] (main-loop + folded
-//! subagent spend). Partial costs are scrubbed (absence ≠ free). Totals reset
-//! when a session is resumed in a new agent process.
+//! Reads the in-memory [`codel_chat_state::UsageLedger`] (main-loop and folded subagent spend).
+//! Partial costs are scrubbed, since an absent cost does not mean free.
+//! Totals reset when a session is resumed in a new agent process.
 
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ async fn handle_session_usage(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
     let req: SessionUsageRequest = parse_params(args)?;
     let session_id = acp::SessionId::new(req.session_id.as_str());
 
-    // Wait out in-flight session/load rather than racing reconnect to not-found.
+    // Wait out an in-flight session/load so a reconnecting client is not answered with not-found
     let Some(handle) = agent.session_handle_waiting_for_load(&session_id).await else {
         return Err(acp::Error::resource_not_found(Some(format!(
             "session not found: {}",
@@ -69,6 +69,7 @@ mod tests {
             total_tokens: 0,
             reasoning_tokens: 0,
             cached_prompt_tokens: 0,
+            cache_creation_prompt_tokens: 0,
         }
     }
 
@@ -80,11 +81,23 @@ mod tests {
             usage: PromptUsage::from(&ledger),
         })
         .unwrap();
-        assert_eq!(v["usage"]["inputTokens"], 100);
-        assert_eq!(v["usage"]["outputTokens"], 10);
-        assert_eq!(v["usage"]["numTurns"], 1);
-        assert_eq!(v["usage"]["costUsdTicks"], 20_000_000);
-        assert_eq!(v["usage"]["modelUsage"]["codel-build"]["inputTokens"], 100);
+        assert_eq!(
+            v.pointer("/usage/inputTokens"),
+            Some(&serde_json::json!(100))
+        );
+        assert_eq!(
+            v.pointer("/usage/outputTokens"),
+            Some(&serde_json::json!(10))
+        );
+        assert_eq!(v.pointer("/usage/numTurns"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            v.pointer("/usage/costUsdTicks"),
+            Some(&serde_json::json!(20_000_000))
+        );
+        assert_eq!(
+            v.pointer("/usage/modelUsage/codel-build/inputTokens"),
+            Some(&serde_json::json!(100))
+        );
         let rt: SessionUsageResponse = serde_json::from_value(v).unwrap();
         assert_eq!(rt.usage.totals.cost_usd_ticks, Some(20_000_000));
     }
@@ -98,7 +111,15 @@ mod tests {
             usage: PromptUsage::from(&ledger),
         })
         .unwrap();
-        assert_eq!(v["usage"]["costUsdTicks"], serde_json::Value::Null);
-        assert_eq!(v["usage"]["costIsPartial"], true);
+        // Scrubbed cost is either omitted or serialized as null.
+        assert!(
+            v.pointer("/usage/costUsdTicks")
+                .is_none_or(serde_json::Value::is_null),
+            "{v:?}"
+        );
+        assert_eq!(
+            v.pointer("/usage/costIsPartial"),
+            Some(&serde_json::json!(true))
+        );
     }
 }

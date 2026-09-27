@@ -20,15 +20,19 @@
 //! 1. Drains every parked response waiter with
 //!    [`crate::ClientError::NetworkError`] so callers can fast-fail
 //!    instead of deadlocking.
-//! 2. Reconnects with exponential backoff (capped).
+//! 2. Reconnects with exponential backoff, full jitter, capped at the last slot.
 //! 3. Re-runs the `hello` handshake.
 //! 4. The ToolServer replays `serve{session_id, tools}` per active
 //!    session via the on_reconnect callback. The server auto-registers
-//!    sessions from `serve` so no separate wire call is needed.
+//!    sessions from `serve` so no separate wire call is needed. A harness
+//!    replays `session_open` and then every `session_bind_server` it last
+//!    succeeded with, so the hub forwards a fresh `session.bind` — stamped
+//!    with its current policy — to each tool server the session was bound
+//!    to (a hub roll drops both sockets and re-stamps nothing by itself).
 //! 5. Drains any outbound frames that buffered during step 1-4.
 use crate::auth::{AuthCredential, AuthProvider, PrincipalKey};
 use crate::demux::Demux;
-use crate::error::ClientError;
+use crate::error::{ClientError, RefusalCode};
 use crate::handshake::send_hello;
 use crate::refcount::RefCountedSet;
 use futures::stream::SplitSink;
@@ -37,6 +41,7 @@ use futures::{SinkExt, Stream, StreamExt};
 use http::HeaderName;
 use http::header::HeaderValue;
 use serde_json::Value;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::net::TcpStream;
@@ -46,19 +51,47 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 use codel_tool_protocol::{
-    ConnectionId, ConnectionKind, JsonRpcId, JsonRpcRequest, JsonRpcResponse, JsonRpcVersion,
-    Method, PongFrame, ResponseOutcome, SessionId,
+    AuthRefreshParams, AuthRefreshResult, ConnectionId, ConnectionKind, JsonRpcError, JsonRpcId,
+    JsonRpcRequest, JsonRpcResponse, JsonRpcVersion, Method, PingFrame, PongFrame, ResponseOutcome,
+    ServerId, SessionBindServerParams, SessionId,
 };
 /// Outbound mpsc bound. Picked to match the server's per-actor outbound
 /// buffer so a single-process roundtrip never dead-blocks on sender
 /// capacity.
 const OUTBOUND_BUFFER: usize = 256;
+/// Writer control channel depth. Must fit a liveness `Close` + `Pause`
+/// while still leaving room for `Resume` if the writer is mid-`sink.send`.
+const WRITER_CTL_CAPACITY: usize = 4;
+/// App-pong / priority outbound depth. Small and independent of the data
+/// outbound buffer so heartbeats are not shed by tool-call backpressure.
+const PRIORITY_OUTBOUND_CAPACITY: usize = 16;
+/// Bound for the best-effort WS Close on a liveness kill. A silently dead
+/// peer with a full TCP send buffer must not block Pause/Resume forever.
+const WRITER_CLOSE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 /// Backoff schedule (in ms) for reconnect attempts. The last value is
-/// reused for any further attempts so the cap is `10s`.
+/// reused for any further attempts and is the documented cap (`10s`).
+/// Each wait is `Uniform(0, min(cap, max(slot, SPREAD_FLOOR)))`.
 const RECONNECT_BACKOFF_MS: &[u64] = &[100, 200, 500, 1_000, 2_000, 5_000, 10_000];
+/// Lower bound on the full-jitter window. ±25 % of the 100 ms first slot
+/// is only a 50 ms spread — phase-locked reconnects from a large client
+/// fleet can overwhelm a recovering server once handshake+replay exceeds
+/// that window (peak concurrent handshakes approaches N). Uniform over
+/// ≥1 s spreads the same herd across roughly one slot. Capped by the
+/// schedule's last slot so a short test/override table stays fast. Keep
+/// the floor well below typical client disconnect-grace timers so a
+/// delayed reconnect is not mistaken for a permanent drop.
+const RECONNECT_SPREAD_FLOOR: Duration = Duration::from_secs(1);
+/// Prior connection must have lived this long before a new outage resets
+/// `attempt`. Shorter flaps keep climbing so a crash-loop server or a
+/// drain followed immediately by another drop cannot pin the fleet on
+/// slot 1.
+const RECONNECT_ATTEMPT_RESET_AFTER: Duration = Duration::from_secs(10);
+/// Per-process counter mixed into each connection's jitter seed so two
+/// clients constructed in the same instant still de-phase on attempt 1.
+static NEXT_RECONNECT_JITTER_SEED: AtomicU64 = AtomicU64::new(1);
 /// Floor for the per-attempt reconnect budget: a small liveness override
 /// must not shrink it below what a WAN handshake + session replay needs,
 /// or the retry loop would livelock aborting every attempt at the bound.
@@ -68,11 +101,49 @@ const RECONNECT_ATTEMPT_MIN_BUDGET: Duration = Duration::from_secs(30);
 fn reconnect_attempt_budget(liveness_deadline: Duration) -> Duration {
     liveness_deadline.max(RECONNECT_ATTEMPT_MIN_BUDGET)
 }
+/// Per-attempt budget for the initial connect (WebSocket upgrade +
+/// hello/hello_ack). Neither `connect_async` nor the hello_ack wait is
+/// otherwise bounded, so a peer that accepts the socket but never answers
+/// (e.g. a hub instance draining mid-roll) would hang the caller
+/// indefinitely, burning the embedder's own readiness budget on one dead
+/// attempt.
+const INITIAL_CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Initial-connect attempts before the error surfaces to the caller. Waits
+/// between attempts come from the reconnect backoff schedule (jittered), so
+/// a fleet cold-starting into a degraded hub de-phases its retries.
+const INITIAL_CONNECT_MAX_ATTEMPTS: u32 = 3;
 /// Default WebSocket keepalive ping cadence when a connection does not
 /// override [`ConnectionTuning::ws_ping_interval`].
 const DEFAULT_WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const SERVE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const SERVE_MAX_ATTEMPTS: u32 = 3;
+/// How often a token-bound tool server asks its provider for a fresher bearer
+/// to present in band ([`AuthRefreshDriver`]) unless
+/// [`ConnectionTuning::auth_refresh_poll`] says otherwise.
+pub(crate) const AUTH_REFRESH_POLL: Duration = Duration::from_secs(30);
+/// Bound on one `auth.refresh` round-trip; the hub answers or refuses well
+/// within this, so a later reply is a stuck socket.
+const AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
+/// Unaccepted `auth.refresh` answers in a row on one phase at which the
+/// driver logs once at `warn!`: a refusal that persists means the hub will
+/// still close the socket at the bearer's `exp`.
+const AUTH_REFRESH_WARN_AFTER: u32 = 3;
+/// The hub's `error.data.reason` for a bearer whose `exp` is not later than
+/// the one it already holds.
+const AUTH_REFRESH_NOT_LATER: &str = "not_later";
+/// The `data.reason` values the hub sends with a refused `auth.refresh`.
+const AUTH_REFRESH_KNOWN_REASONS: &[&str] = &[
+    "not_token_bound",
+    "unconfigured",
+    "disabled",
+    "in_flight",
+    "too_soon",
+    "unreadable",
+    AUTH_REFRESH_NOT_LATER,
+    "unverified",
+    "identity_changed",
+    "unavailable",
+];
 const CLOCK_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 const CLOCK_JUMP_ACCUM_MIN_MS: u64 = 100;
 const CLOCK_JUMP_REPORT_MIN_MS: u64 = 2_000;
@@ -86,9 +157,9 @@ struct HealthState {
 struct HealthSnapshot {
     last_inbound: Instant,
     /// Monotonic time elapsed since the last probe window rolled (the most
-    /// recent inbound frame or 5s clock probe) — NOT since connection start.
-    /// Healthy traffic keeps this small (<= ~5s); the meaningful freeze
-    /// signal in this snapshot is `clock_jump_ms`.
+    /// recent RTT proof — WS/app pong — or 5s clock probe) — NOT since
+    /// connection start. Healthy traffic keeps this small (<= ~5s); the
+    /// meaningful freeze signal in this snapshot is `clock_jump_ms`.
     since_last_probe_monotonic_ms: u64,
     /// Wall-clock time elapsed over the same probe window as
     /// `since_last_probe_monotonic_ms`.
@@ -129,6 +200,9 @@ impl ConnHealth {
         state.mono_ref = Instant::now();
         state.wall_ref = SystemTime::now();
     }
+    /// Record RTT proof (WS/app pong). Hub→client pings/data must not call
+    /// this — they are one-way and would zero `detect_ms` / `silent_gap_ms`
+    /// during a mute that still expires the liveness deadline.
     fn record_inbound(&self) {
         let mut state = self.state.lock();
         Self::roll(&mut state);
@@ -171,8 +245,8 @@ enum DisconnectCause {
     ReadError(String),
     WriteError(String),
     Forced,
-    /// No inbound frame arrived within the inbound-liveness deadline, so the
-    /// transport is silently dead (snapshot-restored VM, NAT/LB flow expiry).
+    /// No RTT proof (WS/app pong or non-ping data) within the inbound-liveness
+    /// deadline — return path is silently dead.
     LivenessDeadline,
 }
 impl DisconnectCause {
@@ -197,6 +271,33 @@ impl DisconnectCause {
             Self::ReadError(detail) | Self::WriteError(detail) => Some(detail),
             _ => None,
         }
+    }
+    /// Bounded classification of transport error detail for metrics. Collapses
+    /// free-form OS/tungstenite messages into a small allowlist so reconnect
+    /// storms can be attributed without high-cardinality labels.
+    fn detail_class(&self) -> Option<&'static str> {
+        let detail = self.detail()?;
+        Some(classify_transport_detail(detail))
+    }
+}
+/// Map a transport error detail string to a bounded class label.
+fn classify_transport_detail(detail: &str) -> &'static str {
+    let d = detail.to_ascii_lowercase();
+    if d.contains("connection reset") || d.contains("econnreset") || d.contains("reset by peer") {
+        "connection_reset"
+    } else if d.contains("broken pipe") || d.contains("epipe") {
+        "broken_pipe"
+    } else if d.contains("unexpected eof")
+        || d.contains("connection closed")
+        || d.contains("connection aborted without closing")
+    {
+        "unexpected_eof"
+    } else if d.contains("timed out") || d.contains("timeout") || d.contains("etimedout") {
+        "timeout"
+    } else if d.contains("connection aborted") || d.contains("econnaborted") {
+        "connection_aborted"
+    } else {
+        "other"
     }
 }
 struct OutageInfo {
@@ -232,6 +333,47 @@ impl Drop for WaiterGuard<'_> {
         let _ = self.demux.take_response_waiter(self.request_id);
     }
 }
+/// Allocate a request id on `connection`, wrap `params` in a session-scoped
+/// request under `method`, and serialize to text. The id is returned for
+/// callers that park a response waiter; fire-and-forget callers discard it.
+/// The enqueue (async [`HubConnection::send_outbound`] vs sync
+/// [`HubConnection::try_send_outbound`]) stays with the caller.
+pub(crate) fn build_request_frame<P: serde::Serialize>(
+    connection: &HubConnection,
+    session_id: &SessionId,
+    method: Method,
+    params: P,
+) -> Result<(codel_tool_protocol::RequestId, String), ClientError> {
+    let request_id = connection.try_alloc_request_id()?;
+    let req = JsonRpcRequest {
+        jsonrpc: JsonRpcVersion,
+        id: JsonRpcId::from_request_id(&request_id),
+        session_id: Some(session_id.clone()),
+        method: method.as_wire_str().to_owned(),
+        params,
+    };
+    let text = serde_json::to_string(&req).map_err(ClientError::from)?;
+    Ok((request_id, text))
+}
+/// Best-effort, non-blocking request for drop paths that cannot `.await`.
+/// A full channel drops the frame and logs at debug; a closed one is the
+/// normal shutdown path (the actor closes outbound before exiting) and is
+/// silent. Nobody awaits the reply.
+pub(crate) fn try_send_request_on_drop<P: serde::Serialize>(
+    connection: &HubConnection,
+    session_id: &SessionId,
+    method: Method,
+    params: P,
+    what: &'static str,
+) {
+    let Ok((_request_id, text)) = build_request_frame(connection, session_id, method, params)
+    else {
+        return;
+    };
+    if let Err(ClientError::BackpressureError(_)) = connection.try_send_outbound(text) {
+        tracing::debug!(session_id = %session_id, "{what} dropped (outbound channel full)");
+    }
+}
 /// Process-wide default reconnect schedule, materialised once from
 /// [`RECONNECT_BACKOFF_MS`]. Connections that do not override
 /// [`ConnectionTuning::reconnect_backoff`] share this `Arc` (cheap clone,
@@ -255,6 +397,10 @@ fn resolve_reconnect_backoff(configured: Option<Arc<[Duration]>>) -> Arc<[Durati
         _ => default_reconnect_backoff(),
     }
 }
+/// `None` → the 10 s production dwell. `Some`, including zero, is verbatim.
+pub(crate) fn resolve_attempt_reset_after(configured: Option<Duration>) -> Duration {
+    configured.unwrap_or(RECONNECT_ATTEMPT_RESET_AFTER)
+}
 /// Resolve the keepalive ping cadence, clamping an unset *or zero* value to
 /// [`DEFAULT_WS_PING_INTERVAL`]. `tokio::time::interval` panics on a zero
 /// period, so a configured `Duration::ZERO` (e.g. via
@@ -266,24 +412,49 @@ fn resolve_ws_ping_interval(configured: Option<Duration>) -> Duration {
         _ => DEFAULT_WS_PING_INTERVAL,
     }
 }
+/// Resolve the per-attempt initial-connect budget, clamping an unset *or
+/// zero* value to [`INITIAL_CONNECT_ATTEMPT_TIMEOUT`] — a zero budget would
+/// abort every attempt before the upgrade could complete.
+fn resolve_initial_connect_attempt_timeout(configured: Option<Duration>) -> Duration {
+    match configured {
+        Some(timeout) if !timeout.is_zero() => timeout,
+        _ => INITIAL_CONNECT_ATTEMPT_TIMEOUT,
+    }
+}
+/// Whether an initial-connect failure is worth another attempt. Transport
+/// failures (including the per-attempt timeout, which surfaces as
+/// `NetworkError`) and server closes are transient; auth, config, protocol,
+/// and insecure-scheme failures are deterministic and must surface
+/// immediately.
+fn initial_connect_retryable(err: &ClientError) -> bool {
+    matches!(err, ClientError::NetworkError(_) | ClientError::Closed(_))
+}
 /// Resolve the inbound-liveness deadline, clamping an unset *or zero* value
-/// to 2.5× the (already-resolved) keepalive ping cadence — 75s at the
-/// default 30s ping.
+/// to `min(4× ping, 120s)` — 120s at the default 30s ping, still under the
+/// hub's ~150s idle timeout.
 ///
-/// The default multiple is chosen for fleet-wide false-positive safety: a
-/// healthy connection delivers at least one inbound frame per ping period
-/// (the server must answer each WS `Ping` with a `Pong`, and any data frame
-/// also counts), so 2.5× tolerates a fully lost/coalesced pong plus
-/// scheduling jitter before declaring death. It still detects a silently
-/// dead transport (snapshot-restored VM, NAT/LB flow expiry) within ~1–2
-/// keepalive cycles instead of TCP-retransmission timescales (15+ min).
-/// Explicit overrides are honored verbatim; keep them comfortably above
-/// the ping interval or a healthy-but-idle connection will be churned.
+/// After RTT-only re-arm, hub app/WS pings no longer keep the timer alive.
+/// 4× (capped) tolerates a few lost/coalesced pongs plus scheduling jitter
+/// without racing hub 4408. Explicit overrides are honored verbatim; keep
+/// them comfortably above the ping interval or a healthy-but-idle
+/// connection will be churned.
 fn resolve_ws_liveness_deadline(configured: Option<Duration>, ping_interval: Duration) -> Duration {
     match configured {
         Some(deadline) if !deadline.is_zero() => deadline,
-        _ => ping_interval.saturating_mul(5) / 2,
+        _ => ping_interval
+            .saturating_mul(4)
+            .min(Duration::from_secs(120)),
     }
+}
+/// Embedder policy for the first connect, before the reconnect loop owns the socket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InitialConnectPolicy {
+    /// Per-attempt budget for upgrade + hello/hello_ack. `None` or zero ⇒ 10s.
+    pub attempt_timeout: Option<Duration>,
+    /// Start a second transport attempt when the first has not upgraded by then. `None` or zero ⇒ no hedge.
+    pub hedge_after: Option<Duration>,
+    /// Budget for the whole initial connect across attempts. `None` or zero ⇒ the legacy 3-attempt cap.
+    pub deadline: Option<Duration>,
 }
 /// Optional, default-preserving connection-tuning knobs carried from the
 /// pool/builder into [`ConnectionConfig`]. `Default` leaves every value
@@ -295,15 +466,37 @@ pub struct ConnectionTuning {
     /// Override for the keepalive ping cadence. `None` (or zero) ⇒
     /// [`DEFAULT_WS_PING_INTERVAL`].
     pub ws_ping_interval: Option<Duration>,
-    /// Override for the inbound-liveness deadline: with no inbound frame of
-    /// any kind for this long, the reader declares the socket dead and
-    /// reconnects. `None` (or zero) ⇒ 2.5× the effective ping cadence (see
-    /// [`resolve_ws_liveness_deadline`]).
+    /// Override for the inbound-liveness deadline: with no *round-trip*
+    /// proof (WS/app pong) for this long, the reader declares the socket
+    /// dead and reconnects. Hub app pings and one-way hub→client data do
+    /// not re-arm. `None` (or zero) ⇒ `min(4× ping, 120s)`
+    /// (see [`resolve_ws_liveness_deadline`]).
     pub ws_liveness_deadline: Option<Duration>,
     /// Override for the reconnect backoff schedule. `None` (or empty) ⇒
-    /// the built-in [`RECONNECT_BACKOFF_MS`] table. Stored as
-    /// `Arc<[Duration]>` so it is shared (not deep-copied) per reconnect.
+    /// the built-in [`RECONNECT_BACKOFF_MS`] table. Each wait is
+    /// `Uniform(0, min(last_slot, max(slot, 1s)))` — not the literal slot.
+    /// Stored as `Arc<[Duration]>` so it is shared per reconnect.
     pub reconnect_backoff: Option<Arc<[Duration]>>,
+    /// How long the previous connection must have stayed up before a new
+    /// outage resets the reconnect attempt counter. `None` ⇒ 10 s (one
+    /// default cap period). `Some`, including zero, is honored verbatim
+    /// (`Some(ZERO)` resets on every outage; tests use this).
+    pub reconnect_attempt_reset_after: Option<Duration>,
+    /// Allowlist of 4100–4199 close codes that fire
+    /// [`ConnectionConfig::on_terminal_close`] then re-enter the reconnect
+    /// loop instead of permanently stopping the actor. Empty (default)
+    /// keeps the protocol contract: every terminal close is a one-way door.
+    /// Only codes for a still-restorable session (e.g.
+    /// [`CLOSE_CODE_SANDBOX_TERMINATED`]) belong here; one-way codes
+    /// (force eviction, session expiry, admin disconnect, supersession)
+    /// must not.
+    pub reconnect_after_terminal_close_codes: Vec<u16>,
+    /// Policy for the initial connection before reconnect handling begins.
+    pub initial_connect: InitialConnectPolicy,
+    /// Override for how often a token-bound tool server asks its provider
+    /// for a fresher bearer to present in band (`auth.refresh`). `None` (or
+    /// zero) ⇒ 30 s.
+    pub auth_refresh_poll: Option<Duration>,
 }
 /// Pool dedup key. Two connections are pooled together iff their
 /// `(url, principal)` match.
@@ -331,7 +524,11 @@ pub struct ReconnectEvent {
     pub connection_id: ConnectionId,
     /// Number of session bindings replayed.
     pub sessions_replayed: usize,
-    /// Reconnect attempt index (1 for the first reconnect).
+    /// Reconnect attempt index since the last *stable* connection (1-based).
+    /// Rapid flaps do not reset this, so a crash-loop climbs the ladder.
+    /// After the prior socket stayed up for
+    /// [`ConnectionTuning::reconnect_attempt_reset_after`] (default 10 s)
+    /// the next outage starts at 1 again.
     pub attempt: u32,
 }
 /// Boxed reconnect callback.
@@ -339,11 +536,22 @@ pub type ReconnectCallback = Box<dyn Fn(ReconnectEvent) + Send + Sync + 'static>
 /// Boxed disconnect callback, fired when the live socket drops (before a
 /// reconnect attempt) and on a terminal close.
 pub type DisconnectCallback = Box<dyn Fn() + Send + Sync + 'static>;
-/// Boxed connect callback, fired once on the initial successful connect,
-/// before the reader actor task spawns. It therefore strictly happens-before
-/// any disconnect/reconnect callback, so a connect/disconnect pair can never
-/// be observed out of order (e.g. a readiness marker resurrected after the
-/// socket has already dropped).
+/// Boxed terminal-close callback, fired with the WebSocket close code when
+/// the server ends the connection in the 4100–4199 range. Default policy is
+/// no reconnect; [`ConnectionTuning::reconnect_after_terminal_close_codes`]
+/// opts the embedder into recovery after this callback. Always followed by
+/// [`DisconnectCallback`] so readiness still flips.
+pub type TerminalCloseCallback = Box<dyn Fn(u16) + Send + Sync + 'static>;
+/// Boxed callback fired when a *reconnect's* upgrade is answered `401`/`403`, with the status and
+/// the policy code a `403` body names. The actor stops afterwards: the same credential fails the
+/// same way. (The initial connect reports this as [`ClientError::HandshakeAuthFailed`] instead.)
+pub type HandshakeRefusedCallback = Box<dyn Fn(u16, Option<RefusalCode>) + Send + Sync + 'static>;
+/// Boxed connect callback, fired once on the initial successful connect
+/// after the writer keepalive loop has entered (so `/ready` cannot race
+/// the first ping) and before the reader actor task spawns. It therefore
+/// strictly happens-before any disconnect/reconnect callback, so a
+/// connect/disconnect pair can never be observed out of order (e.g. a
+/// readiness marker resurrected after the socket has already dropped).
 pub type ConnectCallback = Box<dyn Fn() + Send + Sync + 'static>;
 /// A live (or reconnecting) connection to the server.
 ///
@@ -384,8 +592,17 @@ pub struct ConnectionConfig {
     /// Optional disconnect callback, fired when the live socket drops or the
     /// server sends a terminal close.
     pub on_disconnect: Option<Arc<DisconnectCallback>>,
+    /// Optional terminal-close callback, fired with the close code on a
+    /// 4100–4199 close, before [`Self::on_disconnect`]. The actor still
+    /// stops afterwards unless the code is in
+    /// [`ConnectionTuning::reconnect_after_terminal_close_codes`].
+    pub on_terminal_close: Option<Arc<TerminalCloseCallback>>,
+    /// Optional callback for a reconnect refused at the upgrade with `401`/`403`; see
+    /// [`HandshakeRefusedCallback`].
+    pub on_handshake_refused: Option<Arc<HandshakeRefusedCallback>>,
     /// Optional connect callback, fired once on the initial successful connect
-    /// before the actor starts (so it happens-before any disconnect/reconnect).
+    /// after the writer task enters its loop (happens-before reader start).
+    /// The first keepalive may still be in flight or one scheduler quanta away.
     pub on_connect: Option<Arc<ConnectCallback>>,
     /// Stable server identity sent in the hello frame. Only meaningful
     /// for [`ConnectionKind::ToolServer`] connections.
@@ -438,6 +655,8 @@ struct HubConnectionInner {
     credential: Arc<dyn AuthProvider>,
     on_reconnect: Option<Arc<ReconnectCallback>>,
     on_disconnect: Option<Arc<DisconnectCallback>>,
+    on_terminal_close: Option<Arc<TerminalCloseCallback>>,
+    on_handshake_refused: Option<Arc<HandshakeRefusedCallback>>,
     server_id: Option<codel_tool_protocol::ServerId>,
     server_description: Option<String>,
     server_metadata: Option<serde_json::Value>,
@@ -450,6 +669,20 @@ struct HubConnectionInner {
     /// Resolved reconnect backoff schedule (configured override or the
     /// built-in table). Resolved once at connect; shared per reconnect.
     reconnect_backoff: Arc<[Duration]>,
+    /// Per-connection seed for reconnect backoff jitter. Distinct across
+    /// clients in the same process so a simultaneous disconnect does not
+    /// lock-step the first (or any) attempt.
+    reconnect_jitter_seed: u64,
+    /// Resolved stability dwell before `attempt` resets on a new outage.
+    attempt_reset_after: Duration,
+    /// Embedder opt-in: sorted allowlist of 4100–4199 close codes to
+    /// reconnect after instead of exiting. Empty ⇒ never reconnect.
+    reconnect_after_terminal_close_codes: Vec<u16>,
+    /// Cadence of the in-band bearer refresh ([`run_auth_refresh`]).
+    auth_refresh_poll: Duration,
+    /// Incremented at the start of each reconnect episode so jitter
+    /// re-phases across outages of the same connection.
+    outage_seq: AtomicU32,
     /// Outbound frames waiting to be written. Filled by `send_*`
     /// helpers; drained by the writer half of the actor.
     outbound_tx: mpsc::Sender<String>,
@@ -458,6 +691,17 @@ struct HubConnectionInner {
     /// Refcounted bound-session set. Used by the reconnect path to
     /// re-issue `register_session` for every still-live session.
     bound_sessions: Arc<RefCountedSet<SessionId>>,
+    /// The last `session_bind_server` that succeeded per session and tool
+    /// server, replayed after `session_open` on reconnect. Kept here rather
+    /// than on the harness because the connection owns the replay and the
+    /// harness only learns of a reconnect after it.
+    last_binds: dashmap::DashMap<SessionId, Vec<SessionBindServerParams>>,
+    /// Serialises a session's refcount edge with the lifecycle frame that
+    /// edge emits. Without it a drop's "decrement to zero" and a concurrent
+    /// build's "increment from zero" can interleave so `session_detach` is
+    /// enqueued after the new borrower's `session_open`, and the hub unbinds
+    /// a session that has a live borrower.
+    session_lifecycle: parking_lot::Mutex<()>,
     /// Cached server-issued `connection_id`. Updated on every (re)connect.
     connection_id: Arc<Mutex<Option<ConnectionId>>>,
     /// Optional capabilities the server advertised in the most recent
@@ -487,7 +731,6 @@ impl HubConnection {
     /// The pool is the canonical caller; outside callers MAY use this
     /// for tests or one-shot programs but lose pool dedup.
     pub async fn connect(config: ConnectionConfig) -> Result<Arc<Self>, ClientError> {
-        let initial_cred = config.credential.current();
         let key = ConnKey {
             url: config.url.as_str().to_owned(),
             principal: config.credential.principal_key(),
@@ -503,6 +746,8 @@ impl HubConnection {
             );
         }
         let reconnect_backoff = resolve_reconnect_backoff(config.tuning.reconnect_backoff);
+        let attempt_reset_after =
+            resolve_attempt_reset_after(config.tuning.reconnect_attempt_reset_after);
         let buffer = config.outbound_buffer.unwrap_or(OUTBOUND_BUFFER);
         let (outbound_tx, outbound_rx) = mpsc::channel::<String>(buffer);
         let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
@@ -511,33 +756,121 @@ impl HubConnection {
         let bound_sessions = Arc::new(RefCountedSet::<SessionId>::new());
         let connection_id = Arc::new(Mutex::new(None));
         let shutdown = CancellationToken::new();
-        let ws = open_socket(
-            &config.url,
-            &initial_cred,
-            config.kind,
-            config.alpha_test_key.as_deref(),
-            config.allow_insecure_ws,
-        )
-        .await?;
-        let (sink, stream) = ws.split();
-        let (sink, stream, ack) = run_handshake(
-            sink,
-            stream,
-            config.kind,
-            config.server_id.clone(),
-            config.server_description.clone(),
-            config.server_metadata.clone(),
-        )
-        .await?;
+        let policy = config.tuning.initial_connect;
+        let attempt_timeout = resolve_initial_connect_attempt_timeout(policy.attempt_timeout);
+        let deadline = policy.deadline.filter(|deadline| !deadline.is_zero());
+        let deadline_at = deadline.map(|deadline| tokio::time::Instant::now() + deadline);
+        let hedge_after = policy.hedge_after.filter(|delay| !delay.is_zero());
+        if hedge_after.is_some_and(|delay| delay >= attempt_timeout) {
+            warn!(
+                ?hedge_after,
+                ?attempt_timeout,
+                "initial connect hedge delay is not below the attempt timeout; the hedge can never fire"
+            );
+        }
+        let initial_jitter_seed = new_reconnect_jitter_seed();
+        let mut attempt: u32 = 0;
+        let mut last_err = None;
+        let (sink, stream, ack, presented) = loop {
+            let now = tokio::time::Instant::now();
+            let remaining = deadline_at.map(|deadline| deadline.saturating_duration_since(now));
+            let attempt_budget = match remaining {
+                Some(remaining) if remaining.is_zero() => {
+                    return Err(
+                        last_err
+                            .unwrap_or_else(|| ClientError::NetworkError(
+                                match deadline {
+                                    Some(deadline) => {
+                                        format!(
+                                "initial connect attempt timed out after {attempt_timeout:?} (attempt {attempt}, deadline {deadline:?})"
+                            )
+                                    }
+                                    None => {
+                                        format!(
+                                "initial connect attempt timed out after {attempt_timeout:?}"
+                            )
+                                    }
+                                },
+                            )),
+                    );
+                }
+                Some(remaining) => attempt_timeout.min(remaining),
+                None => attempt_timeout,
+            };
+            attempt += 1;
+            let cred = config.credential.current();
+            let attempt_result = match tokio::time::timeout(
+                attempt_budget,
+                Box::pin(async {
+                    let ws = hedged_open_socket(
+                        &config.url,
+                        &cred,
+                        config.kind,
+                        config.alpha_test_key.as_deref(),
+                        config.allow_insecure_ws,
+                        hedge_after.filter(|delay| *delay < attempt_budget),
+                    )
+                    .await?;
+                    let (sink, stream) = ws.split();
+                    run_handshake(
+                        sink,
+                        stream,
+                        config.kind,
+                        config.server_id.clone(),
+                        config.server_description.clone(),
+                        config.server_metadata.clone(),
+                    )
+                    .await
+                }),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(ClientError::NetworkError(match deadline {
+                    Some(deadline) => {
+                        format!(
+                            "initial connect attempt timed out after {attempt_budget:?} (attempt {attempt}, deadline {deadline:?})"
+                        )
+                    }
+                    None => {
+                        format!("initial connect attempt timed out after {attempt_budget:?}")
+                    }
+                })),
+            };
+            match attempt_result {
+                Ok((sink, stream, ack)) => break (sink, stream, ack, cred),
+                Err(err) => {
+                    if !initial_connect_retryable(&err) {
+                        return Err(err);
+                    }
+                    if deadline_at.is_none() && attempt >= INITIAL_CONNECT_MAX_ATTEMPTS {
+                        return Err(err);
+                    }
+                    let now = tokio::time::Instant::now();
+                    let wait = backoff_for(attempt, &reconnect_backoff, initial_jitter_seed, 0);
+                    let remaining =
+                        deadline_at.map(|deadline| deadline.saturating_duration_since(now));
+                    if remaining.is_some_and(|remaining| remaining <= wait) {
+                        return Err(err);
+                    }
+                    warn!(
+                        url = %config.url,
+                        attempt,
+                        ?wait,
+                        error = %err,
+                        "initial connect attempt failed; retrying"
+                    );
+                    last_err = Some(err);
+                    tokio::time::sleep(wait).await;
+                }
+            }
+        };
         *connection_id.lock().await = Some(ack.connection_id.clone());
         info!(
             url = %config.url,
             connection_id = %ack.connection_id,
             "server connection established"
         );
-        if let Some(cb) = &config.on_connect {
-            cb();
-        }
         let early_notif_rx = parking_lot::Mutex::new(match config.kind {
             ConnectionKind::ToolServer => Some(demux.subscribe_notifications()),
             _ => None,
@@ -549,6 +882,8 @@ impl HubConnection {
             credential: config.credential,
             on_reconnect: config.on_reconnect.clone(),
             on_disconnect: config.on_disconnect.clone(),
+            on_terminal_close: config.on_terminal_close.clone(),
+            on_handshake_refused: config.on_handshake_refused.clone(),
             server_id: config.server_id,
             server_description: config.server_description,
             server_metadata: config.server_metadata,
@@ -556,9 +891,25 @@ impl HubConnection {
             allow_insecure_ws: config.allow_insecure_ws,
             on_fatal: config.on_fatal,
             reconnect_backoff,
+            reconnect_jitter_seed: new_reconnect_jitter_seed(),
+            attempt_reset_after,
+            reconnect_after_terminal_close_codes: {
+                let mut codes = config.tuning.reconnect_after_terminal_close_codes.clone();
+                codes.sort_unstable();
+                codes.dedup();
+                codes
+            },
+            auth_refresh_poll: config
+                .tuning
+                .auth_refresh_poll
+                .filter(|poll| !poll.is_zero())
+                .unwrap_or(AUTH_REFRESH_POLL),
+            outage_seq: AtomicU32::new(0),
             outbound_tx,
             demux: demux.clone(),
             bound_sessions: bound_sessions.clone(),
+            last_binds: dashmap::DashMap::new(),
+            session_lifecycle: parking_lot::Mutex::new(()),
             connection_id,
             hello_capabilities: parking_lot::RwLock::new(ack.capabilities),
             next_request_id: std::sync::atomic::AtomicU64::new(1),
@@ -570,25 +921,35 @@ impl HubConnection {
             writer_error: writer_error.clone(),
         });
         let (writer_ctl_tx, writer_ctl_rx) =
-            mpsc::channel::<WriterControl<SplitSink<WsStream, Message>>>(2);
+            mpsc::channel::<WriterControl<SplitSink<WsStream, Message>>>(WRITER_CTL_CAPACITY);
         let (writer_stop_tx, writer_stop_rx) = mpsc::channel::<()>(1);
+        let (priority_tx, priority_rx) = mpsc::channel::<String>(PRIORITY_OUTBOUND_CAPACITY);
+        let (writer_ready_tx, writer_ready_rx) = oneshot::channel();
         let writer_handle = tokio::spawn(run_writer(
             sink,
             outbound_rx,
+            priority_rx,
             writer_ctl_rx,
             writer_stop_rx,
-            ws_ping_interval,
+            Some(ws_ping_interval),
             writer_error,
+            Some(writer_ready_tx),
         ));
+        let _ = writer_ready_rx.await;
+        if let Some(cb) = &config.on_connect {
+            cb();
+        }
         let reader_inner = inner.clone();
         tokio::spawn(run_reader_actor(
             reader_inner,
             stream,
+            presented,
             stop_rx,
             reconnect_rx,
             writer_ctl_tx,
             writer_stop_tx,
             writer_handle,
+            priority_tx,
             config.url,
             ws_liveness_deadline,
         ));
@@ -624,11 +985,7 @@ impl HubConnection {
     ///   `capabilities` field are indistinguishable from an empty list, so
     ///   support is unknown and callers should probe per call.
     pub fn supports(&self, capability: &str) -> Option<bool> {
-        let caps = self.inner.hello_capabilities.read();
-        if caps.is_empty() {
-            return None;
-        }
-        Some(caps.iter().any(|c| c == capability))
+        self.inner.supports(capability)
     }
     /// Demux (used by the server-side run loop to register session
     /// inboxes). Cheap to clone (Arc bump).
@@ -661,14 +1018,79 @@ impl HubConnection {
     /// Increment the refcount on `session_id`. The session is tracked
     /// locally for reconnect-replay; the server learns about it via
     /// `serve` (auto-registration on the server side).
+    ///
+    /// Taken under `session_lifecycle` so the increment cannot land between
+    /// a concurrent [`Self::untrack_session_and_detach`]'s decrement and its
+    /// `session_detach` enqueue. The caller's `session_open` may follow
+    /// outside the lock: while it holds a count no detach for the session
+    /// can be enqueued.
     pub fn track_session(&self, session_id: SessionId) {
+        let _lifecycle = self.inner.session_lifecycle.lock();
         self.inner.bound_sessions.increment(session_id);
     }
     /// Decrement the refcount on `session_id`. Removes tracking when
     /// the last borrower drops. Returns the post-decrement count
     /// (`Some(0)` = last borrower; `None` = key was absent).
     pub fn untrack_session(&self, session_id: &SessionId) -> Option<u64> {
-        self.inner.bound_sessions.decrement(session_id)
+        let count = self.inner.bound_sessions.decrement(session_id);
+        if count == Some(0) {
+            self.inner.last_binds.remove(session_id);
+        }
+        count
+    }
+    /// Remember a `session_bind_server` that the hub accepted, so a reconnect
+    /// replays it (one entry per tool server; a rebind of the same server
+    /// replaces its entry).
+    pub(crate) fn record_session_bind(
+        &self,
+        session_id: &SessionId,
+        params: SessionBindServerParams,
+    ) {
+        let mut binds = self.inner.last_binds.entry(session_id.clone()).or_default();
+        binds.retain(|b| b.server_id != params.server_id);
+        binds.push(params);
+    }
+    /// Drop the replay entry for `server_id` after a `session_unbind_server`
+    /// the hub accepted; `None` drops every server of the session (close).
+    pub(crate) fn forget_session_bind(&self, session_id: &SessionId, server_id: Option<&ServerId>) {
+        let Some(server_id) = server_id else {
+            self.inner.last_binds.remove(session_id);
+            return;
+        };
+        if let Some(mut binds) = self.inner.last_binds.get_mut(session_id) {
+            binds.retain(|b| &b.server_id != server_id);
+        }
+        self.inner
+            .last_binds
+            .remove_if(session_id, |_, binds| binds.is_empty());
+    }
+    /// [`Self::untrack_session`] for a harness leaving a pooled connection
+    /// that stays open for other borrowers: when this was the last borrower,
+    /// enqueue a best-effort `session_detach` so the hub does not keep the
+    /// session bound until the socket closes. Returns `true` when this was
+    /// the last borrower.
+    ///
+    /// Runs on drop paths, so the frame is try-enqueued like the
+    /// cancel-on-drop hook and nobody awaits the reply (an unmatched response
+    /// is a demux no-op). Skipped when the hub advertises capabilities but not
+    /// `session_detach`: such a hub would count each frame as
+    /// `invalid_request`.
+    pub(crate) fn untrack_session_and_detach(&self, session_id: &SessionId) -> bool {
+        let _lifecycle = self.inner.session_lifecycle.lock();
+        if self.inner.bound_sessions.decrement(session_id) != Some(0) {
+            return false;
+        }
+        self.inner.last_binds.remove(session_id);
+        if self.supports(Method::SessionDetach.as_wire_str()) != Some(false) {
+            try_send_request_on_drop(
+                self,
+                session_id,
+                Method::SessionDetach,
+                codel_tool_protocol::SessionDetachParams {},
+                "session detach",
+            );
+        }
+        true
     }
     /// Send a JSON-RPC request and await the response.
     ///
@@ -719,52 +1141,16 @@ impl HubConnection {
     where
         P: serde::Serialize,
     {
-        let text =
-            serde_json::to_string(request).map_err(|e| DeadlineCallError::Other(e.into()))?;
-        let (tx, rx) = oneshot::channel();
         self.inner
-            .demux
-            .register_response_waiter(request_id.clone(), tx);
-        let _guard = WaiterGuard {
-            demux: &self.inner.demux,
-            request_id: &request_id,
-        };
-        self.send_outbound(text)
+            .call_request_with_deadline(request_id, request, timeout)
             .await
-            .map_err(DeadlineCallError::Other)?;
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(result)) => result.map_err(DeadlineCallError::Other),
-            Ok(Err(recv_err)) => Err(DeadlineCallError::Other(recv_err.into())),
-            Err(_elapsed) => Err(DeadlineCallError::TimedOut(timeout)),
-        }
     }
     /// Send a fully-formed JSON text frame onto the outbound channel.
     /// Used by the server-side handler when replying to a
     /// `tool_call_request` (the response flows out without going
     /// through a waiter).
     pub async fn send_outbound(&self, text: String) -> Result<(), ClientError> {
-        match self.inner.outbound_tx.try_send(text) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(text)) => {
-                match tokio::time::timeout(
-                    Duration::from_millis(250),
-                    self.inner.outbound_tx.send(text),
-                )
-                .await
-                {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(_)) => Err(ClientError::NetworkError(
-                        "outbound channel closed".to_owned(),
-                    )),
-                    Err(_) => Err(ClientError::BackpressureError(
-                        "outbound mpsc full beyond bounded wait".to_owned(),
-                    )),
-                }
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(ClientError::NetworkError(
-                "outbound channel closed".to_owned(),
-            )),
-        }
+        self.inner.send_outbound(text).await
     }
     /// Non-blocking enqueue for synchronous drop paths that cannot
     /// `.await` (e.g. `RemoteCallStream::Drop` cancel-on-drop). A full
@@ -789,11 +1175,7 @@ impl HubConnection {
     /// produce). Callers in non-fallible contexts should propagate
     /// the error rather than panic.
     pub fn try_alloc_request_id(&self) -> Result<codel_tool_protocol::RequestId, ClientError> {
-        let value = self
-            .inner
-            .next_request_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        codel_tool_protocol::RequestId::new(format!("c{value}")).map_err(ClientError::from)
+        self.inner.try_alloc_request_id()
     }
     /// Number of sessions currently bound to this connection.
     /// Stable observable for monitoring and tests; not on the hot path.
@@ -832,6 +1214,7 @@ impl HubConnection {
                     };
                 }
                 Err(DeadlineCallError::TimedOut(timeout)) => {
+                    crate::metrics::serve_replay_timeout();
                     warn!(%session_id, attempt, ?timeout, "serve attempt timed out; will retry");
                     last_err = Some(DeadlineCallError::TimedOut(timeout).into());
                 }
@@ -866,6 +1249,67 @@ pub(crate) fn host_is_loopback(url: &Url) -> bool {
         None => false,
     }
 }
+/// Hedges the transport only. The hub supersedes a same-`server_id`
+/// registration on a later hello (close 4104), so a connect must send exactly
+/// one hello, after this returns.
+async fn hedged_open_socket(
+    url: &Url,
+    credential: &AuthCredential,
+    kind: ConnectionKind,
+    alpha_test_key: Option<&str>,
+    allow_insecure_ws: bool,
+    hedge_after: Option<Duration>,
+) -> Result<WsStream, ClientError> {
+    let Some(hedge_after) = hedge_after else {
+        return open_socket(url, credential, kind, alpha_test_key, allow_insecure_ws).await;
+    };
+    let started = tokio::time::Instant::now();
+    let first = open_socket(url, credential, kind, alpha_test_key, allow_insecure_ws);
+    tokio::pin!(first);
+    tokio::select! {
+        biased;
+        result = &mut first => return result,
+        _ = tokio::time::sleep(hedge_after) => {}
+    }
+    debug!(url = %url, elapsed = ?started.elapsed(), "launching hedged transport attempt");
+    let second = open_socket(url, credential, kind, alpha_test_key, allow_insecure_ws);
+    tokio::pin!(second);
+    let (result, from_hedge) = tokio::select! {
+        result = &mut first => (result, false),
+        result = &mut second => (result, true),
+    };
+    match result {
+        Ok(ws) => {
+            if from_hedge {
+                info!(url = %url, elapsed = ?started.elapsed(), "hedged transport attempt won");
+            }
+            Ok(ws)
+        }
+        Err(winner_error) if !initial_connect_retryable(&winner_error) => Err(winner_error),
+        Err(winner_error) => {
+            debug!(
+                error = %winner_error,
+                from_hedge,
+                "transport attempt failed while the other leg is pending"
+            );
+            let other = if from_hedge {
+                first.await
+            } else {
+                second.await
+            };
+            match other {
+                Ok(ws) => {
+                    if !from_hedge {
+                        info!(url = %url, elapsed = ?started.elapsed(), "hedged transport attempt won");
+                    }
+                    Ok(ws)
+                }
+                Err(other_error) if !initial_connect_retryable(&other_error) => Err(other_error),
+                Err(_) => Err(winner_error),
+            }
+        }
+    }
+}
 /// Open a fresh `ws://` / `wss://` socket. No handshake yet.
 ///
 /// Refuses to send the credential over `ws://` to any non-loopback host
@@ -891,10 +1335,7 @@ async fn open_socket(
         );
     }
     let mut connect_url = url.clone();
-    let expected_role = match kind {
-        ConnectionKind::Harness => "harness",
-        ConnectionKind::ToolServer => "tool_server",
-    };
+    let expected_role = kind.as_wire_str();
     if let Some(existing) = connect_url
         .query_pairs()
         .find(|(k, _)| k == "role")
@@ -922,7 +1363,7 @@ async fn open_socket(
         headers.insert(header_name, header_value);
     }
     let _ = alpha_test_key;
-    let (ws, _resp) = connect_async(request)
+    let (ws, _resp) = Box::pin(connect_async(request))
         .await
         .map_err(ClientError::from_handshake_error)?;
     Ok(ws)
@@ -972,28 +1413,46 @@ fn now_unix_millis() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
-/// Decode an inbound text frame. Returns the serialized [`PongFrame`]
-/// to send back when the frame is an app-level server `ping`; otherwise
-/// routes the frame through the demux and returns `None`.
-fn route_or_pong(inner: &HubConnectionInner, text: &str) -> Option<String> {
+enum InboundText {
+    AppPing { pong: Option<String> },
+    AppPong,
+    Data,
+    Unparseable,
+}
+fn classify_inbound_text(inner: &HubConnectionInner, text: &str) -> InboundText {
     match serde_json::from_str::<Value>(text) {
-        Ok(value) => {
-            if value.get("method").and_then(Value::as_str) == Some(Method::Ping.as_wire_str()) {
-                serde_json::to_string(&PongFrame::new(now_unix_millis())).ok()
-            } else {
+        Ok(value) => match value.get("method").and_then(Value::as_str) {
+            Some(m) if m == Method::Ping.as_wire_str() => InboundText::AppPing {
+                pong: serde_json::to_string(&PongFrame::new(now_unix_millis())).ok(),
+            },
+            Some(m) if m == Method::Pong.as_wire_str() => InboundText::AppPong,
+            _ => {
                 let _ = inner.demux.route(value);
-                None
+                InboundText::Data
             }
-        }
+        },
         Err(e) => {
             warn!(?e, "discarding unparseable inbound text frame");
-            None
+            InboundText::Unparseable
         }
     }
 }
+fn rearm_liveness(deadline: &mut std::pin::Pin<&mut tokio::time::Sleep>, liveness: Duration) {
+    let now = tokio::time::Instant::now();
+    let rearm = now
+        .checked_add(liveness)
+        .unwrap_or_else(|| now + Duration::from_secs(86400 * 365 * 30));
+    deadline.as_mut().reset(rearm);
+}
+/// Terminal close code for a hibernated-but-restorable sandbox the hub
+/// reaped; the only 4100–4199 code that is safe to reconnect after.
+pub const CLOSE_CODE_SANDBOX_TERMINATED: u16 = 4103;
 /// Map a websocket close frame's code to the connected-phase exit. Close
-/// codes 4100-4199 are terminal (the server intentionally ended the
-/// connection: eviction, session expiry, admin disconnect, rate limit).
+/// codes 4100-4199 are terminal by protocol contract (the server
+/// intentionally ended the connection: eviction, session expiry, admin
+/// disconnect, rate limit). The actor still stops on these unless the
+/// embedder allowlisted the specific code via
+/// [`ConnectionTuning::reconnect_after_terminal_close_codes`].
 /// The range is deliberately wide so new terminal codes added server-side
 /// are recognised without a client update.
 fn exit_for_close_code(code: Option<u16>) -> ConnectedExit {
@@ -1024,97 +1483,487 @@ fn classify_stream_end(inner: &HubConnectionInner, read_error: Option<String>) -
 /// The reader is the sole reconnect driver; it `Pause`s the writer the
 /// instant the socket is known dead so no buffered frame is dequeued
 /// onto the corpse, then `Resume`s it with the fresh sink once the
-/// handshake completes. Carried on a cap-2 channel so a `Pause` is never
-/// dropped.
+/// handshake completes. Carried on [`WRITER_CTL_CAPACITY`] so a liveness
+/// `Close`+`Pause` cannot crowd out `Resume`.
 enum WriterControl<S> {
     /// Socket is dead; stop draining `outbound_rx` (frames stay buffered).
     Pause,
     /// Reconnected; install the fresh sink and resume draining.
     Resume(S),
+    /// Send a WS Close then stop draining (liveness kill / orderly drop).
+    Close { code: u16, reason: String },
+}
+/// Outcome of racing a sink write against writer ctl/stop.
+enum SendOrPreempt<S> {
+    Sent(Result<(), String>),
+    Ctl(WriterControl<S>),
+    Stop,
+}
+async fn send_or_preempt<S>(
+    sink: &mut S,
+    msg: Message,
+    writer_ctl_rx: &mut mpsc::Receiver<WriterControl<S>>,
+    writer_stop_rx: &mut mpsc::Receiver<()>,
+) -> SendOrPreempt<S>
+where
+    S: futures::Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    tokio::select! {
+        biased;
+        _ = writer_stop_rx.recv() => SendOrPreempt::Stop,
+        ctl = writer_ctl_rx.recv() => match ctl {
+            Some(ctl) => SendOrPreempt::Ctl(ctl),
+            None => SendOrPreempt::Stop,
+        },
+        result = sink.send(msg) => SendOrPreempt::Sent(result.map_err(|e| e.to_string())),
+    }
 }
 /// Dedicated writer task: owns the sink, drains `outbound_rx`, and fires
 /// the keepalive ping (`ping_period`) — but only while `live`. Between a `Pause` and
 /// the matching `Resume` it parks on the control/stop channels only, so
 /// frames enqueued during the reconnect gap stay buffered in
-/// `outbound_rx` and flush after `Resume` (no multi-frame loss; the
-/// single in-flight frame whose `send` fails is the only loss, matching
-/// the pre-split worst case).
+/// `outbound_rx` and flush after `Resume`.
 ///
-/// Generic over the sink so it can be unit-tested with an in-memory sink
-/// without a live socket.
+/// Data/ping writes are raced against ctl via [`send_or_preempt`] so a
+/// half-open socket cannot strand Pause/Close/Resume behind `sink.send`.
+/// Close is time-boxed against stop+timeout only — a queued Pause must
+/// not abandon Close 1001.
 async fn run_writer<S>(
     mut sink: S,
     mut outbound_rx: mpsc::Receiver<String>,
+    mut priority_rx: mpsc::Receiver<String>,
     mut writer_ctl_rx: mpsc::Receiver<WriterControl<S>>,
     mut writer_stop_rx: mpsc::Receiver<()>,
-    ping_period: Duration,
+    ping_period: Option<Duration>,
     write_error: WriteErrorSlot,
+    ready: Option<oneshot::Sender<()>>,
 ) where
     S: futures::Sink<Message> + Unpin,
     S::Error: std::fmt::Display,
 {
-    let mut ping_interval = tokio::time::interval(ping_period);
-    ping_interval.tick().await;
+    let keepalive = ping_period.is_some();
+    let mut ping_interval = tokio::time::interval(ping_period.unwrap_or(Duration::from_secs(3600)));
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    if !keepalive {
+        ping_interval.tick().await;
+    }
     let mut live = true;
+    let mut ready = ready;
+    let mut pending_app_ping = false;
     loop {
-        tokio::select! {
-            biased;
-            _ = writer_stop_rx.recv() => break,
-            ctl = writer_ctl_rx.recv() => match ctl {
-                Some(WriterControl::Pause) => live = false,
-                Some(WriterControl::Resume(new_sink)) => {
-                    sink = new_sink;
-                    live = true;
-                    // Discard any error a late old-sink send left behind. The
-                    // reader clears the slot before sending `Resume`, but an
-                    // in-flight send on the dead socket (e.g. blocked on TCP
-                    // retransmits since before `Pause`) can fail after that
-                    // clear and re-fill the slot. This task is the only slot
-                    // writer and processes messages sequentially, so by the
-                    // time `Resume` is handled that old-sink send has
-                    // finished — clearing here closes the race and stops a
-                    // stale detail from mislabeling the NEXT disconnect as
-                    // transport_write_error.
-                    write_error.lock().take();
-                    // Restart the keepalive cadence from the reconnect instant:
-                    // consume the immediate first tick so the next ping fires
-                    // one period after Resume, not as a catch-up burst for ticks
-                    // missed while paused.
-                    ping_interval = tokio::time::interval(ping_period);
-                    ping_interval.tick().await;
+        if let Some(tx) = ready.take() {
+            let _ = tx.send(());
+        }
+        if live && pending_app_ping {
+            pending_app_ping = false;
+            let queued = match priority_rx.try_recv() {
+                Ok(text) => Some(text),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    match outbound_rx.try_recv() {
+                        Ok(text) => Some(text),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            break;
+                        }
+                    }
                 }
-                // Reader gone (control sender dropped) → wind down.
-                None => break,
-            },
-            _ = ping_interval.tick(), if live => {
-                if let Err(e) = sink.send(Message::Ping(Vec::new().into())).await {
-                    // The reader detects the death (stream error, or liveness-
-                    // deadline expiry once pings stop being answered) and
-                    // drives the reconnect; we just stop draining onto the
-                    // corpse.
-                    *write_error.lock() = Some(format!("ping send failed: {e}"));
-                    crate::metrics::writer_sink_send_error();
-                    live = false;
-                }
-            }
-            outbound = outbound_rx.recv(), if live => match outbound {
-                Some(text) => {
-                    if let Err(e) = sink.send(Message::Text(text.into())).await {
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            };
+            let mut pending_ctl: Option<WriterControl<S>> = None;
+            if let Some(text) = queued {
+                match send_or_preempt(
+                    &mut sink,
+                    Message::Text(text.into()),
+                    &mut writer_ctl_rx,
+                    &mut writer_stop_rx,
+                )
+                .await
+                {
+                    SendOrPreempt::Stop => break,
+                    SendOrPreempt::Ctl(ctl) => pending_ctl = Some(ctl),
+                    SendOrPreempt::Sent(Err(e)) => {
                         *write_error.lock() = Some(format!("frame send failed: {e}"));
                         crate::metrics::writer_sink_send_error();
                         live = false;
                     }
+                    SendOrPreempt::Sent(Ok(())) => {}
                 }
-                // Last `outbound_tx` dropped → channel closed → wind down.
+            }
+            if live
+                && pending_ctl.is_none()
+                && let Ok(text) = serde_json::to_string(&PingFrame::new(now_unix_millis()))
+            {
+                match send_or_preempt(
+                    &mut sink,
+                    Message::Text(text.into()),
+                    &mut writer_ctl_rx,
+                    &mut writer_stop_rx,
+                )
+                .await
+                {
+                    SendOrPreempt::Stop => break,
+                    SendOrPreempt::Ctl(ctl) => pending_ctl = Some(ctl),
+                    SendOrPreempt::Sent(Err(e)) => {
+                        *write_error.lock() = Some(format!("app ping send failed: {e}"));
+                        crate::metrics::writer_sink_send_error();
+                        live = false;
+                    }
+                    SendOrPreempt::Sent(Ok(())) => {}
+                }
+            }
+            while let Some(ctl) = pending_ctl.take() {
+                match ctl {
+                    WriterControl::Pause => {
+                        live = false;
+                        pending_app_ping = false;
+                        while priority_rx.try_recv().is_ok() {}
+                    }
+                    WriterControl::Close { code, reason } => {
+                        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+                        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+                        live = false;
+                        pending_app_ping = false;
+                        while priority_rx.try_recv().is_ok() {}
+                        let close_msg = Message::Close(Some(CloseFrame {
+                            code: CloseCode::from(code),
+                            reason: reason.into(),
+                        }));
+                        tokio::select! {
+                            biased;
+                            _ = writer_stop_rx.recv() => return,
+                            _ = tokio::time::sleep(WRITER_CLOSE_SEND_TIMEOUT) => {
+                                *write_error.lock() =
+                                    Some("close send timed out".to_owned());
+                                crate::metrics::writer_sink_send_error();
+                            }
+                            result = sink.send(close_msg) => {
+                                if let Err(e) = result {
+                                    *write_error.lock() =
+                                        Some(format!("close send failed: {e}"));
+                                    crate::metrics::writer_sink_send_error();
+                                }
+                            }
+                        }
+                    }
+                    WriterControl::Resume(new_sink) => {
+                        sink = new_sink;
+                        live = true;
+                        pending_app_ping = false;
+                        while priority_rx.try_recv().is_ok() {}
+                        write_error.lock().take();
+                        ping_interval =
+                            tokio::time::interval(ping_period.unwrap_or(Duration::from_secs(3600)));
+                        ping_interval
+                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        if !keepalive {
+                            ping_interval.tick().await;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        let mut pending_ctl: Option<WriterControl<S>> = tokio::select! {
+            biased;
+            _ = writer_stop_rx.recv() => break,
+            ctl = writer_ctl_rx.recv() => match ctl {
+                Some(ctl) => Some(ctl),
                 None => break,
             },
+            _ = ping_interval.tick(), if live && keepalive && !pending_app_ping => {
+                match send_or_preempt(
+                    &mut sink,
+                    Message::Ping(Vec::new().into()),
+                    &mut writer_ctl_rx,
+                    &mut writer_stop_rx,
+                ).await {
+                    SendOrPreempt::Stop => break,
+                    SendOrPreempt::Ctl(ctl) => Some(ctl),
+                    SendOrPreempt::Sent(Err(e)) => {
+                        *write_error.lock() = Some(format!("ping send failed: {e}"));
+                        crate::metrics::writer_sink_send_error();
+                        live = false;
+                        None
+                    }
+                    SendOrPreempt::Sent(Ok(())) => {
+                        // App ping survives proxies that eat WS control frames.
+                        pending_app_ping = true;
+                        None
+                    }
+                }
+            }
+            priority = priority_rx.recv(), if live => match priority {
+                Some(text) => match send_or_preempt(
+                    &mut sink,
+                    Message::Text(text.into()),
+                    &mut writer_ctl_rx,
+                    &mut writer_stop_rx,
+                ).await {
+                    SendOrPreempt::Stop => break,
+                    SendOrPreempt::Ctl(ctl) => Some(ctl),
+                    SendOrPreempt::Sent(Err(e)) => {
+                        *write_error.lock() = Some(format!("priority send failed: {e}"));
+                        crate::metrics::writer_sink_send_error();
+                        live = false;
+                        None
+                    }
+                    SendOrPreempt::Sent(Ok(())) => None,
+                },
+                None => break,
+            },
+            outbound = outbound_rx.recv(), if live => match outbound {
+                Some(text) => match send_or_preempt(
+                    &mut sink,
+                    Message::Text(text.into()),
+                    &mut writer_ctl_rx,
+                    &mut writer_stop_rx,
+                ).await {
+                    SendOrPreempt::Stop => break,
+                    SendOrPreempt::Ctl(ctl) => Some(ctl),
+                    SendOrPreempt::Sent(Err(e)) => {
+                        *write_error.lock() = Some(format!("frame send failed: {e}"));
+                        crate::metrics::writer_sink_send_error();
+                        live = false;
+                        None
+                    }
+                    SendOrPreempt::Sent(Ok(())) => None,
+                },
+                None => break,
+            },
+        };
+        while let Some(ctl) = pending_ctl.take() {
+            match ctl {
+                WriterControl::Pause => {
+                    live = false;
+                    pending_app_ping = false;
+                    while priority_rx.try_recv().is_ok() {}
+                }
+                WriterControl::Close { code, reason } => {
+                    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+                    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+                    live = false;
+                    pending_app_ping = false;
+                    while priority_rx.try_recv().is_ok() {}
+                    let close_msg = Message::Close(Some(CloseFrame {
+                        code: CloseCode::from(code),
+                        reason: reason.into(),
+                    }));
+                    tokio::select! {
+                        biased;
+                        _ = writer_stop_rx.recv() => return,
+                        _ = tokio::time::sleep(WRITER_CLOSE_SEND_TIMEOUT) => {
+                            *write_error.lock() =
+                                Some("close send timed out".to_owned());
+                            crate::metrics::writer_sink_send_error();
+                        }
+                        result = sink.send(close_msg) => {
+                            if let Err(e) = result {
+                                *write_error.lock() =
+                                    Some(format!("close send failed: {e}"));
+                                crate::metrics::writer_sink_send_error();
+                            }
+                        }
+                    }
+                }
+                WriterControl::Resume(new_sink) => {
+                    sink = new_sink;
+                    live = true;
+                    pending_app_ping = false;
+                    while priority_rx.try_recv().is_ok() {}
+                    write_error.lock().take();
+                    ping_interval =
+                        tokio::time::interval(ping_period.unwrap_or(Duration::from_secs(3600)));
+                    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    if !keepalive {
+                        ping_interval.tick().await;
+                    }
+                }
+            }
         }
     }
+}
+/// In-band bearer refresh for a token-bound tool server. The hub closes such
+/// a socket at its bearer's `exp`; presenting the provider's fresher bearer
+/// over the live socket moves that deadline instead. One driver per
+/// connected phase, aborted with it.
+struct AuthRefreshDriver {
+    /// The bearer the hub currently holds for this socket: the one the
+    /// upgrade presented, then each refresh the hub accepted.
+    acknowledged: String,
+    /// Answers since the last acknowledgement that left `acknowledged` as it
+    /// was; the one that reaches [`AUTH_REFRESH_WARN_AFTER`] is logged at
+    /// `warn!`, the rest at `debug!`.
+    unaccepted_in_a_row: u32,
+}
+impl AuthRefreshDriver {
+    /// `None` unless a tool server presented a bearer to a hub that
+    /// advertised `auth.refresh`; a hub that predates the capability, or one
+    /// that does not offer it to this socket, closes at `exp` as before.
+    fn for_phase(
+        kind: ConnectionKind,
+        presented: &AuthCredential,
+        supports_refresh: Option<bool>,
+    ) -> Option<Self> {
+        if kind != ConnectionKind::ToolServer || supports_refresh != Some(true) {
+            return None;
+        }
+        match presented {
+            AuthCredential::Bearer { token } => Some(Self {
+                acknowledged: token.clone(),
+                unaccepted_in_a_row: 0,
+            }),
+            AuthCredential::Headers { .. } => None,
+        }
+    }
+    /// The bearer to present now, if `current` is one the hub has not seen.
+    fn pending(&self, current: AuthCredential) -> Option<String> {
+        match current {
+            AuthCredential::Bearer { token } if token != self.acknowledged => Some(token),
+            AuthCredential::Bearer { .. } | AuthCredential::Headers { .. } => None,
+        }
+    }
+    /// Fold the hub's answer to presenting `token` into what the hub now
+    /// holds. A `not_later` refusal means the hub already holds a bearer at
+    /// least this fresh (an accept whose reply was lost), so it counts as an
+    /// acknowledgement: re-presenting it would be refused for its whole life.
+    fn settle(&mut self, token: String, answer: Result<i64, AuthRefreshError>) {
+        match answer {
+            Ok(exp) => {
+                debug!(exp, "hub accepted the refreshed bearer in band");
+                self.acknowledge(token);
+            }
+            Err(err) => {
+                crate::metrics::auth_refresh_refused(err.reason());
+                if err.is_not_later() {
+                    debug!("hub already holds this bearer or a later one");
+                    self.acknowledge(token);
+                } else {
+                    self.unaccepted_in_a_row += 1;
+                    if self.unaccepted_in_a_row == AUTH_REFRESH_WARN_AFTER {
+                        warn!(
+                            %err,
+                            in_a_row = self.unaccepted_in_a_row,
+                            "auth.refresh keeps being refused; the hub will close this socket at the bearer's exp"
+                        );
+                    } else {
+                        debug!(%err, "auth.refresh not accepted; retrying next tick");
+                    }
+                }
+            }
+        }
+    }
+    fn acknowledge(&mut self, token: String) {
+        self.acknowledged = token;
+        self.unaccepted_in_a_row = 0;
+    }
+}
+/// Why one `auth.refresh` did not move the hub's deadline.
+#[derive(Debug, thiserror::Error)]
+enum AuthRefreshError {
+    /// The hub answered a refusal; `reason` is its `error.data.reason`.
+    #[error("refused ({reason}): {message}")]
+    Refused { reason: String, message: String },
+    /// No usable answer: transport, timeout, or an unreadable reply.
+    #[error(transparent)]
+    Failed(#[from] ClientError),
+}
+impl AuthRefreshError {
+    fn from_jsonrpc_error(err: JsonRpcError) -> Self {
+        match err
+            .data
+            .as_ref()
+            .and_then(|data| data.get("reason"))
+            .and_then(Value::as_str)
+        {
+            Some(reason) => Self::Refused {
+                reason: reason.to_owned(),
+                message: err.message,
+            },
+            None => Self::Failed(ClientError::from_jsonrpc_error(err)),
+        }
+    }
+    fn is_not_later(&self) -> bool {
+        matches!(self, Self::Refused { reason, .. } if reason == AUTH_REFRESH_NOT_LATER)
+    }
+    /// Metric label: the hub's reason when it is one this SDK knows, `other`
+    /// for any other string (the label set stays bounded whatever the hub
+    /// sends), or `failed` when there was no answer.
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Refused { reason, .. } => AUTH_REFRESH_KNOWN_REASONS
+                .iter()
+                .copied()
+                .find(|known| *known == reason)
+                .unwrap_or("other"),
+            Self::Failed(_) => "failed",
+        }
+    }
+}
+/// Once at phase start and then every `poll`, read the provider's current
+/// credential off the runtime's workers (`current()` may refresh over HTTP)
+/// and present a bearer the hub has not acknowledged. One request at a time;
+/// a refused or timed-out refresh is retried on the next tick with whatever
+/// is current then.
+async fn run_auth_refresh(
+    inner: Arc<HubConnectionInner>,
+    mut driver: AuthRefreshDriver,
+    poll: Duration,
+) {
+    let mut tick = tokio::time::interval(poll);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let provider = Arc::clone(&inner.credential);
+        let current = match tokio::task::spawn_blocking(move || provider.current()).await {
+            Ok(current) => current,
+            Err(err) => {
+                warn!(%err, "credential provider did not return; retrying next tick");
+                continue;
+            }
+        };
+        let Some(token) = driver.pending(current) else {
+            continue;
+        };
+        let answer = inner.auth_refresh(&token).await;
+        driver.settle(token, answer);
+    }
+}
+/// Aborts the task on drop so a driver stops with the phase it was spawned
+/// for. Two things outlive the abort: a `current()` already running on the
+/// blocking pool finishes there and its result is dropped, and a frame
+/// already handed to the outbound queue may still be written on the next
+/// phase's socket, where the hub refuses it `not_later` or answers a waiter
+/// that no longer exists.
+struct PhaseTask(tokio::task::JoinHandle<()>);
+impl Drop for PhaseTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+fn spawn_auth_refresh(
+    inner: &Arc<HubConnectionInner>,
+    presented: &AuthCredential,
+) -> Option<PhaseTask> {
+    let supports = inner.supports(Method::AuthRefresh.as_wire_str());
+    AuthRefreshDriver::for_phase(inner.kind, presented, supports).map(|driver| {
+        PhaseTask(tokio::spawn(run_auth_refresh(
+            Arc::clone(inner),
+            driver,
+            inner.auth_refresh_poll,
+        )))
+    })
 }
 /// Invoke the optional disconnect callback (best-effort, sync).
 fn fire_on_disconnect(inner: &HubConnectionInner) {
     if let Some(cb) = &inner.on_disconnect {
         cb();
+    }
+}
+/// Invoke the optional terminal-close callback (best-effort, sync).
+fn fire_on_terminal_close(inner: &HubConnectionInner, code: u16) {
+    if let Some(cb) = &inner.on_terminal_close {
+        cb(code);
     }
 }
 /// Reader half of the split actor: owns the stream, routes inbound
@@ -1123,29 +1972,40 @@ fn fire_on_disconnect(inner: &HubConnectionInner) {
 async fn run_reader_actor(
     inner: Arc<HubConnectionInner>,
     mut stream: SplitStream<WsStream>,
+    mut presented: AuthCredential,
     mut stop_rx: mpsc::Receiver<()>,
     mut reconnect_rx: mpsc::Receiver<()>,
     writer_ctl_tx: mpsc::Sender<WriterControl<SplitSink<WsStream, Message>>>,
     writer_stop_tx: mpsc::Sender<()>,
     writer_handle: tokio::task::JoinHandle<()>,
+    priority_tx: mpsc::Sender<String>,
     url: Url,
     liveness_deadline: Duration,
 ) {
     let mut attempt: u32 = 0;
     let mut connected_at = Instant::now();
     'actor: loop {
-        match run_reader_phase(
+        let auth_refresh = spawn_auth_refresh(&inner, &presented);
+        let exit = run_reader_phase(
             inner.as_ref(),
             &mut stream,
             &mut stop_rx,
             &mut reconnect_rx,
             liveness_deadline,
+            &priority_tx,
         )
-        .await
-        {
+        .await;
+        drop(auth_refresh);
+        match exit {
             ConnectedExit::Stop => break,
-            ConnectedExit::TerminalClose(code) => {
+            ConnectedExit::TerminalClose(code)
+                if inner
+                    .reconnect_after_terminal_close_codes
+                    .binary_search(&code)
+                    .is_err() =>
+            {
                 info!(code, url = %url, "server sent terminal close; not reconnecting");
+                fire_on_terminal_close(inner.as_ref(), code);
                 fire_on_disconnect(inner.as_ref());
                 inner.demux.drain_waiters_with(|| {
                     ClientError::Closed(format!("server terminal close (code {code})"))
@@ -1153,15 +2013,34 @@ async fn run_reader_actor(
                 inner.demux.drain_progress();
                 break;
             }
-            ConnectedExit::SocketClosed(cause) => {
+            exit => {
+                let (cause, already_notified) = match exit {
+                    ConnectedExit::Stop => {
+                        unreachable!("Stop is handled by the arm above")
+                    }
+                    ConnectedExit::TerminalClose(code) => {
+                        info!(
+                            code,
+                            url = %url,
+                            "server sent terminal close; reconnecting (embedder opt-in)"
+                        );
+                        fire_on_terminal_close(inner.as_ref(), code);
+                        fire_on_disconnect(inner.as_ref());
+                        inner.demux.drain_waiters_with(|| {
+                            ClientError::Closed(format!("server terminal close (code {code})"))
+                        });
+                        inner.demux.drain_progress();
+                        (DisconnectCause::CloseFrame(Some(code)), true)
+                    }
+                    ConnectedExit::SocketClosed(cause) => (cause, false),
+                };
                 let detected_at = Instant::now();
+                let prev_conn_age = detected_at.duration_since(connected_at);
                 let health = inner.health.snapshot();
                 let prev_connection_id = inner.connection_id.lock().await.clone();
                 let outage = OutageInfo {
                     prev_connection_id,
-                    prev_connection_duration_ms: detected_at
-                        .duration_since(connected_at)
-                        .as_millis() as u64,
+                    prev_connection_duration_ms: prev_conn_age.as_millis() as u64,
                     last_inbound: health.last_inbound,
                     detect_ms: detected_at.duration_since(health.last_inbound).as_millis() as u64,
                     since_last_probe_monotonic_ms: health.since_last_probe_monotonic_ms,
@@ -1182,7 +2061,20 @@ async fn run_reader_actor(
                     clock_jump_ms = outage.clock_jump_ms,
                     "server connection lost; scheduling reconnect"
                 );
-                fire_on_disconnect(inner.as_ref());
+                if !already_notified {
+                    fire_on_disconnect(inner.as_ref());
+                }
+                if matches!(outage.cause, DisconnectCause::LivenessDeadline)
+                    && writer_ctl_tx
+                        .send(WriterControl::Close {
+                            code: 1001,
+                            reason: "liveness_deadline".to_owned(),
+                        })
+                        .await
+                        .is_err()
+                {
+                    break;
+                }
                 if writer_ctl_tx.send(WriterControl::Pause).await.is_err() {
                     break;
                 }
@@ -1190,10 +2082,14 @@ async fn run_reader_actor(
                     ClientError::NetworkError("socket dropped during in-flight call".to_owned())
                 });
                 inner.demux.drain_progress();
+                if prev_conn_age >= inner.attempt_reset_after {
+                    attempt = 0;
+                }
+                inner.begin_reconnect_outage();
                 let mut backoff_total = Duration::ZERO;
                 loop {
                     attempt = attempt.saturating_add(1);
-                    let backoff = backoff_for(attempt, &inner.reconnect_backoff);
+                    let backoff = inner.reconnect_delay(attempt);
                     info!(?backoff, attempt, url = %url, "reconnecting server connection");
                     tokio::select! {
                         _ = stop_rx.recv() => break 'actor,
@@ -1220,7 +2116,8 @@ async fn run_reader_actor(
                         }),
                     };
                     match outcome {
-                        Ok((new_sink, new_stream)) => {
+                        Ok((new_sink, new_stream, fresh_cred)) => {
+                            presented = fresh_cred;
                             let elapsed = reconnect_start.elapsed().as_secs_f64();
                             crate::metrics::reconnect_succeeded();
                             crate::metrics::reconnect_duration_observe(elapsed);
@@ -1239,13 +2136,16 @@ async fn run_reader_actor(
                             crate::metrics::reconnect_writer_resume();
                             break;
                         }
-                        Err(ClientError::HandshakeAuthFailed { status }) => {
+                        Err(ClientError::HandshakeAuthFailed { status, refusal }) => {
                             warn!(
                                 status,
                                 attempt,
                                 "reconnect rejected with handshake auth failure; evicting pool entry and stopping"
                             );
                             crate::metrics::reconnect_failed("handshake_auth");
+                            if let Some(cb) = &inner.on_handshake_refused {
+                                cb(status, refusal);
+                            }
                             inner.demux.drain_waiters_with(|| {
                                 ClientError::AuthError(format!(
                                     "server rejected reconnect handshake (HTTP {status})"
@@ -1293,11 +2193,11 @@ fn drain_reconnect_signals(reconnect_rx: &mut mpsc::Receiver<()>) {
 /// half but never writes (app-level pongs route through `outbound_tx`; WS
 /// pings are auto-answered by tungstenite on poll).
 ///
-/// Enforces the inbound-liveness deadline: no inbound frame of any kind for
-/// the deadline window (default 2.5× the ping cadence, see
-/// [`resolve_ws_liveness_deadline`]) means the transport is silently dead
-/// (snapshot-restored VM, NAT/LB flow expiry), so exit via
-/// [`ConnectedExit::SocketClosed`] onto the normal reconnect path. The
+/// Enforces the inbound-liveness deadline: no *round-trip* proof (WS/app
+/// pong) for the deadline window (default 4× the ping
+/// cadence, see [`resolve_ws_liveness_deadline`]) means the return path is
+/// silently dead, so exit via [`ConnectedExit::SocketClosed`] onto the
+/// normal reconnect path. Hub app/WS pings alone do not re-arm. The
 /// deadline runs only in this phase and re-arms on every (re)entry.
 ///
 /// Generic over the stream for in-memory unit tests, mirroring
@@ -1308,11 +2208,13 @@ async fn run_reader_phase<S>(
     stop_rx: &mut mpsc::Receiver<()>,
     reconnect_rx: &mut mpsc::Receiver<()>,
     liveness_deadline: Duration,
+    pong_tx: &mpsc::Sender<String>,
 ) -> ConnectedExit
 where
     S: Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     let mut clock_probe = tokio::time::interval(CLOCK_PROBE_INTERVAL);
+    clock_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     clock_probe.tick().await;
     let deadline = sleep(liveness_deadline);
     tokio::pin!(deadline);
@@ -1327,37 +2229,37 @@ where
             // Before the deadline arm so a frame that raced the expiry
             // proves liveness and wins.
             msg = stream.next() => {
-                if matches!(msg, Some(Ok(ref m)) if !matches!(m, Message::Close(_))) {
-                    inner.health.record_inbound();
-                }
                 match msg {
                     Some(Ok(msg)) => {
-                        // Any inbound frame (data or control) proves liveness,
-                        // so re-arm the deadline. Saturate on overflow so a
-                        // `Duration::MAX` "disable" override can't panic
-                        // `Instant + Duration`.
-                        let now = tokio::time::Instant::now();
-                        let rearm = now
-                            .checked_add(liveness_deadline)
-                            .unwrap_or_else(|| now + Duration::from_secs(86400 * 365 * 30));
-                        deadline.as_mut().reset(rearm);
                         match msg {
                             Message::Text(text) => {
-                                if let Some(pong_text) = route_or_pong(inner, text.as_ref())
-                                    && inner.outbound_tx.try_send(pong_text).is_err()
-                                {
-                                    // App-level pong is JSON text; the reader no longer
-                                    // owns the sink, so route it through the writer.
-                                    // Best-effort (non-blocking) to keep the reader hot:
-                                    // a paused writer (dead socket) or a saturated buffer
-                                    // drops the heartbeat. Metered so the residual loss is
-                                    // observable/alertable rather than silent.
-                                    crate::metrics::heartbeat_pong_dropped();
+                                match classify_inbound_text(inner, text.as_ref()) {
+                                    InboundText::AppPing { pong } => {
+                                        // Hub→client ping is not RTT proof. Reply if we
+                                        // can; a dropped pong must not re-arm either.
+                                        if let Some(pong_text) = pong
+                                            && pong_tx.try_send(pong_text).is_err()
+                                        {
+                                            crate::metrics::heartbeat_pong_dropped();
+                                        }
+                                    }
+                                    InboundText::AppPong => {
+                                        inner.health.record_inbound();
+                                        rearm_liveness(&mut deadline, liveness_deadline);
+                                    }
+                                    InboundText::Data => {
+                                        // Hub→client data is one-way, not RTT proof.
+                                    }
+                                    InboundText::Unparseable => {}
                                 }
                             }
-                            // WS control pings get an automatic Pong queued + flushed
-                            // by tungstenite on read; nothing to do here.
-                            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+                            // WS Pong is RTT proof of our Ping. Inbound WS Ping is
+                            // auto-answered by tungstenite and is hub→client only.
+                            Message::Pong(_) => {
+                                inner.health.record_inbound();
+                                rearm_liveness(&mut deadline, liveness_deadline);
+                            }
+                            Message::Ping(_) | Message::Frame(_) => {}
                             Message::Binary(_) => {
                                 warn!("server sent binary frame; ignoring");
                             }
@@ -1382,12 +2284,67 @@ where
                 crate::metrics::liveness_deadline_expired();
                 warn!(
                     ?liveness_deadline,
-                    "no inbound frame within the liveness deadline; declaring the socket dead and reconnecting"
+                    "no RTT proof (WS/app pong) within the liveness deadline; declaring the socket dead and reconnecting"
                 );
                 return ConnectedExit::SocketClosed(DisconnectCause::LivenessDeadline);
             }
         }
     }
+}
+/// Send one replay request on the fresh socket and wait for *its* reply
+/// (best-effort, bounded; the reconnect must not hang on the hub's reply).
+///
+/// The reader phase is not running yet, so every other frame that arrives
+/// first is handled here the way it would handle it: data frames go to the
+/// demux (a `tools_changed` the hub emits while serving a replayed bind
+/// must reach the session inbox), an app ping is answered on the sink, an
+/// app/WS pong counts as liveness. Discarding "the next frame" as the ack
+/// lost whichever of those the hub wrote first.
+async fn replay_request<P: serde::Serialize>(
+    inner: &HubConnectionInner,
+    sink: &mut SplitSink<WsStream, Message>,
+    stream: &mut SplitStream<WsStream>,
+    request: &codel_tool_protocol::JsonRpcRequest<P>,
+) {
+    let Ok(text) = serde_json::to_string(request) else {
+        return;
+    };
+    let Ok(request_id) = serde_json::to_value(&request.id) else {
+        return;
+    };
+    let _ = SinkExt::send(sink, Message::Text(text.into())).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let Ok(next) = tokio::time::timeout_at(deadline, StreamExt::next(stream)).await else {
+            return;
+        };
+        match next {
+            Some(Ok(Message::Text(text))) => {
+                if is_reply_to(text.as_ref(), &request_id) {
+                    return;
+                }
+                match classify_inbound_text(inner, text.as_ref()) {
+                    InboundText::AppPing { pong: Some(pong) } => {
+                        let _ = SinkExt::send(sink, Message::Text(pong.into())).await;
+                    }
+                    InboundText::AppPong => inner.health.record_inbound(),
+                    InboundText::AppPing { pong: None }
+                    | InboundText::Data
+                    | InboundText::Unparseable => {}
+                }
+            }
+            Some(Ok(Message::Pong(_))) => inner.health.record_inbound(),
+            Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+            Some(Ok(_)) => {}
+        }
+    }
+}
+/// Whether `text` is the JSON-RPC response to the request with `id`.
+fn is_reply_to(text: &str, id: &Value) -> bool {
+    serde_json::from_str::<Value>(text).is_ok_and(|frame| {
+        frame.get("id") == Some(id)
+            && (frame.get("result").is_some() || frame.get("error").is_some())
+    })
 }
 /// Reconnect once and replay every session binding + tool registration.
 async fn reconnect_and_replay(
@@ -1396,7 +2353,14 @@ async fn reconnect_and_replay(
     attempt: u32,
     outage: &OutageInfo,
     backoff_total: Duration,
-) -> Result<(SplitSink<WsStream, Message>, SplitStream<WsStream>), ClientError> {
+) -> Result<
+    (
+        SplitSink<WsStream, Message>,
+        SplitStream<WsStream>,
+        AuthCredential,
+    ),
+    ClientError,
+> {
     let fresh_cred = inner.credential.current();
     let ws = open_socket(
         url,
@@ -1417,9 +2381,10 @@ async fn reconnect_and_replay(
     )
     .await?;
     let sessions = inner.bound_sessions.snapshot_keys();
+    let mut binds_replayed = 0usize;
     if inner.kind == ConnectionKind::Harness {
         for sid in &sessions {
-            let req = codel_tool_protocol::JsonRpcRequest {
+            let open = codel_tool_protocol::JsonRpcRequest {
                 jsonrpc: codel_tool_protocol::JsonRpcVersion,
                 id: codel_tool_protocol::JsonRpcId::new_uuid_v7(),
                 session_id: Some(sid.clone()),
@@ -1429,10 +2394,22 @@ async fn reconnect_and_replay(
                     last_seq: None,
                 },
             };
-            if let Ok(text) = serde_json::to_string(&req) {
-                let _ = SinkExt::send(&mut sink, Message::Text(text.into())).await;
-                let _ = tokio::time::timeout(Duration::from_secs(5), StreamExt::next(&mut stream))
-                    .await;
+            replay_request(inner, &mut sink, &mut stream, &open).await;
+            let binds = inner
+                .last_binds
+                .get(sid)
+                .map(|binds| binds.clone())
+                .unwrap_or_default();
+            for params in binds {
+                let bind = codel_tool_protocol::JsonRpcRequest {
+                    jsonrpc: codel_tool_protocol::JsonRpcVersion,
+                    id: codel_tool_protocol::JsonRpcId::new_uuid_v7(),
+                    session_id: Some(sid.clone()),
+                    method: Method::SessionBindServer.as_wire_str().to_owned(),
+                    params,
+                };
+                replay_request(inner, &mut sink, &mut stream, &bind).await;
+                binds_replayed += 1;
             }
         }
     }
@@ -1441,6 +2418,7 @@ async fn reconnect_and_replay(
     info!(
         attempt,
         sessions_replayed,
+        binds_replayed,
         cause = outage.cause.label(),
         close_code = ?outage.cause.close_code(),
         error_detail = ?outage.cause.detail(),
@@ -1456,6 +2434,9 @@ async fn reconnect_and_replay(
         "server reconnect succeeded"
     );
     crate::metrics::reconnect_cause(outage.cause.label());
+    if let Some(detail_class) = outage.cause.detail_class() {
+        crate::metrics::disconnect_detail_class(outage.cause.label(), detail_class);
+    }
     crate::metrics::reconnect_gap_observe(silent_gap_ms as f64 / 1_000.0);
     *inner.connection_id.lock().await = Some(ack.connection_id.clone());
     *inner.hello_capabilities.write() = std::mem::take(&mut ack.capabilities);
@@ -1466,1334 +2447,168 @@ async fn reconnect_and_replay(
             attempt,
         });
     }
-    Ok((sink, stream))
+    Ok((sink, stream, fresh_cred))
 }
-/// Look up the backoff for `attempt` in `schedule`, clamping past the end
-/// to the final (cap) slot. Call sites pass a non-empty schedule (resolved
-/// via [`resolve_reconnect_backoff`]); the lookup is nonetheless
-/// self-contained — an empty slice yields `Duration::ZERO` rather than
-/// panicking.
-fn backoff_for(attempt: u32, schedule: &[Duration]) -> Duration {
-    let idx = (attempt as usize)
-        .saturating_sub(1)
-        .min(schedule.len().saturating_sub(1));
-    schedule.get(idx).copied().unwrap_or_default()
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn backoff_for_follows_exponential_schedule() {
-        let schedule = default_reconnect_backoff();
-        assert_eq!(backoff_for(1, &schedule), Duration::from_millis(100));
-        assert_eq!(backoff_for(2, &schedule), Duration::from_millis(200));
-        assert_eq!(backoff_for(3, &schedule), Duration::from_millis(500));
-        assert_eq!(backoff_for(4, &schedule), Duration::from_millis(1_000));
-        assert_eq!(backoff_for(5, &schedule), Duration::from_millis(2_000));
-        assert_eq!(backoff_for(6, &schedule), Duration::from_millis(5_000));
-        assert_eq!(backoff_for(7, &schedule), Duration::from_millis(10_000));
+impl HubConnectionInner {
+    fn try_alloc_request_id(&self) -> Result<codel_tool_protocol::RequestId, ClientError> {
+        let value = self
+            .next_request_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        codel_tool_protocol::RequestId::new(format!("c{value}")).map_err(ClientError::from)
     }
-    #[test]
-    fn backoff_for_caps_at_last_slot() {
-        let schedule = default_reconnect_backoff();
-        let cap = Duration::from_millis(10_000);
-        assert_eq!(backoff_for(8, &schedule), cap);
-        assert_eq!(backoff_for(50, &schedule), cap);
-        assert_eq!(backoff_for(u32::MAX, &schedule), cap);
-    }
-    #[test]
-    fn backoff_for_zero_attempt_uses_first_slot() {
-        let schedule = default_reconnect_backoff();
-        assert_eq!(backoff_for(0, &schedule), Duration::from_millis(100));
-    }
-    #[test]
-    fn backoff_for_honors_configured_schedule() {
-        let schedule = resolve_reconnect_backoff(Some(Arc::from([
-            Duration::from_millis(5),
-            Duration::from_millis(15),
-        ])));
-        assert_eq!(backoff_for(1, &schedule), Duration::from_millis(5));
-        assert_eq!(backoff_for(2, &schedule), Duration::from_millis(15));
-        assert_eq!(backoff_for(3, &schedule), Duration::from_millis(15));
-        assert_eq!(backoff_for(99, &schedule), Duration::from_millis(15));
-    }
-    #[test]
-    fn backoff_for_empty_schedule_is_zero_not_panic() {
-        assert_eq!(backoff_for(1, &[]), Duration::ZERO);
-        assert_eq!(backoff_for(0, &[]), Duration::ZERO);
-        assert_eq!(backoff_for(u32::MAX, &[]), Duration::ZERO);
-    }
-    #[test]
-    fn resolve_reconnect_backoff_falls_back_when_unset_or_empty() {
-        let from_none = resolve_reconnect_backoff(None);
-        let from_empty = resolve_reconnect_backoff(Some(Arc::from([])));
-        for schedule in [from_none, from_empty] {
-            assert_eq!(backoff_for(1, &schedule), Duration::from_millis(100));
-            assert_eq!(backoff_for(7, &schedule), Duration::from_millis(10_000));
-            assert_eq!(backoff_for(99, &schedule), Duration::from_millis(10_000));
-        }
-    }
-    /// A zero or unset ping interval must resolve to the default. A zero
-    /// period would otherwise reach `tokio::time::interval`, which panics on
-    /// `Duration::ZERO`; a positive override is honored verbatim.
-    #[test]
-    fn resolve_ws_ping_interval_clamps_zero_and_unset_to_default() {
-        assert_eq!(resolve_ws_ping_interval(None), DEFAULT_WS_PING_INTERVAL);
-        assert_eq!(
-            resolve_ws_ping_interval(Some(Duration::ZERO)),
-            DEFAULT_WS_PING_INTERVAL
-        );
-        let custom = Duration::from_secs(7);
-        assert_eq!(resolve_ws_ping_interval(Some(custom)), custom);
-    }
-    /// Resolving a zero ping interval to a non-zero default means
-    /// `tokio::time::interval` can be constructed without panicking.
-    #[tokio::test]
-    async fn resolved_zero_ping_interval_builds_interval_without_panic() {
-        let resolved = resolve_ws_ping_interval(Some(Duration::ZERO));
-        assert!(!resolved.is_zero());
-        let _interval = tokio::time::interval(resolved);
-    }
-    fn bearer_credential() -> AuthCredential {
-        AuthCredential::bearer("test-token")
-    }
-    #[tokio::test]
-    async fn open_socket_refuses_plaintext_ws_to_remote_host() {
-        let url = Url::parse("ws://hub.example.com:8080/v1/tools").expect("valid url");
-        let credential = bearer_credential();
-        match open_socket(&url, &credential, ConnectionKind::Harness, None, false).await {
-            Err(ClientError::InsecureScheme { url: rejected }) => {
-                assert_eq!(rejected, url);
-            }
-            other => panic!("expected InsecureScheme; got {other:?}"),
-        }
-    }
-    #[tokio::test]
-    async fn open_socket_allows_plaintext_ws_to_loopback() {
-        let url = Url::parse("ws://127.0.0.1:1/").expect("valid url");
-        let credential = bearer_credential();
-        if let Err(ClientError::InsecureScheme { .. }) =
-            open_socket(&url, &credential, ConnectionKind::Harness, None, false).await
-        {
-            panic!("loopback ws:// must not be rejected by the scheme guard")
-        }
-    }
-    #[tokio::test]
-    async fn open_socket_allows_wss_to_remote_host() {
-        let url = Url::parse("wss://hub.example.com/").expect("valid url");
-        let credential = bearer_credential();
-        if let Err(ClientError::InsecureScheme { .. }) =
-            open_socket(&url, &credential, ConnectionKind::Harness, None, false).await
-        {
-            panic!("wss:// must not be rejected by the scheme guard")
-        }
-    }
-    #[tokio::test]
-    async fn open_socket_allows_plaintext_ws_when_insecure_opt_in() {
-        let url = Url::parse("ws://hub.example.com:1/").expect("valid url");
-        let credential = bearer_credential();
-        if let Err(ClientError::InsecureScheme { .. }) =
-            open_socket(&url, &credential, ConnectionKind::Harness, None, true).await
-        {
-            panic!("allow_insecure_ws must bypass the scheme guard")
-        }
-    }
-    #[tokio::test]
-    async fn open_socket_rejects_role_mismatch() {
-        let url = Url::parse("ws://127.0.0.1:1/?role=harness").expect("valid url");
-        let credential = bearer_credential();
-        match open_socket(&url, &credential, ConnectionKind::ToolServer, None, false).await {
-            Err(ClientError::InvalidConfig(msg)) => {
-                assert!(
-                    msg.contains("conflicts with"),
-                    "message should mention conflict; got: {msg}"
-                );
-            }
-            other => panic!("expected InvalidConfig; got {other:?}"),
-        }
-    }
-    #[test]
-    fn host_is_loopback_recognises_canonical_names() {
-        for raw in [
-            "ws://127.0.0.1/",
-            "ws://[::1]/",
-            "ws://localhost/",
-            "ws://LOCALHOST/",
-        ] {
-            let url = Url::parse(raw).expect("valid url");
-            assert!(host_is_loopback(&url), "{raw} must be treated as loopback");
-        }
-        for raw in ["ws://hub.example.com/", "ws://10.0.0.1/", "ws://127.0.0.2/"] {
-            let url = Url::parse(raw).expect("valid url");
-            assert!(
-                !host_is_loopback(&url),
-                "{raw} must NOT be treated as loopback",
-            );
-        }
-    }
-    #[test]
-    fn exit_for_close_code_classifies_terminal_range() {
-        assert!(matches!(
-            exit_for_close_code(Some(4100)),
-            ConnectedExit::TerminalClose(4100)
-        ));
-        assert!(matches!(
-            exit_for_close_code(Some(4199)),
-            ConnectedExit::TerminalClose(4199)
-        ));
-        assert!(matches!(
-            exit_for_close_code(Some(4099)),
-            ConnectedExit::SocketClosed(DisconnectCause::CloseFrame(Some(4099)))
-        ));
-        assert!(matches!(
-            exit_for_close_code(Some(4200)),
-            ConnectedExit::SocketClosed(DisconnectCause::CloseFrame(Some(4200)))
-        ));
-        assert!(matches!(
-            exit_for_close_code(Some(1000)),
-            ConnectedExit::SocketClosed(DisconnectCause::CloseFrame(Some(1000)))
-        ));
-        assert!(matches!(
-            exit_for_close_code(None),
-            ConnectedExit::SocketClosed(DisconnectCause::CloseFrame(None))
-        ));
-    }
-    #[test]
-    fn disconnect_cause_labels_and_fields() {
-        assert_eq!(
-            DisconnectCause::CloseFrame(Some(1006)).label(),
-            "close_frame"
-        );
-        assert_eq!(
-            DisconnectCause::CloseFrame(Some(1006)).close_code(),
-            Some(1006)
-        );
-        assert_eq!(DisconnectCause::Eof.label(), "eof");
-        assert_eq!(DisconnectCause::Eof.close_code(), None);
-        assert_eq!(DisconnectCause::Eof.detail(), None);
-        let read = DisconnectCause::ReadError("reset".to_owned());
-        assert_eq!(read.label(), "transport_read_error");
-        assert_eq!(read.detail(), Some("reset"));
-        let write = DisconnectCause::WriteError("pipe".to_owned());
-        assert_eq!(write.label(), "transport_write_error");
-        assert_eq!(write.detail(), Some("pipe"));
-        assert_eq!(DisconnectCause::Forced.label(), "forced");
-    }
-    #[test]
-    fn conn_health_snapshot_without_clock_skew_reports_zero_jump() {
-        let health = ConnHealth::new();
-        health.record_inbound();
-        health.refresh_clock();
-        let snap = health.snapshot();
-        assert_eq!(snap.clock_jump_ms, 0);
-        assert!(snap.since_last_probe_monotonic_ms < 2_000);
-    }
-    #[test]
-    fn conn_health_snapshot_reports_wall_clock_jump() {
-        let health = ConnHealth::new();
-        {
-            let mut state = health.state.lock();
-            state.wall_ref = SystemTime::now() - Duration::from_secs(10);
-        }
-        let snap = health.snapshot();
-        assert!(snap.since_last_probe_wall_ms >= 9_000);
-        assert!(snap.since_last_probe_monotonic_ms < 2_000);
-        assert!(snap.clock_jump_ms >= 8_000);
-        health.reset();
-        assert_eq!(health.snapshot().clock_jump_ms, 0);
-    }
-    #[test]
-    fn conn_health_accumulates_jump_across_refreshes() {
-        let health = ConnHealth::new();
-        {
-            let mut state = health.state.lock();
-            state.wall_ref = SystemTime::now() - Duration::from_secs(5);
-        }
-        health.refresh_clock();
-        {
-            let mut state = health.state.lock();
-            state.wall_ref = SystemTime::now() - Duration::from_secs(4);
-        }
-        let snap = health.snapshot();
-        assert!(snap.clock_jump_ms >= 8_000);
-    }
-    use std::pin::Pin;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::task::{Context, Poll};
-    /// Default ping period for writer tests that don't exercise the
-    /// keepalive: long enough that no ping fires during the test.
-    const TEST_PING_NEVER: Duration = Duration::from_secs(3_600);
-    /// In-memory [`futures::Sink`] for `run_writer` tests. Records the
-    /// text payload of every `Message::Text` sent and counts every
-    /// `Message::Ping` (keepalive). When the `fail` flag is set, `send`
-    /// errors at `poll_ready`, modelling a dead socket.
-    #[derive(Clone)]
-    struct RecordingSink {
-        recorded: Arc<std::sync::Mutex<Vec<String>>>,
-        pings: Arc<AtomicUsize>,
-        fail: Arc<AtomicBool>,
-    }
-    impl RecordingSink {
-        fn new() -> Self {
-            Self {
-                recorded: Arc::new(std::sync::Mutex::new(Vec::new())),
-                pings: Arc::new(AtomicUsize::new(0)),
-                fail: Arc::new(AtomicBool::new(false)),
-            }
-        }
-        fn recorded(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
-            self.recorded.clone()
-        }
-        fn pings(&self) -> Arc<AtomicUsize> {
-            self.pings.clone()
-        }
-        fn fail_flag(&self) -> Arc<AtomicBool> {
-            self.fail.clone()
-        }
-    }
-    impl futures::Sink<Message> for RecordingSink {
-        type Error = std::io::Error;
-        fn poll_ready(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            if self.fail.load(Ordering::SeqCst) {
-                Poll::Ready(Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "sink dead",
-                )))
-            } else {
-                Poll::Ready(Ok(()))
-            }
-        }
-        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-            match item {
-                Message::Text(text) => {
-                    self.recorded
-                        .lock()
-                        .expect("recorded lock")
-                        .push(text.as_str().to_owned());
-                }
-                Message::Ping(_) => {
-                    self.pings.fetch_add(1, Ordering::SeqCst);
-                }
-                _ => {}
-            }
-            Ok(())
-        }
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn poll_close(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-    type TestCtl = WriterControl<RecordingSink>;
-    fn idle_write_error_slot() -> WriteErrorSlot {
-        Arc::new(parking_lot::Mutex::new(None))
-    }
-    /// Poll `predicate` every 5ms up to ~2s. Keeps the writer-task tests
-    /// off arbitrary fixed sleeps for the positive assertions.
-    async fn wait_until<F: Fn() -> bool>(predicate: F, label: &str) {
-        for _ in 0..400 {
-            if predicate() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        panic!("timed out waiting for: {label}");
-    }
-    #[tokio::test]
-    async fn writer_drains_outbound_while_live() {
-        let sink = RecordingSink::new();
-        let recorded = sink.recorded();
-        let (out_tx, out_rx) = mpsc::channel::<String>(8);
-        let (_ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let writer = tokio::spawn(run_writer(
-            sink,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            TEST_PING_NEVER,
-            idle_write_error_slot(),
-        ));
-        out_tx.send("a".to_owned()).await.expect("send a");
-        out_tx.send("b".to_owned()).await.expect("send b");
-        wait_until(
-            || recorded.lock().expect("lock").len() == 2,
-            "two frames drained",
-        )
-        .await;
-        assert_eq!(
-            *recorded.lock().expect("lock"),
-            vec!["a".to_owned(), "b".to_owned()],
-            "frames must be written to the live sink in order"
-        );
-        stop_tx.send(()).await.expect("stop");
-        writer.await.expect("writer task joins");
-    }
-    #[tokio::test]
-    async fn writer_honors_custom_ping_interval() {
-        let sink = RecordingSink::new();
-        let pings = sink.pings();
-        let (_out_tx, out_rx) = mpsc::channel::<String>(4);
-        let (_ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let writer = tokio::spawn(run_writer(
-            sink,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            Duration::from_millis(20),
-            idle_write_error_slot(),
-        ));
-        wait_until(
-            || pings.load(Ordering::SeqCst) >= 3,
-            "three keepalive pings at the configured cadence",
-        )
-        .await;
-        stop_tx.send(()).await.expect("stop");
-        writer.await.expect("writer task joins");
-    }
-    #[tokio::test]
-    async fn writer_re_arms_custom_ping_interval_after_resume() {
-        let dead = RecordingSink::new();
-        let (_out_tx, out_rx) = mpsc::channel::<String>(4);
-        let (ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let writer = tokio::spawn(run_writer(
-            dead,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            Duration::from_millis(20),
-            idle_write_error_slot(),
-        ));
-        ctl_tx.send(WriterControl::Pause).await.expect("pause");
-        let fresh = RecordingSink::new();
-        let fresh_pings = fresh.pings();
-        ctl_tx
-            .send(WriterControl::Resume(fresh))
-            .await
-            .expect("resume");
-        wait_until(
-            || fresh_pings.load(Ordering::SeqCst) >= 3,
-            "keepalive pings resume on the configured cadence after Resume",
-        )
-        .await;
-        stop_tx.send(()).await.expect("stop");
-        writer.await.expect("writer task joins");
-    }
-    #[tokio::test]
-    async fn writer_buffers_during_pause_and_flushes_on_resume() {
-        let dead = RecordingSink::new();
-        let dead_log = dead.recorded();
-        let (out_tx, out_rx) = mpsc::channel::<String>(16);
-        let (ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let writer = tokio::spawn(run_writer(
-            dead,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            TEST_PING_NEVER,
-            idle_write_error_slot(),
-        ));
-        ctl_tx.send(WriterControl::Pause).await.expect("pause");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        for frame in ["g1", "g2", "g3"] {
-            out_tx
-                .send(frame.to_owned())
-                .await
-                .expect("enqueue during gap");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            dead_log.lock().expect("lock").is_empty(),
-            "paused writer must not drain onto the dead sink; got {:?}",
-            dead_log.lock().expect("lock")
-        );
-        let fresh = RecordingSink::new();
-        let fresh_log = fresh.recorded();
-        ctl_tx
-            .send(WriterControl::Resume(fresh))
-            .await
-            .expect("resume");
-        wait_until(
-            || fresh_log.lock().expect("lock").len() == 3,
-            "buffered frames flush after resume",
-        )
-        .await;
-        assert_eq!(
-            *fresh_log.lock().expect("lock"),
-            vec!["g1".to_owned(), "g2".to_owned(), "g3".to_owned()],
-            "all gap frames flush, in order, to the fresh sink"
-        );
-        assert!(
-            dead_log.lock().expect("lock").is_empty(),
-            "no frame must ever reach the dead sink"
-        );
-        stop_tx.send(()).await.expect("stop");
-        writer.await.expect("writer task joins");
-    }
-    #[tokio::test]
-    async fn writer_send_error_pauses_until_resume_without_multi_frame_loss() {
-        let failing = RecordingSink::new();
-        let failing_log = failing.recorded();
-        let fail_flag = failing.fail_flag();
-        let (out_tx, out_rx) = mpsc::channel::<String>(16);
-        let (ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let write_error = idle_write_error_slot();
-        let writer = tokio::spawn(run_writer(
-            failing,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            TEST_PING_NEVER,
-            write_error.clone(),
-        ));
-        out_tx.send("ok".to_owned()).await.expect("send ok");
-        wait_until(
-            || failing_log.lock().expect("lock").len() == 1,
-            "first frame drained before failure",
-        )
-        .await;
-        fail_flag.store(true, Ordering::SeqCst);
-        out_tx.send("lost".to_owned()).await.expect("enqueue lost");
-        out_tx
-            .send("kept1".to_owned())
-            .await
-            .expect("enqueue kept1");
-        out_tx
-            .send("kept2".to_owned())
-            .await
-            .expect("enqueue kept2");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(
-            *failing_log.lock().expect("lock"),
-            vec!["ok".to_owned()],
-            "only the pre-failure frame should have been recorded on the dead sink"
-        );
-        assert!(
-            write_error
-                .lock()
-                .as_deref()
-                .is_some_and(|detail| detail.contains("sink dead")),
-            "failed send must record the write-error detail for disconnect classification"
-        );
-        let fresh = RecordingSink::new();
-        let fresh_log = fresh.recorded();
-        ctl_tx
-            .send(WriterControl::Resume(fresh))
-            .await
-            .expect("resume");
-        wait_until(
-            || fresh_log.lock().expect("lock").len() == 2,
-            "buffered post-failure frames flush after resume",
-        )
-        .await;
-        assert_eq!(
-            *fresh_log.lock().expect("lock"),
-            vec!["kept1".to_owned(), "kept2".to_owned()],
-            "post-failure frames survive; only the in-flight 'lost' frame is gone"
-        );
-        stop_tx.send(()).await.expect("stop");
-        writer.await.expect("writer task joins");
-    }
-    #[tokio::test]
-    async fn writer_resume_discards_stale_write_error() {
-        let sink = RecordingSink::new();
-        let (_out_tx, out_rx) = mpsc::channel::<String>(4);
-        let (ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let write_error = idle_write_error_slot();
-        let writer = tokio::spawn(run_writer(
-            sink,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            TEST_PING_NEVER,
-            write_error.clone(),
-        ));
-        ctl_tx.send(WriterControl::Pause).await.expect("pause");
-        *write_error.lock() = Some("frame send failed: stale broken pipe".to_owned());
-        ctl_tx
-            .send(WriterControl::Resume(RecordingSink::new()))
-            .await
-            .expect("resume");
-        wait_until(
-            || write_error.lock().is_none(),
-            "Resume must clear a stale write-error left by a late old-sink send",
-        )
-        .await;
-        stop_tx.send(()).await.expect("stop");
-        writer.await.expect("writer task joins");
-    }
-    #[tokio::test]
-    async fn writer_exits_on_stop_signal() {
-        let sink = RecordingSink::new();
-        let (_out_tx, out_rx) = mpsc::channel::<String>(4);
-        let (_ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let writer = tokio::spawn(run_writer(
-            sink,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            TEST_PING_NEVER,
-            idle_write_error_slot(),
-        ));
-        stop_tx.send(()).await.expect("stop");
-        tokio::time::timeout(Duration::from_secs(2), writer)
-            .await
-            .expect("writer must exit on the stop signal")
-            .expect("writer task joins");
-    }
-    #[tokio::test]
-    async fn writer_exits_when_outbound_channel_closes() {
-        let sink = RecordingSink::new();
-        let (out_tx, out_rx) = mpsc::channel::<String>(4);
-        let (_ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (_stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let writer = tokio::spawn(run_writer(
-            sink,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            TEST_PING_NEVER,
-            idle_write_error_slot(),
-        ));
-        drop(out_tx);
-        tokio::time::timeout(Duration::from_secs(2), writer)
-            .await
-            .expect("writer must exit when outbound closes")
-            .expect("writer task joins");
-    }
-    #[tokio::test]
-    async fn writer_exits_when_control_channel_closes() {
-        let sink = RecordingSink::new();
-        let (_out_tx, out_rx) = mpsc::channel::<String>(4);
-        let (ctl_tx, ctl_rx) = mpsc::channel::<TestCtl>(2);
-        let (_stop_tx, stop_rx) = mpsc::channel::<()>(1);
-        let writer = tokio::spawn(run_writer(
-            sink,
-            out_rx,
-            ctl_rx,
-            stop_rx,
-            TEST_PING_NEVER,
-            idle_write_error_slot(),
-        ));
-        drop(ctl_tx);
-        tokio::time::timeout(Duration::from_secs(2), writer)
-            .await
-            .expect("writer must exit when the control channel closes")
-            .expect("writer task joins");
-    }
-    /// Socket-less `HubConnection` for tests: observe the sent frame and
-    /// resolve the response waiter without a live server or actor task.
-    fn test_connection() -> (Arc<HubConnection>, Arc<Demux>, mpsc::Receiver<String>) {
-        let (outbound_tx, outbound_rx) = mpsc::channel::<String>(8);
-        let demux = Arc::new(Demux::with_outbound(outbound_tx.clone()));
-        let credential: Arc<dyn AuthProvider> = Arc::new(AuthCredential::bearer("test-token"));
-        let (stop_tx, _stop_rx) = mpsc::channel::<()>(1);
-        let (reconnect_tx, _reconnect_rx) = mpsc::channel::<()>(1);
-        let inner = Arc::new(HubConnectionInner {
-            key: ConnKey {
-                url: "ws://test/v1/tools".to_owned(),
-                principal: credential.principal_key(),
-            },
-            kind: ConnectionKind::ToolServer,
-            credential,
-            on_reconnect: None,
-            on_disconnect: None,
-            server_id: None,
-            server_description: None,
-            server_metadata: None,
-            alpha_test_key: None,
-            allow_insecure_ws: false,
-            on_fatal: None,
-            reconnect_backoff: resolve_reconnect_backoff(None),
-            outbound_tx,
-            demux: demux.clone(),
-            bound_sessions: Arc::new(RefCountedSet::new()),
-            connection_id: Arc::new(Mutex::new(None)),
-            hello_capabilities: parking_lot::RwLock::new(Vec::new()),
-            next_request_id: std::sync::atomic::AtomicU64::new(1),
-            shutdown: CancellationToken::new(),
-            stop_tx,
-            reconnect_tx,
-            early_notif_rx: parking_lot::Mutex::new(Some(demux.subscribe_notifications())),
-            health: ConnHealth::new(),
-            writer_error: Arc::new(parking_lot::Mutex::new(None)),
-        });
-        (Arc::new(HubConnection { inner }), demux, outbound_rx)
-    }
-    #[test]
-    fn classify_stream_end_prefers_recorded_write_error() {
-        let (conn, _demux, _outbound_rx) = test_connection();
-        let inner = conn.inner.as_ref();
-        assert!(matches!(
-            classify_stream_end(inner, None),
-            DisconnectCause::Eof
-        ));
-        assert!(matches!(
-            classify_stream_end(inner, Some("reset by peer".to_owned())),
-            DisconnectCause::ReadError(detail) if detail == "reset by peer"
-        ));
-        *inner.writer_error.lock() = Some("ping send failed: broken pipe".to_owned());
-        assert!(matches!(
-            classify_stream_end(inner, None),
-            DisconnectCause::WriteError(detail) if detail == "ping send failed: broken pipe"
-        ));
-        assert!(
-            inner.writer_error.lock().is_none(),
-            "classification must consume the recorded write error"
-        );
-        *inner.writer_error.lock() = Some("frame send failed: broken pipe".to_owned());
-        assert!(matches!(
-            classify_stream_end(inner, Some("reset".to_owned())),
-            DisconnectCause::WriteError(_)
-        ));
-    }
-    #[test]
-    fn supports_is_unknown_until_capabilities_advertised() {
-        let (conn, _demux, _outbound_rx) = test_connection();
-        assert_eq!(conn.supports("session_attach_server"), None);
-        *conn.inner.hello_capabilities.write() = vec!["session_attach_server".to_owned()];
-        assert_eq!(conn.supports("session_attach_server"), Some(true));
-        assert_eq!(conn.supports("some_other_method"), Some(false));
-    }
-    #[tokio::test]
-    async fn call_request_with_timeout_round_trips_via_demux() {
-        let (conn, demux, mut outbound_rx) = test_connection();
-        let session = SessionId::new("rt_session").expect("valid");
-        let request_id = conn.try_alloc_request_id().expect("request id");
-        let id_str = request_id.to_string();
-        let req = JsonRpcRequest {
-            jsonrpc: JsonRpcVersion,
-            id: JsonRpcId::from_request_id(&request_id),
-            session_id: Some(session.clone()),
-            method: Method::Hook.as_wire_str().to_owned(),
-            params: serde_json::json!({ "k": "v" }),
+    async fn call_request_with_deadline<P>(
+        &self,
+        request_id: codel_tool_protocol::RequestId,
+        request: &JsonRpcRequest<P>,
+        timeout: Duration,
+    ) -> Result<JsonRpcResponse, DeadlineCallError>
+    where
+        P: serde::Serialize,
+    {
+        let text =
+            serde_json::to_string(request).map_err(|e| DeadlineCallError::Other(e.into()))?;
+        let (tx, rx) = oneshot::channel();
+        self.demux.register_response_waiter(request_id.clone(), tx);
+        let _guard = WaiterGuard {
+            demux: &self.demux,
+            request_id: &request_id,
         };
-        let call = tokio::spawn(async move {
-            conn.call_request_with_timeout(request_id, &req, Duration::from_secs(5))
-                .await
-        });
-        let sent = tokio::time::timeout(Duration::from_secs(1), outbound_rx.recv())
+        self.send_outbound(text)
             .await
-            .expect("frame sent before deadline")
-            .expect("outbound frame present");
-        let sent_value: Value = serde_json::from_str(&sent).expect("sent frame is valid json");
-        assert_eq!(sent_value["id"].as_str(), Some(id_str.as_str()));
-        assert_eq!(
-            sent_value["method"].as_str(),
-            Some(Method::Hook.as_wire_str())
-        );
-        let outcome = demux.route(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id_str,
-            "session_id": session.as_str(),
-            "result": { "ok": true },
-        }));
-        assert_eq!(outcome, crate::demux::RouteOutcome::Response);
-        let resp = call
-            .await
-            .expect("call task joins")
-            .expect("call resolves with a response");
-        let ResponseOutcome::Result(value) = resp.outcome else {
-            panic!("expected a result outcome");
-        };
-        assert_eq!(value, serde_json::json!({ "ok": true }));
+            .map_err(DeadlineCallError::Other)?;
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => result.map_err(DeadlineCallError::Other),
+            Ok(Err(recv_err)) => Err(DeadlineCallError::Other(recv_err.into())),
+            Err(_elapsed) => Err(DeadlineCallError::TimedOut(timeout)),
+        }
     }
-    #[tokio::test]
-    async fn call_request_reclaims_waiter_on_send_failure() {
-        let (conn, demux, outbound_rx) = test_connection();
-        drop(outbound_rx);
-        let request_id = conn.try_alloc_request_id().expect("request id");
-        let probe_id = request_id.clone();
-        let req = JsonRpcRequest {
+    async fn send_outbound(&self, text: String) -> Result<(), ClientError> {
+        match self.outbound_tx.try_send(text) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(text)) => {
+                match tokio::time::timeout(Duration::from_millis(250), self.outbound_tx.send(text))
+                    .await
+                {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(_)) => Err(ClientError::NetworkError(
+                        "outbound channel closed".to_owned(),
+                    )),
+                    Err(_) => Err(ClientError::BackpressureError(
+                        "outbound mpsc full beyond bounded wait".to_owned(),
+                    )),
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(ClientError::NetworkError(
+                "outbound channel closed".to_owned(),
+            )),
+        }
+    }
+    /// Whether the hub advertised `capability` in `hello_ack`; `None` when
+    /// the ack advertised nothing, which a hub predating capabilities also
+    /// does, so support is unknown.
+    fn supports(&self, capability: &str) -> Option<bool> {
+        let caps = self.hello_capabilities.read();
+        (!caps.is_empty()).then(|| caps.iter().any(|c| c == capability))
+    }
+    /// Present `access_token` to the hub as this socket's new bearer; `Ok`
+    /// carries the `exp` the hub now holds.
+    async fn auth_refresh(&self, access_token: &str) -> Result<i64, AuthRefreshError> {
+        let request_id = self.try_alloc_request_id()?;
+        let request = JsonRpcRequest {
             jsonrpc: JsonRpcVersion,
             id: JsonRpcId::from_request_id(&request_id),
             session_id: None,
-            method: Method::Hook.as_wire_str().to_owned(),
-            params: serde_json::json!({}),
-        };
-        let result = conn.call_request(request_id, &req).await;
-        assert!(matches!(result, Err(ClientError::NetworkError(_))));
-        assert!(
-            demux.take_response_waiter(&probe_id).is_none(),
-            "the failed-send waiter is reclaimed so it cannot leak"
-        );
-    }
-    #[tokio::test]
-    async fn serve_send_failure_fails_fast_without_retry() {
-        let (conn, demux, outbound_rx) = test_connection();
-        drop(outbound_rx);
-        let session = SessionId::new("serve_session").expect("valid");
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            conn.serve(session, codel_tool_protocol::ServeParams { tools: vec![] }),
-        )
-        .await
-        .expect("serve must fail bounded, not park");
-        assert!(matches!(result, Err(ClientError::NetworkError(_))));
-        let request_id = codel_tool_protocol::RequestId::new("c1").expect("valid");
-        assert!(
-            demux.take_response_waiter(&request_id).is_none(),
-            "the failed attempt must not leak a waiter"
-        );
-        assert_eq!(
-            conn.try_alloc_request_id().expect("request id").to_string(),
-            "c2",
-            "a non-timeout failure must consume a single attempt, not retry"
-        );
-    }
-    #[tokio::test(start_paused = true)]
-    async fn serve_times_out_bounded_and_reclaims_every_attempt_waiter() {
-        let (conn, demux, mut outbound_rx) = test_connection();
-        let session = SessionId::new("serve_timeout").expect("valid");
-        let result = conn
-            .serve(session, codel_tool_protocol::ServeParams { tools: vec![] })
-            .await;
-        assert!(matches!(result, Err(ClientError::NetworkError(_))));
-        for id in ["c1", "c2", "c3"] {
-            let sent = outbound_rx.try_recv().expect("attempt frame sent");
-            let value: Value = serde_json::from_str(&sent).expect("valid json");
-            assert_eq!(value["id"].as_str(), Some(id));
-            let request_id = codel_tool_protocol::RequestId::new(id).expect("valid");
-            assert!(
-                demux.take_response_waiter(&request_id).is_none(),
-                "attempt {id} must not leak a waiter"
-            );
-        }
-        assert!(
-            outbound_rx.try_recv().is_err(),
-            "exactly SERVE_MAX_ATTEMPTS frames are sent"
-        );
-    }
-    #[tokio::test]
-    async fn call_request_reclaims_waiter_on_caller_cancellation() {
-        let (conn, demux, mut outbound_rx) = test_connection();
-        let request_id = conn.try_alloc_request_id().expect("request id");
-        let probe_id = request_id.clone();
-        let conn_for_call = conn.clone();
-        let call = tokio::spawn(async move {
-            let req = JsonRpcRequest {
-                jsonrpc: JsonRpcVersion,
-                id: JsonRpcId::from_request_id(&request_id),
-                session_id: None,
-                method: Method::Hook.as_wire_str().to_owned(),
-                params: serde_json::json!({}),
-            };
-            conn_for_call.call_request(request_id, &req).await
-        });
-        tokio::time::timeout(Duration::from_secs(1), outbound_rx.recv())
-            .await
-            .expect("frame sent")
-            .expect("outbound frame present");
-        call.abort();
-        let _ = call.await;
-        assert!(
-            demux.take_response_waiter(&probe_id).is_none(),
-            "the cancelled caller's waiter is reclaimed so it cannot leak"
-        );
-    }
-    #[tokio::test]
-    async fn reader_phase_exits_socket_closed_on_forced_reconnect_signal() {
-        let (conn, _demux, _outbound_rx) = test_connection();
-        let (reconnect_tx, mut reconnect_rx) = mpsc::channel::<()>(1);
-        let (_stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
-        reconnect_tx.try_send(()).expect("queue forced reconnect");
-        let mut stream =
-            futures::stream::pending::<Result<Message, tokio_tungstenite::tungstenite::Error>>();
-        let exit = tokio::time::timeout(
-            Duration::from_secs(1),
-            run_reader_phase(
-                conn.inner.as_ref(),
-                &mut stream,
-                &mut stop_rx,
-                &mut reconnect_rx,
-                Duration::from_secs(75),
-            ),
-        )
-        .await
-        .expect("forced reconnect must break the reader phase");
-        assert!(
-            matches!(exit, ConnectedExit::SocketClosed(DisconnectCause::Forced)),
-            "a forced reconnect exits as SocketClosed (drives the reconnect path)"
-        );
-    }
-    #[tokio::test]
-    async fn stop_signal_outranks_forced_reconnect() {
-        let (conn, _demux, _outbound_rx) = test_connection();
-        let (reconnect_tx, mut reconnect_rx) = mpsc::channel::<()>(1);
-        let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
-        reconnect_tx.try_send(()).expect("queue forced reconnect");
-        stop_tx.try_send(()).expect("queue stop");
-        let mut stream =
-            futures::stream::pending::<Result<Message, tokio_tungstenite::tungstenite::Error>>();
-        let exit = tokio::time::timeout(
-            Duration::from_secs(1),
-            run_reader_phase(
-                conn.inner.as_ref(),
-                &mut stream,
-                &mut stop_rx,
-                &mut reconnect_rx,
-                Duration::from_secs(75),
-            ),
-        )
-        .await
-        .expect("stop must break the reader phase");
-        assert!(matches!(exit, ConnectedExit::Stop));
-    }
-    #[tokio::test]
-    async fn drain_reconnect_signals_clears_stale_signal_only() {
-        let (reconnect_tx, mut reconnect_rx) = mpsc::channel::<()>(1);
-        reconnect_tx.try_send(()).expect("queue stale signal");
-        drain_reconnect_signals(&mut reconnect_rx);
-        assert!(
-            reconnect_rx.try_recv().is_err(),
-            "a stale pre-reconnect signal is consumed by the drain"
-        );
-        reconnect_tx.try_send(()).expect("queue fresh signal");
-        assert!(
-            reconnect_rx.try_recv().is_ok(),
-            "the drain must not disable the channel for future signals"
-        );
-    }
-    #[tokio::test]
-    async fn early_subscribed_receiver_buffers_pre_run_connection_notifications() {
-        let (conn, demux, _outbound_rx) = test_connection();
-        let outcome = demux.route(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "b1",
-            "method": "session.bind",
-            "params": { "session_id": "s1" },
-        }));
-        assert_eq!(outcome, crate::demux::RouteOutcome::Notification);
-        let mut rx = conn
-            .take_early_notifications()
-            .expect("receiver retained until taken");
-        let frame = rx.try_recv().expect("pre-run frame buffered");
-        assert_eq!(frame["method"], "session.bind");
-        assert!(
-            conn.take_early_notifications().is_none(),
-            "the early receiver is handed off exactly once"
-        );
-    }
-    #[tokio::test]
-    async fn call_request_with_timeout_reclaims_waiter_on_deadline() {
-        let (conn, demux, mut outbound_rx) = test_connection();
-        let session = SessionId::new("to_session").expect("valid");
-        let request_id = conn.try_alloc_request_id().expect("request id");
-        let probe_id = request_id.clone();
-        let req = JsonRpcRequest {
-            jsonrpc: JsonRpcVersion,
-            id: JsonRpcId::from_request_id(&request_id),
-            session_id: Some(session),
-            method: Method::Hook.as_wire_str().to_owned(),
-            params: serde_json::json!({}),
-        };
-        let result = conn
-            .call_request_with_timeout(request_id, &req, Duration::from_millis(50))
-            .await;
-        assert!(matches!(result, Err(ClientError::NetworkError(_))));
-        assert!(
-            outbound_rx.try_recv().is_ok(),
-            "the request frame is sent before the deadline fires"
-        );
-        assert!(
-            demux.take_response_waiter(&probe_id).is_none(),
-            "the timed-out waiter is reclaimed so it cannot leak"
-        );
-    }
-    /// Regression: a *forced* reconnect abandons a still-healthy socket. If
-    /// the first reconnect attempt then fails, the actor must keep retrying
-    /// off the abandoned stream — falling back into the reader phase would
-    /// park in `stream.next()` on the live old connection forever (the
-    /// reconnect signal was already consumed), stalling the retry loop.
-    ///
-    /// Mock: conn #0 (initial) completes the handshake and stays healthy;
-    /// conn #1 (first reconnect) is dropped before the ack (transport
-    /// failure); conn #2 must then be attempted and complete. With the bug,
-    /// upgrade #2 never happens and the test times out.
-    #[tokio::test]
-    async fn forced_reconnect_retries_past_failed_attempt_without_repolling_old_stream() {
-        use futures::{SinkExt as _, StreamExt as _};
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind mock hub");
-        let addr = listener.local_addr().expect("mock addr");
-        let upgrades = Arc::new(AtomicUsize::new(0));
-        let upgrades_srv = upgrades.clone();
-        tokio::spawn(async move {
-            loop {
-                let Ok((tcp, _)) = listener.accept().await else {
-                    return;
-                };
-                let n = upgrades_srv.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(async move {
-                    let Ok(mut ws) = tokio_tungstenite::accept_async(tcp).await else {
-                        return;
-                    };
-                    if n == 1 {
-                        return;
-                    }
-                    let _ = ws.next().await;
-                    let ack = serde_json::json!({
-                        "connection_id": format!("mock-conn-{n}"),
-                        "user_id": "test",
-                        "computer_hub_version": "test",
-                        "supported_protocol_versions": ["1.0.0"],
-                    });
-                    if ws
-                        .send(tokio_tungstenite::tungstenite::Message::Text(
-                            ack.to_string().into(),
-                        ))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                    while let Some(msg) = ws.next().await {
-                        if msg.is_err() {
-                            return;
-                        }
-                    }
-                });
-            }
-        });
-        let credential: Arc<dyn AuthProvider> = Arc::new(AuthCredential::bearer("test-token"));
-        let conn = HubConnection::connect(ConnectionConfig {
-            url: url::Url::parse(&format!("ws://{addr}/v1/tools")).expect("mock url"),
-            credential,
-            kind: ConnectionKind::ToolServer,
-            on_reconnect: None,
-            on_disconnect: None,
-            on_connect: None,
-            server_id: None,
-            server_description: None,
-            server_metadata: None,
-            outbound_buffer: None,
-            tuning: ConnectionTuning {
-                reconnect_backoff: Some(Arc::from([Duration::from_millis(10)])),
-                ..Default::default()
+            method: Method::AuthRefresh.as_wire_str().to_owned(),
+            params: AuthRefreshParams {
+                access_token: access_token.to_owned(),
             },
-            alpha_test_key: None,
-            allow_insecure_ws: false,
-            on_fatal: None,
-        })
-        .await
-        .expect("initial connect");
-        conn.force_reconnect();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while upgrades.load(Ordering::SeqCst) < 3 {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "retry stalled after a failed forced-reconnect attempt: \
-                 {} upgrades observed (expected 3: initial + failed + successful)",
-                upgrades.load(Ordering::SeqCst)
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        conn.request_shutdown();
-        conn.await_shutdown().await;
-    }
-    #[tokio::test]
-    async fn call_request_serialization_failure_registers_no_waiter() {
-        struct FailingParams;
-        impl serde::Serialize for FailingParams {
-            fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
-                Err(serde::ser::Error::custom("intentionally unserializable"))
-            }
-        }
-        let (conn, demux, _outbound_rx) = test_connection();
-        let session = SessionId::new("serde_fail_session").expect("valid");
-        let request_id = conn.try_alloc_request_id().expect("request id");
-        let probe_id = request_id.clone();
-        let req = JsonRpcRequest {
-            jsonrpc: JsonRpcVersion,
-            id: JsonRpcId::from_request_id(&request_id),
-            session_id: Some(session),
-            method: Method::Hook.as_wire_str().to_owned(),
-            params: FailingParams,
         };
-        let result = conn.call_request(request_id, &req).await;
-        assert!(result.is_err(), "serialization failure must surface");
-        assert!(
-            demux.take_response_waiter(&probe_id).is_none(),
-            "no waiter may be registered when serialization fails"
-        );
-    }
-    type WsError = tokio_tungstenite::tungstenite::Error;
-    type InboundTx = futures::channel::mpsc::UnboundedSender<Result<Message, WsError>>;
-    type InboundRx = futures::channel::mpsc::UnboundedReceiver<Result<Message, WsError>>;
-    /// In-memory inbound frame source for `run_reader_phase` tests
-    /// (mirrors `RecordingSink` for the writer half).
-    fn test_inbound() -> (InboundTx, InboundRx) {
-        futures::channel::mpsc::unbounded()
-    }
-    /// A zero or unset liveness deadline resolves to 2.5× the effective
-    /// ping cadence; a positive override is honored verbatim. Mirrors the
-    /// `resolve_ws_ping_interval` clamp semantics.
-    #[test]
-    fn resolve_ws_liveness_deadline_clamps_zero_and_unset_to_default() {
-        let ping = Duration::from_secs(30);
-        assert_eq!(
-            resolve_ws_liveness_deadline(None, ping),
-            Duration::from_secs(75)
-        );
-        assert_eq!(
-            resolve_ws_liveness_deadline(Some(Duration::ZERO), ping),
-            Duration::from_secs(75)
-        );
-        let custom = Duration::from_secs(120);
-        assert_eq!(resolve_ws_liveness_deadline(Some(custom), ping), custom);
-    }
-    /// The per-attempt reconnect budget tracks the liveness deadline above
-    /// the floor and is clamped to the floor below it, so a small liveness
-    /// override can never starve connection establishment.
-    #[test]
-    fn reconnect_attempt_budget_floors_small_deadlines() {
-        assert_eq!(
-            reconnect_attempt_budget(Duration::from_millis(2_500)),
-            RECONNECT_ATTEMPT_MIN_BUDGET
-        );
-        assert_eq!(
-            reconnect_attempt_budget(RECONNECT_ATTEMPT_MIN_BUDGET),
-            RECONNECT_ATTEMPT_MIN_BUDGET
-        );
-        let large = Duration::from_secs(300);
-        assert_eq!(reconnect_attempt_budget(large), large);
-    }
-    #[test]
-    fn resolve_ws_liveness_deadline_scales_with_ping_override() {
-        assert_eq!(
-            resolve_ws_liveness_deadline(None, Duration::from_secs(10)),
-            Duration::from_secs(25)
-        );
-    }
-    #[tokio::test(start_paused = true)]
-    async fn reader_deadline_kills_silently_dead_connection() {
-        let (conn, _demux, _outbound_rx) = test_connection();
-        let (inbound_tx, mut inbound_rx) = test_inbound();
-        let (_stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
-        let (_reconnect_tx, mut reconnect_rx) = mpsc::channel::<()>(1);
-        let liveness = Duration::from_secs(75);
-        let start = tokio::time::Instant::now();
-        let exit = run_reader_phase(
-            &conn.inner,
-            &mut inbound_rx,
-            &mut stop_rx,
-            &mut reconnect_rx,
-            liveness,
-        )
-        .await;
-        assert!(matches!(
-            exit,
-            ConnectedExit::SocketClosed(DisconnectCause::LivenessDeadline)
-        ));
-        assert_eq!(
-            start.elapsed(),
-            liveness,
-            "expiry exactly one liveness window after (re)entry"
-        );
-        drop(inbound_tx);
-    }
-    #[tokio::test(start_paused = true)]
-    async fn reader_deadline_rearms_on_any_inbound_frame() {
-        let (conn, _demux, _outbound_rx) = test_connection();
-        let (inbound_tx, mut inbound_rx) = test_inbound();
-        let (_stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
-        let (_reconnect_tx, mut reconnect_rx) = mpsc::channel::<()>(1);
-        let liveness = Duration::from_secs(75);
-        let phase = run_reader_phase(
-            &conn.inner,
-            &mut inbound_rx,
-            &mut stop_rx,
-            &mut reconnect_rx,
-            liveness,
-        );
-        tokio::pin!(phase);
-        let frames = [
-            Message::Pong(Vec::new().into()),
-            Message::Ping(Vec::new().into()),
-            Message::Text(r#"{"jsonrpc":"2.0","method":"noop","params":{}}"#.into()),
-            Message::Pong(Vec::new().into()),
-        ];
-        for frame in frames {
-            tokio::time::advance(liveness * 3 / 4).await;
-            inbound_tx.unbounded_send(Ok(frame)).expect("send frame");
-            assert!(
-                futures::poll!(phase.as_mut()).is_pending(),
-                "phase must stay live while frames keep arriving"
-            );
-        }
-        tokio::time::advance(liveness - Duration::from_millis(1)).await;
-        assert!(
-            futures::poll!(phase.as_mut()).is_pending(),
-            "still inside the window re-armed by the last frame"
-        );
-        tokio::time::advance(Duration::from_millis(1)).await;
-        match futures::poll!(phase.as_mut()) {
-            std::task::Poll::Ready(exit) => {
-                assert!(matches!(
-                    exit,
-                    ConnectedExit::SocketClosed(DisconnectCause::LivenessDeadline)
-                ));
-            }
-            std::task::Poll::Pending => {
-                panic!("deadline must fire one window after the last frame")
-            }
-        }
-    }
-    #[tokio::test(start_paused = true)]
-    async fn reader_deadline_huge_override_saturates_instead_of_panicking() {
-        let (conn, _demux, _outbound_rx) = test_connection();
-        let (inbound_tx, mut inbound_rx) = test_inbound();
-        let (_stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
-        let (_reconnect_tx, mut reconnect_rx) = mpsc::channel::<()>(1);
-        let phase = run_reader_phase(
-            &conn.inner,
-            &mut inbound_rx,
-            &mut stop_rx,
-            &mut reconnect_rx,
-            Duration::MAX,
-        );
-        tokio::pin!(phase);
-        inbound_tx
-            .unbounded_send(Ok(Message::Pong(Vec::new().into())))
-            .expect("send frame");
-        assert!(
-            futures::poll!(phase.as_mut()).is_pending(),
-            "saturating re-arm must neither panic nor fire"
-        );
-    }
-    /// Sink for writer↔reader composition tests: echoes every keepalive
-    /// `Ping` back as a `Pong` on the reader's inbound channel, emulating a
-    /// healthy server whose only traffic is the keepalive exchange.
-    struct PongEchoSink {
-        inbound: InboundTx,
-    }
-    impl futures::Sink<Message> for PongEchoSink {
-        type Error = std::io::Error;
-        fn poll_ready(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-            if let Message::Ping(payload) = item {
-                let _ = self.inbound.unbounded_send(Ok(Message::Pong(payload)));
-            }
-            Ok(())
-        }
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn poll_close(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-    #[tokio::test(start_paused = true)]
-    async fn default_ping_pong_composition_keeps_idle_connection_alive() {
-        let ping = resolve_ws_ping_interval(None);
-        let deadline = resolve_ws_liveness_deadline(None, ping);
-        let (conn, _demux, _outbound_rx) = test_connection();
-        let (inbound_tx, mut inbound_rx) = test_inbound();
-        let (_out_tx, out_rx) = mpsc::channel::<String>(4);
-        let (ctl_tx, ctl_rx) = mpsc::channel::<WriterControl<PongEchoSink>>(2);
-        let (writer_stop_tx, writer_stop_rx) = mpsc::channel::<()>(1);
-        let writer = tokio::spawn(run_writer(
-            PongEchoSink {
-                inbound: inbound_tx.clone(),
-            },
-            out_rx,
-            ctl_rx,
-            writer_stop_rx,
-            ping,
-            idle_write_error_slot(),
-        ));
-        let (_stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
-        let (_reconnect_tx, mut reconnect_rx) = mpsc::channel::<()>(1);
-        {
-            let phase = run_reader_phase(
-                &conn.inner,
-                &mut inbound_rx,
-                &mut stop_rx,
-                &mut reconnect_rx,
-                deadline,
-            );
-            tokio::pin!(phase);
-            tokio::select! {
-                _ = phase.as_mut() => panic!("idle-but-healthy connection tripped the deadline"),
-                _ = tokio::time::sleep(deadline * 4) => {}
-            }
-        }
-        ctl_tx.send(WriterControl::Pause).await.expect("pause");
-        let (fresh_tx, mut fresh_rx) = test_inbound();
-        ctl_tx
-            .send(WriterControl::Resume(PongEchoSink { inbound: fresh_tx }))
+        let response = self
+            .call_request_with_deadline(request_id, &request, AUTH_REFRESH_TIMEOUT)
             .await
-            .expect("resume");
-        {
-            let phase = run_reader_phase(
-                &conn.inner,
-                &mut fresh_rx,
-                &mut stop_rx,
-                &mut reconnect_rx,
-                deadline,
-            );
-            tokio::pin!(phase);
-            tokio::select! {
-                _ = phase.as_mut() => {
-                    panic!("idle connection tripped the deadline after Pause→Resume")
-                }
-                _ = tokio::time::sleep(deadline * 4) => {}
-            }
+            .map_err(ClientError::from)?;
+        match response.outcome {
+            ResponseOutcome::Result(value) => serde_json::from_value::<AuthRefreshResult>(value)
+                .map(|result| result.exp)
+                .map_err(|e| ClientError::Serde(e.to_string()).into()),
+            ResponseOutcome::Error(err) => Err(AuthRefreshError::from_jsonrpc_error(err)),
         }
-        writer_stop_tx.send(()).await.expect("stop");
-        writer.await.expect("writer task joins");
     }
-    #[tokio::test]
-    async fn reader_phase_close_frame_classification_unchanged() {
-        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
-        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-        let (conn, _demux, _outbound_rx) = test_connection();
-        let (inbound_tx, mut inbound_rx) = test_inbound();
-        let (_stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
-        let (_reconnect_tx, mut reconnect_rx) = mpsc::channel::<()>(1);
-        inbound_tx
-            .unbounded_send(Ok(Message::Close(Some(CloseFrame {
-                code: CloseCode::from(4100),
-                reason: "evicted".into(),
-            }))))
-            .expect("send close");
-        let exit = run_reader_phase(
-            &conn.inner,
-            &mut inbound_rx,
-            &mut stop_rx,
-            &mut reconnect_rx,
-            Duration::from_secs(75),
+    fn begin_reconnect_outage(&self) {
+        self.outage_seq.fetch_add(1, Ordering::Relaxed);
+    }
+    fn reconnect_delay(&self, attempt: u32) -> Duration {
+        backoff_for(
+            attempt,
+            &self.reconnect_backoff,
+            self.reconnect_jitter_seed,
+            self.outage_seq.load(Ordering::Relaxed),
         )
-        .await;
-        assert!(matches!(exit, ConnectedExit::TerminalClose(4100)));
     }
 }
+/// Look up the slot for `attempt`, take
+/// `window = min(cap, max(slot, SPREAD_FLOOR))`, then `Uniform(0, window)`.
+/// Empty schedule → `Duration::ZERO`.
+fn backoff_for(attempt: u32, schedule: &[Duration], jitter_seed: u64, outage: u32) -> Duration {
+    let Some(&cap) = schedule.last() else {
+        return Duration::ZERO;
+    };
+    let idx = (attempt as usize)
+        .saturating_sub(1)
+        .min(schedule.len().saturating_sub(1));
+    let base = schedule.get(idx).copied().unwrap_or_default();
+    apply_reconnect_jitter(
+        backoff_window(base, cap),
+        jitter_roll(jitter_seed, attempt, outage),
+    )
+}
+fn duration_nanos_u64(d: Duration) -> u64 {
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+}
+/// SplitMix64. Avalanches so nearby seeds / attempts produce uncorrelated rolls.
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+fn jitter_roll(seed: u64, attempt: u32, outage: u32) -> u64 {
+    splitmix64(
+        seed ^ u64::from(attempt).wrapping_mul(0xD1B5_4A32_D192_ED03)
+            ^ u64::from(outage).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+    )
+}
+fn derive_jitter_seed(counter: u64, pid: u64, nanos: u64) -> u64 {
+    splitmix64(
+        nanos
+            .wrapping_add(pid.wrapping_shl(32))
+            .wrapping_add(counter.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+    )
+}
+fn new_reconnect_jitter_seed() -> u64 {
+    let n = NEXT_RECONNECT_JITTER_SEED.fetch_add(1, Ordering::Relaxed);
+    let pid = u64::from(std::process::id());
+    let nanos = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    derive_jitter_seed(n, pid, nanos)
+}
+/// `min(cap, max(base, RECONNECT_SPREAD_FLOOR))`. Production and tests
+/// share [`RECONNECT_SPREAD_FLOOR`]; tests also assert that value equals 1s.
+fn backoff_window(base: Duration, cap: Duration) -> Duration {
+    base.max(RECONNECT_SPREAD_FLOOR).min(cap)
+}
+/// Uniform in `[0, window)`. `window == 0` → zero. Never returns `window`
+/// itself, so the documented cap is a hard exclusive ceiling when
+/// `window == cap` — no Dirac pile-up at 10 s.
+fn apply_reconnect_jitter(window: Duration, roll: u64) -> Duration {
+    let window_ns = duration_nanos_u64(window);
+    if window_ns == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_nanos(roll % window_ns)
+}
+#[cfg(test)]
+#[path = "connection_tests.rs"]
+mod tests;

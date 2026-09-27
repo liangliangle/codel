@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use super::config::{IntraCompactionConfig, IntraCompactionMode, IntraSummarizer};
+use super::fit::fit_turns_for_summarizer;
 use super::observer::IntraCompactionObserver;
 use super::traits::{CompactionStreamProc, CompactionTarget};
 use super::trigger::{IntraCompactionError, IntraCompactionResult, IntraCompactionTrigger};
@@ -67,6 +68,11 @@ use crate::token::ItemTokenCounter;
 /// `FullReplace` path, so in-flight state survives the dropped tail. Ignored
 /// by the partial modes (they keep a tail).
 ///
+/// `summarizer_input_budget` is the max tokens of conversation turns fed to
+/// the FullReplace summarizer (already net of response reserve + prompt
+/// overhead). When `Some`, FullReplace runs [`fit_turns_for_summarizer`]
+/// first. `None` skips fit (tests / callers that pre-fit).
+///
 /// On any error, parser state is left unchanged (the per-target helpers
 /// guard this). Every terminal outcome — success or any error variant —
 /// is reported to `observer` with a `status` label, so failure rates are
@@ -79,6 +85,7 @@ pub async fn apply_intra_compaction<T, S, P>(
     token_counter: &dyn ItemTokenCounter<T>,
     observer: &dyn IntraCompactionObserver,
     active_reminder: Option<&str>,
+    summarizer_input_budget: Option<u32>,
 ) -> Result<IntraCompactionResult, IntraCompactionError>
 where
     T: CompactionItemBuilder + Send + Sync,
@@ -95,6 +102,7 @@ where
                 token_counter,
                 observer,
                 active_reminder,
+                summarizer_input_budget,
             )
             .await
         }
@@ -205,6 +213,12 @@ where
 /// (always [`IntraSummarizer::Shared`] here, regardless of `policy.summarizer`)
 /// preserves user intent itself, matching codel-build. The reduction and
 /// `min_compactable_tokens` guards are kept for parity with the partial modes.
+///
+/// When `summarizer_input_budget` is `Some`, turns are **fitted** via the
+/// ordered ladder (history drop → tool truncate → step drop → emergency;
+/// later only if earlier still insufficient) before sampling so the compact
+/// model never sees a multi-100k prompt. Reduction guard still uses the
+/// **raw** pre-fit token count so a successful recovery is not discarded.
 pub async fn apply_full_replace_compaction<T, S, P>(
     stream_proc: &S,
     sampler: &P,
@@ -213,6 +227,7 @@ pub async fn apply_full_replace_compaction<T, S, P>(
     token_counter: &dyn ItemTokenCounter<T>,
     observer: &dyn IntraCompactionObserver,
     active_reminder: Option<&str>,
+    summarizer_input_budget: Option<u32>,
 ) -> Result<IntraCompactionResult, IntraCompactionError>
 where
     T: CompactionItemBuilder + Send + Sync,
@@ -221,32 +236,57 @@ where
 {
     let start = Instant::now();
 
-    // 1. Read the whole conversation (history ++ accumulated steps).
-    let source_turns = stream_proc.get_all_turns_for_compaction().await;
-    if source_turns.is_empty() {
+    // 1. Read history and steps separately (fit ladder needs the split).
+    let history_turns = stream_proc.get_history_turns_for_compaction().await;
+    let step_turns = stream_proc.get_accumulated_turns_for_compaction().await;
+    let total_turns = history_turns.len() + step_turns.len();
+    if total_turns == 0 {
         return Err(IntraCompactionError::NothingToCompact);
     }
-    let tokens_before: u32 = source_turns
+    let tokens_before: u32 = history_turns
         .iter()
+        .chain(step_turns.iter())
         .map(|t| token_counter.count_item_tokens(t))
         .sum();
     if tokens_before < policy.min_compactable_tokens {
         return Err(IntraCompactionError::NothingToCompact);
     }
 
+    // 1b. Fit summarizer input via ordered ladder (later only if earlier
+    // insufficient): HistoryTurnSelected → ToolTruncated → StepTurnsSelected
+    // → Emergency. See `fit::FitRung` / module docs.
+    let (llm_turns, fit_rung) = if let Some(budget) = summarizer_input_budget {
+        let plan = fit_turns_for_summarizer(&history_turns, &step_turns, token_counter, budget);
+        // Fit's Emergency keeps the newest original item when the ladder
+        // emptied mid-way. Reject empty plans and zero-token fit (e.g. a
+        // media-only tool turn clipped to empty text) so we do not feed the
+        // summarizer nothing and commit a hallucination over the conversation.
+        if plan.llm_turns.is_empty() || plan.tokens_fit == 0 {
+            return Err(IntraCompactionError::NothingToCompact);
+        }
+        (plan.llm_turns, Some(plan.rung))
+    } else {
+        let mut all = history_turns;
+        all.extend(step_turns);
+        (all, None)
+    };
+
     info!(
         target = CompactionTarget::FullReplace.label(),
         step = trigger.step,
         percent = trigger.percent,
-        total_turns = source_turns.len(),
+        total_turns,
+        llm_turns = llm_turns.len(),
         tokens_before,
+        fit_rung = fit_rung.map(|r| r.as_str()).unwrap_or("none"),
+        summarizer_input_budget = ?summarizer_input_budget,
         "[IntraCompaction] starting full replace"
     );
 
-    // 2. Summarize the whole conversation through codel-build's shared core.
+    // 2. Summarize (possibly fitted) turns through codel-build's shared core.
     //    FullReplace always uses the shared summarizer (it *is* the
     //    `code_compaction` path); `policy.summarizer` is ignored for this mode.
-    let summary_text = sample_shared_summary_with_retries(sampler, &source_turns, policy).await?;
+    let summary_text = sample_shared_summary_with_retries(sampler, &llm_turns, policy).await?;
 
     // 2b. Preserve in-flight active agent state (e.g. running sub-agents) across
     //     the compaction. FullReplace drops the working tail, so append the
@@ -281,7 +321,7 @@ where
     }
 
     // 5. Commit: replace the entire conversation with the single summary turn.
-    let turns_compacted = source_turns.len();
+    let turns_compacted = total_turns;
     stream_proc
         .replace_with_compaction(
             CompactionTarget::FullReplace,
@@ -640,7 +680,9 @@ fn build_prompt_for_target(
 /// sampler errors, incl. context-length overflow) lives in the shared loop, so
 /// intra and codel-build stay in lock-step. Outcome mapping:
 /// - exhausted empty/degenerate run → [`IntraCompactionError::EmptyResponse`];
-/// - deterministic sampler error (incl. context overflow) →
+/// - context overflow → [`IntraCompactionError::ContextOverflow`] (terminal;
+///   intra has no input ladder);
+/// - other deterministic sampler error →
 ///   [`IntraCompactionError::SamplerBuild`] (terminal);
 /// - transient sampler error that exhausts retries →
 ///   [`IntraCompactionError::SamplerStream`].
@@ -682,9 +724,12 @@ where
         Err(SampleRetryError::Failure {
             message,
             deterministic,
+            context_overflow,
             ..
         }) => {
-            if deterministic {
+            if context_overflow {
+                Err(IntraCompactionError::ContextOverflow(message))
+            } else if deterministic {
                 Err(IntraCompactionError::SamplerBuild(message))
             } else {
                 Err(IntraCompactionError::SamplerStream(message))
@@ -707,6 +752,7 @@ pub fn error_status_label(err: &IntraCompactionError) -> &'static str {
         IntraCompactionError::SamplerBuild(_) => "sampler_build",
         IntraCompactionError::SamplerStart(_) => "sampler_start",
         IntraCompactionError::SamplerStream(_) => "sampler_stream",
+        IntraCompactionError::ContextOverflow(_) => "context_overflow",
         IntraCompactionError::Apply(_) => "apply",
     }
 }
@@ -761,6 +807,7 @@ fn compaction_sample_error_to_intra(err: CompactionSampleError) -> IntraCompacti
         CompactionSampleError::Timeout { .. } => IntraCompactionError::Timeout,
         CompactionSampleError::Build(msg) => IntraCompactionError::SamplerBuild(msg),
         CompactionSampleError::Start(msg) => IntraCompactionError::SamplerStart(msg),
+        CompactionSampleError::ContextOverflow(msg) => IntraCompactionError::ContextOverflow(msg),
         CompactionSampleError::EmptyResponse => IntraCompactionError::EmptyResponse,
         CompactionSampleError::Other(e) => {
             let msg = e.to_string();
@@ -786,8 +833,6 @@ fn is_transient(err: &IntraCompactionError) -> bool {
             | IntraCompactionError::SamplerStream(_)
             | IntraCompactionError::SamplerStart(_)
     )
-    // Deterministic: SamplerBuild (config error), Unsupported, InvalidSplit,
-    // InsufficientReduction, NothingToCompact, Apply.
 }
 
 #[cfg(test)]
@@ -845,6 +890,10 @@ mod tests {
             (
                 IntraCompactionError::SamplerStream("x".into()),
                 "sampler_stream",
+            ),
+            (
+                IntraCompactionError::ContextOverflow("x".into()),
+                "context_overflow",
             ),
             (IntraCompactionError::Apply("x".into()), "apply"),
         ];
@@ -915,6 +964,12 @@ mod tests {
             compaction_sample_error_to_intra(CompactionSampleError::EmptyResponse),
             IntraCompactionError::EmptyResponse
         ));
+        assert!(matches!(
+            compaction_sample_error_to_intra(CompactionSampleError::ContextOverflow(
+                "too large".into()
+            )),
+            IntraCompactionError::ContextOverflow(_)
+        ));
     }
 
     #[test]
@@ -922,6 +977,9 @@ mod tests {
         // Build is deterministic (no retry); Start/EmptyResponse transient.
         assert!(!is_transient(&compaction_sample_error_to_intra(
             CompactionSampleError::Build("x".into())
+        )));
+        assert!(!is_transient(&compaction_sample_error_to_intra(
+            CompactionSampleError::ContextOverflow("too large".into())
         )));
         assert!(is_transient(&compaction_sample_error_to_intra(
             CompactionSampleError::Start("x".into())
@@ -1155,6 +1213,7 @@ mod tests {
             &CharCounter,
             &obs,
             None,
+            None,
         )
         .await;
         let r = result.expect("should succeed");
@@ -1188,6 +1247,7 @@ mod tests {
             &CharCounter,
             &obs,
             None,
+            None,
         )
         .await;
         assert!(
@@ -1216,6 +1276,7 @@ mod tests {
             &CharCounter,
             &(),
             None,
+            None,
         )
         .await;
         assert!(matches!(
@@ -1242,9 +1303,17 @@ mod tests {
             ..enabled_policy()
         };
 
-        let result =
-            apply_intra_compaction(&sp, &sampler, &policy, trigger(), &CharCounter, &(), None)
-                .await;
+        let result = apply_intra_compaction(
+            &sp,
+            &sampler,
+            &policy,
+            trigger(),
+            &CharCounter,
+            &(),
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok());
         assert_eq!(sampler.call_count(), 2, "should retry once then succeed");
     }
@@ -1268,6 +1337,7 @@ mod tests {
             trigger(),
             &CharCounter,
             &(),
+            None,
             None,
         )
         .await;
@@ -1316,6 +1386,7 @@ mod tests {
             &CharCounter,
             &(),
             None,
+            None,
         )
         .await;
         assert!(matches!(result, Err(IntraCompactionError::Apply(_))));
@@ -1346,6 +1417,7 @@ mod tests {
             trigger(),
             &CharCounter,
             &obs,
+            None,
             None,
         )
         .await
@@ -1385,6 +1457,7 @@ mod tests {
             &CharCounter,
             &obs,
             Some(reminder),
+            None,
         )
         .await
         .expect("should succeed");
@@ -1412,6 +1485,7 @@ mod tests {
             &CharCounter,
             &(),
             None,
+            None,
         )
         .await;
         assert!(matches!(
@@ -1431,9 +1505,17 @@ mod tests {
             min_compactable_tokens: 1_000,
             ..full_replace_policy()
         };
-        let result =
-            apply_intra_compaction(&sp, &sampler, &policy, trigger(), &CharCounter, &(), None)
-                .await;
+        let result = apply_intra_compaction(
+            &sp,
+            &sampler,
+            &policy,
+            trigger(),
+            &CharCounter,
+            &(),
+            None,
+            None,
+        )
+        .await;
         assert!(matches!(
             result,
             Err(IntraCompactionError::NothingToCompact)
@@ -1524,9 +1606,17 @@ mod tests {
             summarizer: IntraSummarizer::Legacy,
             ..enabled_policy()
         };
-        let result =
-            apply_intra_compaction(&sp, &sampler, &policy, trigger(), &CharCounter, &(), None)
-                .await;
+        let result = apply_intra_compaction(
+            &sp,
+            &sampler,
+            &policy,
+            trigger(),
+            &CharCounter,
+            &(),
+            None,
+            None,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "legacy short summary should succeed: {result:?}"

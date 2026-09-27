@@ -1,8 +1,7 @@
-//! Display-refresh probe + motion cadence at TUI startup.
+//! Display-refresh probe and motion cadence at TUI startup.
 //!
-//! Owns env cadence knobs, fail-closed probe planning (sync only when auto can
-//! change a clock), paint-clock resolution, and the display-refresh probe
-//! `spawn_blocking`. Keeps the event loop free of this policy glue.
+//! Owns env cadence knobs, fail-closed probe planning (sync only when auto can change a clock), and paint-clock resolution.
+//! Also owns the terminal and display-refresh telemetry `spawn_blocking`. Keeps the event loop free of this policy code.
 
 use std::time::Duration;
 
@@ -12,8 +11,7 @@ use codel_shell::util::config::{
     resolve_motion_cadence,
 };
 
-/// Inclusive bounds for motion cadence env knobs (`CODEL_MIN_DRAW_MS`,
-/// `CODEL_SCROLL_CADENCE_MS`).
+/// Inclusive bounds for motion cadence env knobs (`CODEL_MIN_DRAW_MS`, `CODEL_SCROLL_CADENCE_MS`).
 const CADENCE_ENV_MIN_MS: u64 = 1;
 const CADENCE_ENV_MAX_MS: u64 = 100;
 
@@ -24,7 +22,7 @@ pub struct MotionClocks {
     pub scroll_cadence: Duration,
 }
 
-/// Pure parse for cadence ms: trim/empty/invalid → `default_ms`, clamp 1..=100.
+/// Pure parse for cadence ms: trimmed empty or invalid input falls back to `default_ms`; the result clamps to 1..=100.
 fn parse_cadence_ms(raw: Option<&str>, default_ms: u64) -> u64 {
     raw.and_then(|v| {
         let t = v.trim();
@@ -38,8 +36,8 @@ fn parse_cadence_ms(raw: Option<&str>, default_ms: u64) -> u64 {
     .clamp(CADENCE_ENV_MIN_MS, CADENCE_ENV_MAX_MS)
 }
 
-/// Read a cadence env knob: `(set, ms)`. `set` is true when the var is present
-/// (empty/invalid still counts as set → `default_ms` after clamp 1..=100).
+/// Read a cadence env knob: `(set, ms)`. `set` is true when the var is present.
+/// (Empty/invalid still counts as set and yields `default_ms` after the 1..=100 clamp.)
 fn cadence_ms_from_env(name: &str, default_ms: u64) -> (bool, u64) {
     match std::env::var(name) {
         Ok(raw) => (true, parse_cadence_ms(Some(&raw), default_ms)),
@@ -47,13 +45,13 @@ fn cadence_ms_from_env(name: &str, default_ms: u64) -> (bool, u64) {
     }
 }
 
-/// How to obtain the display-refresh probe (optionally used for cadence).
+/// How to obtain the display-refresh probe for telemetry (and optionally cadence).
 enum ProbePlan {
-    /// Kill switch: no FFI.
+    /// Kill switch: no FFI; emit skipped/disabled.
     Disabled,
-    /// Auto-cadence needs Hz before paint clocks pin — probe on the main path.
+    /// Auto-cadence needs Hz before paint clocks pin; probe on the main path.
     Sync(crate::host::DisplayRefreshProbeResult),
-    /// Probe in the background task (default path).
+    /// Telemetry-only: probe in the background task (default path).
     Async,
 }
 
@@ -63,8 +61,7 @@ struct StartupTel {
     cadence: MotionCadence,
 }
 
-/// Resolve policy, pin motion clocks, and spawn the display-refresh probe
-/// off the first-paint path.
+/// Resolve policy, pin motion clocks, and spawn terminal and display-refresh telemetry off the first-paint path.
 pub fn start(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
@@ -107,12 +104,30 @@ pub fn start(
         auto_cadence_enabled: policy.auto_cadence_enabled,
         cadence,
     };
-    spawn_display_refresh_probe(tel);
+    spawn_terminal_and_display_refresh_telemetry(tel);
     clocks
 }
 
-fn spawn_display_refresh_probe(tel: StartupTel) {
+fn spawn_terminal_and_display_refresh_telemetry(tel: StartupTel) {
     tokio::task::spawn_blocking(move || {
+        let t = crate::terminal::terminal_context().telemetry_snapshot();
+        let _span = tracing::info_span!(
+            "terminal.detect",
+            terminal.brand = %t.brand,
+            terminal.multiplexer = %t.multiplexer,
+            terminal.is_ssh = t.is_ssh,
+            terminal.is_byobu = t.is_byobu,
+            terminal.tmux_version = %t.tmux_version,
+            terminal.term_var = %t.term_var,
+            terminal.xtversion = %t.xtversion,
+            terminal.term_version = %t.term_version,
+            terminal.term_version_source = %t.term_version_source,
+            terminal.kitty_event_types_withheld = t.kitty_event_types_withheld,
+        )
+        .entered();
+        tracing::info!("terminal environment detected");
+        codel_logging::session_ctx::log_event(t.clone());
+
         let (outcome, hz, source, skip_reason, duration_ms) = match tel.plan {
             ProbePlan::Disabled => ("skipped", None, "none".into(), "disabled".into(), 0_u64),
             ProbePlan::Sync(p) => (
@@ -151,6 +166,21 @@ fn spawn_display_refresh_probe(tel: StartupTel) {
             effective_scroll_cadence_ms = scroll_i,
             auto_cadence_reason = c.reason,
             "display refresh probed"
+        );
+        codel_logging::session_ctx::log_event(
+            codel_logging::events::DisplayRefreshProbe {
+                terminal: t,
+                outcome: outcome.to_string(),
+                hz: hz_i,
+                source,
+                skip_reason,
+                duration_ms: duration_ms_i,
+                auto_cadence_enabled: tel.auto_cadence_enabled,
+                auto_cadence_applied: c.auto_applied,
+                effective_min_draw_ms: min_draw_i,
+                effective_scroll_cadence_ms: scroll_i,
+                auto_cadence_reason: c.reason.to_string(),
+            },
         );
     });
 }

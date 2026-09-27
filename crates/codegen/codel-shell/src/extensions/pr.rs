@@ -6,21 +6,21 @@ use crate::agent::MvpAgent;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrStatusRequest {
+pub(crate) struct PrStatusRequest {
     pub cwd: String,
     pub branch: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrStatusResponse {
+pub(crate) struct PrStatusResponse {
     pub pr: Option<PrData>,
     pub updated_session_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrData {
+pub(crate) struct PrData {
     pub url: String,
     pub state: String,
     pub is_in_merge_queue: bool,
@@ -84,10 +84,8 @@ async fn gh_pr_view_by_branch(cwd: &str, branch: &str) -> Option<PrData> {
     .stdin(std::process::Stdio::null());
     codel_tools::util::detach_command(&mut cmd);
     cmd.envs(codel_tools::util::pager_env());
-    // gh colorizes even piped --json output under CLICOLOR_FORCE or
-    // GH_FORCE_TTY (inherited from terminal-launched dev environments), and
-    // forcing beats NO_COLOR in gh's precedence; there is no --no-color flag
-    // (cli/cli#9436). CLICOLOR_FORCE=0 is gh's documented off-switch.
+    // gh colorizes even piped --json output under CLICOLOR_FORCE or GH_FORCE_TTY (inherited from terminal-launched dev environments)
+    // Forcing beats NO_COLOR in gh's precedence and gh has no --no-color flag; CLICOLOR_FORCE=0 is gh's documented off-switch
     cmd.env("NO_COLOR", "1");
     cmd.env("CLICOLOR_FORCE", "0");
     cmd.env_remove("GH_FORCE_TTY");
@@ -174,20 +172,19 @@ fn parse_is_in_merge_queue(stdout: &[u8]) -> Option<bool> {
     parsed.data?.resource?.is_in_merge_queue
 }
 
-/// `gh` can colorize stdout even when piped (e.g. `GH_FORCE_TTY`, `--color always`
-/// in config), which would break serde parsing of the JSON payload.
+/// `gh` can colorize stdout even when piped (e.g. `GH_FORCE_TTY`, `--color always` in config), which would break serde parsing of the JSON payload.
 fn strip_ansi_csi(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
+    while let Some(&b) = bytes.get(i) {
+        if b == 0x1b && bytes.get(i + 1) == Some(&b'[') {
             i += 2;
-            while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+            while bytes.get(i).is_some_and(|c| !(0x40..=0x7e).contains(c)) {
                 i += 1;
             }
             i += 1;
         } else {
-            out.push(bytes[i]);
+            out.push(b);
             i += 1;
         }
     }

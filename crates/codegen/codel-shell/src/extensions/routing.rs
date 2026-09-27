@@ -2,11 +2,10 @@ use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
-// Re-export from workspace crate (canonical home for fuzzy search).
+// The workspace crate defines these for fuzzy search; this module only re-exports them
 pub use codel_workspace::file_system::{ClientId, TargetClientId};
 
-/// Metadata from the request, used for routing notifications back to the
-/// correct client.
+/// Metadata from the request, used for routing notifications back to the correct client.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestMeta {
@@ -14,8 +13,7 @@ pub struct RequestMeta {
     pub client_id: TargetClientId,
 }
 
-/// Notification-side routing metadata. Embeddable in any outgoing
-/// notification struct via `#[serde(rename = "_meta")]`.
+/// Embed in an outgoing notification struct via `#[serde(rename = "_meta")]` to route it to one client.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationMeta {
@@ -25,7 +23,10 @@ pub struct NotificationMeta {
 
 /// Inject `targetClientId` into the `_meta` field of a JSON params object.
 /// Merges with any existing `_meta` fields rather than replacing them.
-pub fn inject_routing_meta(params: &mut serde_json::Value, target_client_id: &TargetClientId) {
+pub(crate) fn inject_routing_meta(
+    params: &mut serde_json::Value,
+    target_client_id: &TargetClientId,
+) {
     if target_client_id.is_none() {
         return;
     }
@@ -42,9 +43,7 @@ pub fn inject_routing_meta(params: &mut serde_json::Value, target_client_id: &Ta
 }
 
 /// Send a fire-and-forget ext notification with optional client routing.
-///
-/// If `target_client_id` is set, injects `_meta.targetClientId` into `params`
-/// so the gateway can route the notification to the correct client.
+/// If `target_client_id` is set, injects `_meta.targetClientId` into `params` so the gateway can route the notification to the correct client.
 pub fn send_routed_notification(
     gateway: &GatewaySender,
     method: &str,
@@ -114,9 +113,15 @@ mod tests {
             conn_id: "conn-2".to_string(),
         });
         inject_routing_meta(&mut params, &target);
-        assert_eq!(params["_meta"]["targetClientId"]["instanceId"], "inst-1");
-        assert_eq!(params["_meta"]["targetClientId"]["connId"], "conn-2");
-        assert_eq!(params["terminalId"], "abc");
+        assert_eq!(
+            params.pointer("/_meta/targetClientId/instanceId"),
+            Some(&serde_json::json!("inst-1"))
+        );
+        assert_eq!(
+            params.pointer("/_meta/targetClientId/connId"),
+            Some(&serde_json::json!("conn-2"))
+        );
+        assert_eq!(params.get("terminalId"), Some(&serde_json::json!("abc")));
     }
 
     #[test]
@@ -130,8 +135,14 @@ mod tests {
             conn_id: "conn-2".to_string(),
         });
         inject_routing_meta(&mut params, &target);
-        assert_eq!(params["_meta"]["eventId"], "evt-1");
-        assert_eq!(params["_meta"]["targetClientId"]["instanceId"], "inst-1");
+        assert_eq!(
+            params.pointer("/_meta/eventId"),
+            Some(&serde_json::json!("evt-1"))
+        );
+        assert_eq!(
+            params.pointer("/_meta/targetClientId/instanceId"),
+            Some(&serde_json::json!("inst-1"))
+        );
     }
 
     #[test]

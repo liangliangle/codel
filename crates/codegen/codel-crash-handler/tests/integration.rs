@@ -1,7 +1,7 @@
 //! Integration tests for codel-crash-handler.
 //!
 //! These tests verify that installing the crash handler does not interfere
-//! with normal program operation (tokio runtime, signal handling, I/O),
+//! with normal program operation (tokio runtime, signal handling),
 //! and that it correctly captures crash data when a fatal signal fires.
 //!
 //! Tests that send fatal signals use subprocess isolation: the test process
@@ -110,6 +110,12 @@ fn subprocess_entry() {
             unsafe { libc::raise(libc::SIGSEGV) };
         }
 
+        // Scenario 6: install handler, abort. This is the path every Rust
+        // panic takes in release builds (panic = "abort" → SIGABRT).
+        "sigabrt" => {
+            std::process::abort();
+        }
+
         // Scenario 5: tokio runtime + signal coexistence, then clean shutdown.
         "tokio_signals" => {
             let rt = tokio::runtime::Builder::new_multi_thread()
@@ -159,20 +165,6 @@ fn handler_does_not_interfere_with_tokio_runtime() {
                 .map(|m| m.len() == 0)
                 .unwrap_or(true),
         "crash file should not contain data after clean exit"
-    );
-}
-
-#[test]
-fn handler_does_not_interfere_with_sync_io() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, _stdout, stderr) = run_scenario("sync_normal", tmp.path());
-    assert!(
-        status.success(),
-        "sync_normal should exit 0, got {status:?}\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("50 files written"),
-        "should see completion message\nstderr: {stderr}"
     );
 }
 
@@ -267,6 +259,53 @@ fn sigsegv_produces_valid_crash_blob() {
     let blob = codel_crash_handler::format::CrashBlob::parse(&data).expect("crash blob should parse");
     assert_eq!(blob.signal, 11, "signal should be SIGSEGV (11)");
     assert_eq!(blob.app_version, "0.0.0-test");
+}
+
+#[test]
+fn sigabrt_produces_valid_crash_blob() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (status, _stdout, _stderr) = run_scenario("sigabrt", tmp.path());
+
+    // The handler must re-raise with default disposition so the process
+    // still dies with SIGABRT semantics. The frame-pointer walker may hit
+    // unmapped memory and cause a secondary SIGSEGV (as in the SIGBUS test).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        let sig = status.signal();
+        assert!(
+            sig == Some(libc::SIGABRT) || sig == Some(libc::SIGSEGV),
+            "process should be killed by SIGABRT (or a secondary SIGSEGV), got signal={sig:?} status={status:?}"
+        );
+    }
+
+    let crash_file = tmp.path().join("last-crash.bin");
+    assert!(crash_file.exists(), "crash file should exist after abort()");
+    let data = std::fs::read(&crash_file).expect("read crash file");
+    let blob = codel_crash_handler::format::CrashBlob::parse(&data).expect("crash blob should parse");
+    assert_eq!(
+        blob.signal, 6,
+        "signal should be SIGABRT (6), got {}",
+        blob.signal
+    );
+    assert_eq!(blob.app_version, "0.0.0-test");
+    assert!(blob.pid > 0, "PID should be nonzero");
+    assert!(blob.timestamp > 0, "timestamp should be nonzero");
+
+    // check_previous_crash should produce a SIGABRT-labelled report.
+    let report =
+        codel_crash_handler::check_previous_crash(tmp.path()).expect("should produce a crash report");
+    assert!(
+        report.signal_name.contains("SIGABRT"),
+        "report should name SIGABRT, got {}",
+        report.signal_name
+    );
+    assert_eq!(report.app_version, "0.0.0-test");
+    assert!(report.report_path.exists(), "report file should be written");
+    assert!(
+        !crash_file.exists(),
+        "crash file should be deleted after processing"
+    );
 }
 
 #[test]

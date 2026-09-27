@@ -1,7 +1,6 @@
 use toml::Value as TomlValue;
 
 /// Announcement entry received from cli-chat-proxy `/v1/settings`.
-/// Re-exported from `codel-announcements` for backward compatibility.
 pub use codel_announcements::RemoteAnnouncement;
 
 // ---------------------------------------------------------------------------
@@ -9,14 +8,14 @@ pub use codel_announcements::RemoteAnnouncement;
 // ---------------------------------------------------------------------------
 
 /// Parse `announcements` from a TOML value (inline tables or array-of-tables).
-pub fn announcements_from_toml(root: &TomlValue) -> Vec<RemoteAnnouncement> {
+pub(crate) fn announcements_from_toml(root: &TomlValue) -> Vec<RemoteAnnouncement> {
     root.get("announcements")
         .and_then(|v| v.clone().try_into::<Vec<RemoteAnnouncement>>().ok())
         .unwrap_or_default()
 }
 
 /// Merge announcement slices in priority order. Dedup by `id`; first wins.
-pub fn merge_announcements(sources: &[&[RemoteAnnouncement]]) -> Vec<RemoteAnnouncement> {
+pub(crate) fn merge_announcements(sources: &[&[RemoteAnnouncement]]) -> Vec<RemoteAnnouncement> {
     let mut seen = std::collections::HashSet::<String>::new();
     let mut out = Vec::new();
     for source in sources {
@@ -32,11 +31,10 @@ pub fn merge_announcements(sources: &[&[RemoteAnnouncement]]) -> Vec<RemoteAnnou
     out
 }
 
-/// Dev/test override for announcements via `CODEL_ANNOUNCEMENTS_OVERRIDE` (a JSON
-/// array of announcements). Returns `Some` only when the env var holds valid
-/// JSON; an empty array (`[]`) suppresses all announcements. Every announcement
-/// resolution path honors this so it works for testing regardless of source.
-pub fn announcements_override() -> Option<Vec<RemoteAnnouncement>> {
+/// Dev/test override for announcements via `CODEL_ANNOUNCEMENTS_OVERRIDE` (a JSON array of announcements).
+/// Returns `Some` only when the env var holds valid JSON; an empty array (`[]`) suppresses all announcements.
+/// Every announcement resolution path honors this so it works for testing regardless of source.
+pub(crate) fn announcements_override() -> Option<Vec<RemoteAnnouncement>> {
     let raw = std::env::var("CODEL_ANNOUNCEMENTS_OVERRIDE").ok()?;
     match serde_json::from_str::<Vec<RemoteAnnouncement>>(&raw) {
         Ok(list) => Some(list),
@@ -47,10 +45,8 @@ pub fn announcements_override() -> Option<Vec<RemoteAnnouncement>> {
     }
 }
 
-/// Resolve announcements from pre-loaded config layers.
-///
-/// Priority: requirements > remote > user config > managed config.
-/// `CODEL_ANNOUNCEMENTS_OVERRIDE` env var overrides everything (dev-only escape hatch).
+/// Priority order: requirements, then remote, then user config, then managed config.
+/// The `CODEL_ANNOUNCEMENTS_OVERRIDE` env var overrides everything (dev only).
 pub fn resolve_announcements(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
@@ -69,25 +65,4 @@ pub fn resolve_announcements(
     let remote_slice = remote.unwrap_or_default();
 
     merge_announcements(&[&req, remote_slice, &usr, &mgd])
-}
-
-/// Convenience wrapper that loads config layers from disk.
-/// Prefer [`resolve_announcements`] when layers are already loaded.
-pub fn resolve_announcements_from_disk(
-    remote: Option<&[RemoteAnnouncement]>,
-) -> Option<Vec<RemoteAnnouncement>> {
-    let requirements = crate::config::load_merged_requirements();
-    let user = crate::config::load_from_disk().ok();
-    let managed = crate::config::load_managed_config().ok();
-    let merged = resolve_announcements(
-        requirements.as_ref(),
-        user.as_ref(),
-        managed.as_ref(),
-        remote,
-    );
-    if merged.is_empty() {
-        None
-    } else {
-        Some(merged)
-    }
 }

@@ -1,22 +1,37 @@
 [package]
 license = "Apache-2.0"
 name = "codel-shell"
-version = "0.2.112"
+version = "1.0.41"
 edition.workspace = true
 
 [features]
 default = []
-unstable = []
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
-# it via `required-features`.
-test-support = []
-default-bazel = ["test-support"]
+# it via `required-features`. Forwards login, sampler, and workspace
+# `test-support` so downstream test builds see those crates' test seams
+# (`isolated_spawn_e2e` uses `WorkspaceOps::for_test`).
+test-support = [
+    "codel-login/test-support",
+    "codel-sampler/test-support",
+    "codel-workspace/test-support",
+]
+test-util = []
+# Local Computer Hub workspace_server (own/attach + crash-restart). Requires
+local-workspace = []
+# CI default set (preferred over cargo `default` for hermetic CI builds):
+# `config-docs` is on this set (not cargo `default`) so hermetic lib tests
+# parse the committed config-reference page.
+config-docs = []
+default-bazel = [
+    "local-workspace",
+    "test-support",
+    "config-docs",
+]
 
 [dependencies]
 dunce = { workspace = true }
-tonic-prost = { workspace = true, optional = true }
 agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }
 codel-announcements = { workspace = true }
@@ -45,19 +60,11 @@ regex = { workspace = true }
 codel-mcp = { workspace = true }
 reqwest = { workspace = true, features = ["stream", "blocking"] }
 reqwest-middleware = { workspace = true }
-# rusqlite 0.37 + bundled = self-contained SQLite (>= 3.50.2) with FTS5.
-# Bumped from 0.32 to resolve CVE-2025-29087, CVE-2025-3277, CVE-2025-6965.
-# sqlite-vec is C ABI, not Rust-version dependent — any rusqlite with `bundled` works.
-rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { workspace = true }
 serde_ignored = "0.1"
 serde_json = { workspace = true, features = ["preserve_order"] }
-similar = { workspace = true }
 thiserror = { workspace = true }
 clap = { workspace = true }
-dirs = "6"
-tokio-stream = { workspace = true }
-tower-http = { workspace = true, features = ["cors"] }
 toml = { workspace = true, features = ["preserve_order"] }
 toml_edit = { workspace = true }
 tokio = { workspace = true, features = [
@@ -77,7 +84,7 @@ tracing-subscriber = { workspace = true, features = [
     "time",
 ] }
 obfstr = { workspace = true }
-tokio-util = { workspace = true, features = ["compat"] }
+tokio-util = { workspace = true, features = ["compat", "rt"] }
 tokio-retry = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v5", "v7"] }
 codel-acp-lib = { workspace = true }
@@ -96,7 +103,6 @@ rustls = { version = "0.23", default-features = false, features = [
     "std",
     "tls12",
 ] }
-rustls-native-certs = "0.8"
 futures-util = { workspace = true }
 urlencoding = { workspace = true }
 gethostname = { workspace = true }
@@ -113,48 +119,61 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
 moka = { workspace = true, features = ["future"] }
 dhat = { workspace = true, optional = true }
 base64 = { workspace = true }
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+hmac = { workspace = true }
 sha2 = { workspace = true }
-rand = { workspace = true }
-shlex = { workspace = true }
 strum = { workspace = true }
 codel-fast-worktree = { path = "../codel-fast-worktree", features = ["metadata"] }
 
-tonic = { workspace = true, optional = true }
-prost = { workspace = true, optional = true }
 codel-paths = { path = "../codel-paths" }
 codel-shell-base = { workspace = true }
 codel-shell-session-support = { workspace = true }
+codel-shell-terminal = { workspace = true }
 codel-shared = { workspace = true }
+codel-status-line = { workspace = true }
 codel-tracing-macros = { path = "../codel-tracing-macros" }
 codel-fsnotify = { path = "../codel-fsnotify" }
 codel-codebase-graph = { path = "../codel-codebase-graph" }
 codel-hunk-tracker = { path = "../codel-hunk-tracker" }
 codel-agent-lifecycle = { workspace = true }
 codel-interjection-core = { workspace = true }
+codel-message-delivery-core = { workspace = true }
 codel-sandbox = { path = "../codel-sandbox", default-features = false }
 codel-chat-state = { path = "../codel-chat-state" }
+# Segment markdown rendering + the `compaction/` store path convention.
+codel-compaction-transcript = { workspace = true }
 codel-compaction = { path = "../../common/codel-compaction" }
+codel-extra-ca = { workspace = true }
+# Leader lock: bounded flock polling behind the machine-local acquire slot.
+codel-file-lock = { workspace = true }
 codel-sampler = { path = "../codel-sampler" }
-codel-sqlite-journal = { workspace = true }
+# Session FTS search; owns this crate's only rusqlite/bundled-SQLite use.
+codel-session-search = { workspace = true }
 codel-token-estimation = { workspace = true }
 codel-sampling-types = { path = "../codel-sampling-types" }
 codel-tools = { path = "../codel-tools" }
 codel-tty-utils = { workspace = true }
 codel-workflow = { path = "../codel-workflow" }
-codel-system-power = { workspace = true }
 codel-workspace = { workspace = true }
+# Backs the compatibility-only `codel_shell::foreign_sessions` re-export.
+codel-foreign-sessions = { workspace = true }
 codel-subagent-resolution = { path = "../codel-subagent-resolution" }
 codel-agent = { path = "../codel-agent" }
+codel-bundle = { workspace = true }
 codel-config = { workspace = true }
+codel-feedback = { workspace = true }
 codel-config-types = { workspace = true }
+codel-env = { workspace = true }
+codel-dirs = { workspace = true }
 codel-memory = { workspace = true }
 codel-hooks = { path = "../codel-hooks" }
 codel-hooks-plugins-types = { path = "../codel-hooks-plugins-types" }
 codel-plugin-marketplace = { path = "../codel-plugin-marketplace" }
 codel-file-utils = { path = "../codel-file-utils" }
+codel-otel = { workspace = true }
+codel-session-events = { workspace = true }
 codel-auth = { workspace = true, features = ["middleware"] }
 codel-http = { workspace = true }
+codel-login = { workspace = true }
 codel-models = { workspace = true }
 prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
 flate2 = { workspace = true }
@@ -165,8 +184,6 @@ url = { workspace = true }
 walkdir = { workspace = true }
 tdigests = "1.0"
 semver = { workspace = true }
-process-wrap = { version = "9.0.0", features = ["tokio1", "job-object", "creation-flags"] }
-portable-pty = "0.9"
 parking_lot.workspace = true
 dashmap.workspace = true
 
@@ -177,6 +194,7 @@ codel-tool-runtime = { workspace = true }
 codel-tool-protocol = { workspace = true }
 codel-tool-types = { workspace = true }
 
+codel-logging = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 nix = { workspace = true }
@@ -186,21 +204,33 @@ siphasher = { workspace = true }
 windows = { workspace = true }
 
 [dev-dependencies]
+codel-dirs = { workspace = true }
+codel-status-line = { workspace = true, features = ["test-support"] }
 criterion = { workspace = true }
+# Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).
+ctor = { workspace = true }
 filetime = { workspace = true }
+pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
+# `extensions::bundle` tests build archives with `bundle::test_helpers`, which
+# is `#[cfg(test)]`-only inside codel-bundle without this feature.
+codel-bundle = { workspace = true, features = ["test-support"] }
 codel-memory = { workspace = true, features = ["test-support"] }
-codel-workspace = { workspace = true, features = ["test-support"] }
+# sandbox-enforce: keep tests running against the enforcing sandbox build.
+codel-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
 codel-config = { workspace = true, features = [] }
-ring = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
-rsa = { workspace = true }
 semver = { workspace = true }
 serial_test = { workspace = true }
 # Test-only builds expose `env::EnvVarGuard` and the cpu_profile test seams to
 # this crate's test targets.
 codel-shell-base = { workspace = true, features = ["test-support"] }
+# Exposes the login crate's `#[cfg(test)]`-only auth-provider helpers
+# (`test_counting_provider`, `test_backdate_provider_mint`) to shell tests.
+codel-login = { workspace = true, features = ["test-support"] }
+# Exposes sampler's `notify_on_submit` mock to lib tests via feature unification.
+codel-sampler = { path = "../codel-sampler", features = ["test-support"] }
 codel-test-support = { workspace = true, features = [] }
 codel-test-utils = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual
@@ -220,21 +250,95 @@ name = "fork_copy"
 harness = false
 required-features = ["test-support"]
 
-# Consume `session::testkit`, so they need the gate (on by default under Bazel).
+[[bench]]
+name = "skills_watcher_startup"
+harness = false
+
+[[bench]]
+name = "child_replay_lookup"
+harness = false
+
+# Ordinary integration tests live in `tests/all.rs` (`mod suite`) so cargo
+# links one binary. The test name is `codel-shell-all` (Bazel `//pkg:all`
+# is the package wildcard). Process-isolated suites stay as implicit
+# `tests/*.rs` binaries.
 [[test]]
-name = "test_session_load_memory"
+name = "test_startup_prefetch_fallback"
 required-features = ["test-support"]
 
 [[test]]
-name = "session_fork_replay_memory"
+name = "test_startup_prefetch_overlap"
 required-features = ["test-support"]
 
 [[test]]
-name = "session_load_perf"
+name = "test_startup_prefetch_policy"
 required-features = ["test-support"]
 
 [[test]]
-name = "testkit_synth_roundtrip"
+name = "test_startup_prefetch_repair_overlap"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_repair_skip"
+required-features = ["test-support"]
+
+[[test]]
+name = "mcp_toggle_gateway_persist"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_action_policy_gate"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_create_hook_deferral"
+required-features = ["test-support"]
+
+[[test]]
+name = "e2e_grove_worktree"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_action_uninstall_data"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_create_subphase_timers"
+required-features = ["test-support"]
+
+[[test]]
+name = "sessions_active_gauge"
+required-features = ["test-support"]
+[[test]]
+name = "spawn_actor_timers"
+required-features = ["test-support"]
+
+[[test]]
+name = "subagent_bootstrap_regression"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_image_strip_recovery"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_boot_current_thread"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_settings_unpersisted_session"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_prefetch_shared"
+required-features = ["test-support"]
+
+[[test]]
+name = "tool_call_trace"
+required-features = ["test-support"]
+
+[[test]]
+name = "tool_call_trace_off"
 required-features = ["test-support"]
 
 [lints]
@@ -245,6 +349,7 @@ workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 flate2 = { workspace = true }
 tar = { workspace = true }
+
 [[bin]]
 name = "chat-history-downgrade"
 path = "src/bin/chat-history-downgrade.rs"

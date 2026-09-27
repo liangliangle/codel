@@ -5,18 +5,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use codel_sampling_types::ReasoningEffort;
+use codel_logging::events::{WorkflowRunStarted, WorkflowSourceKind};
+use codel_tools::implementations::codel_build::workflow::WorkflowControl;
 use codel_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
 
 use super::host_service::{
     HostDrainOutcome, TelemetryHook, WorkflowHostParams, spawn_workflow_host_service,
 };
 use super::notify::WorkflowNotifySender;
-use super::registry::{ResolvedWorkflow, WorkflowSource};
+use super::registry::{ResolvedWorkflow, WorkflowSource, bundled_file_is_managed};
 use super::store::WorkflowRunStore;
-use super::tracker::WorkflowTracker;
+use super::tracker::{WorkflowRunState, WorkflowRunStatus, WorkflowTracker};
+use crate::agent::remote_config::task_model_policy::LatchedTaskModelSelection;
 
 pub(crate) const WORKFLOW_MAX_ACTIVE_RUNS_PER_SESSION: usize = 4;
 pub(crate) const WORKFLOW_DEFAULT_AGENT_BUDGET: u64 = codel_workflow::DEFAULT_AGENT_BUDGET;
+
+static WORKFLOW_RUNS_ACTIVE: codel_logging::activity::ActivityGauge =
+    codel_logging::activity::ActivityGauge::work(
+        codel_logging::activity::WORKFLOW_RUNS_ACTIVE_KEY,
+    );
 
 struct ActiveRun {
     cancel: CancellationToken,
@@ -28,6 +37,7 @@ pub(crate) struct LaunchSpec {
     pub objective: String,
     pub args: serde_json::Value,
     pub agent_budget: Option<u64>,
+    pub effort: Option<ReasoningEffort>,
     pub resume_run_id: Option<String>,
 }
 
@@ -52,11 +62,27 @@ pub(crate) enum LaunchError {
     TooManyActiveRuns,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ControlError {
+    #[error("no workflow run in this session matches '{0}'")]
+    UnknownRun(String),
+    #[error("run '{name}' is {} and cannot be {}", status.as_ref(), match control {
+        WorkflowControl::Pause => "paused",
+        WorkflowControl::Stop => "stopped",
+    })]
+    NotApplicable {
+        name: String,
+        status: WorkflowRunStatus,
+        control: WorkflowControl,
+    },
+}
+
 pub(crate) struct WorkflowManager {
     session_id: String,
     session_dir: Option<PathBuf>,
     cwd: PathBuf,
     tracker: Arc<parking_lot::Mutex<WorkflowTracker>>,
+    active_work: Arc<std::sync::atomic::AtomicUsize>,
     store: WorkflowRunStore,
     notify: WorkflowNotifySender,
     subagent_event_tx: mpsc::UnboundedSender<
@@ -67,6 +93,9 @@ pub(crate) struct WorkflowManager {
     templates: HashMap<String, String>,
     active: HashMap<String, ActiveRun>,
     retiring: Vec<(String, oneshot::Receiver<()>)>,
+    max_concurrent_agents: usize,
+    /// `agent()` spawns carry the owning session's mode instead of reclassifying.
+    task_model_selection: LatchedTaskModelSelection,
 }
 
 impl WorkflowManager {
@@ -76,6 +105,7 @@ impl WorkflowManager {
         session_dir: Option<PathBuf>,
         cwd: PathBuf,
         tracker: Arc<parking_lot::Mutex<WorkflowTracker>>,
+        active_work: Arc<std::sync::atomic::AtomicUsize>,
         store: WorkflowRunStore,
         notify: WorkflowNotifySender,
         subagent_event_tx: mpsc::UnboundedSender<
@@ -84,12 +114,15 @@ impl WorkflowManager {
         telemetry: TelemetryHook,
         session_cmd_tx: mpsc::UnboundedSender<crate::session::commands::SessionCommand>,
         templates: HashMap<String, String>,
+        max_concurrent_agents: usize,
+        task_model_selection: LatchedTaskModelSelection,
     ) -> Self {
         Self {
             session_id,
             session_dir,
             cwd,
             tracker,
+            active_work,
             store,
             notify,
             subagent_event_tx,
@@ -98,7 +131,16 @@ impl WorkflowManager {
             templates,
             active: HashMap::new(),
             retiring: Vec::new(),
+            max_concurrent_agents: super::host_service::workflow_max_concurrent_agents(
+                max_concurrent_agents,
+            ),
+            task_model_selection,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_max_concurrent_agents(&mut self, n: usize) {
+        self.max_concurrent_agents = n.max(1);
     }
 
     pub(crate) fn tracker(&self) -> Arc<parking_lot::Mutex<WorkflowTracker>> {
@@ -108,7 +150,7 @@ impl WorkflowManager {
     pub(crate) fn launch(
         &mut self,
         resolved: ResolvedWorkflow,
-        spec: LaunchSpec,
+        mut spec: LaunchSpec,
     ) -> Result<(String, oneshot::Receiver<WorkflowOutcome>), LaunchError> {
         self.reap_terminal_runs();
         if self.active.len().saturating_add(self.retiring.len())
@@ -128,7 +170,7 @@ impl WorkflowManager {
                     .ok_or_else(|| LaunchError::UnknownRun(run_id.clone()))?;
                 if !existing.status.is_resumable() {
                     return Err(LaunchError::NotResumable(
-                        existing.status.as_str().to_string(),
+                        existing.status.as_ref().to_string(),
                     ));
                 }
                 if existing.status
@@ -142,6 +184,7 @@ impl WorkflowManager {
                 let original_args = self.store.args_for(run_id).ok_or_else(|| {
                     LaunchError::Store("immutable launch args are missing".into())
                 })?;
+                spec.effort = self.store.effort_for(run_id);
                 if original_args != spec.args {
                     return Err(LaunchError::Store(
                         "workflow launch args are immutable across resume".into(),
@@ -186,7 +229,7 @@ impl WorkflowManager {
                             limit: existing.agent_budget.unwrap_or(0),
                         }
                     } else {
-                        LaunchError::NotResumable(existing.status.as_str().into())
+                        LaunchError::NotResumable(existing.status.as_ref().into())
                     }
                 })?;
 
@@ -196,7 +239,7 @@ impl WorkflowManager {
                 let run_id = format!("wf_{}", uuid::Uuid::now_v7().simple());
                 let agent_budget = spec.agent_budget.unwrap_or(WORKFLOW_DEFAULT_AGENT_BUDGET);
                 self.store
-                    .register(&run_id, &execution_script, &spec.args)
+                    .register(&run_id, &execution_script, &spec.args, spec.effort)
                     .map_err(|error| LaunchError::Store(error.to_string()))?;
                 let journal_rel = format!("workflows/{run_id}/journal.jsonl");
                 let journal_path = self.session_dir.as_ref().map(|d| d.join(&journal_rel));
@@ -231,6 +274,37 @@ impl WorkflowManager {
         self.notify
             .emit(&state, self.tracker.lock().elapsed_ms(&run_id), 0);
 
+        let active = WORKFLOW_RUNS_ACTIVE.enter();
+        let work = crate::session::handle::WorkGuard::new(self.active_work.clone());
+        debug_assert!(
+            WORKFLOW_RUNS_ACTIVE.get() >= 1,
+            "WorkflowRunStarted must stamp a self-inclusive count"
+        );
+        let source_kind = match &resolved.source {
+            WorkflowSource::Builtin => WorkflowSourceKind::Builtin,
+            WorkflowSource::Inline => WorkflowSourceKind::Inline,
+            WorkflowSource::File(path) if bundled_file_is_managed(path) => {
+                WorkflowSourceKind::Bundled
+            }
+            WorkflowSource::File(_) => WorkflowSourceKind::File,
+        };
+        // Platform-provided names leave the machine (compiled-in or hash-verified bundle content);
+        // user script names and paths stay local
+        let workflow_name = matches!(
+            source_kind,
+            WorkflowSourceKind::Builtin | WorkflowSourceKind::Bundled
+        )
+        .then(|| state.name.clone());
+        log_run_started(
+            &run_id,
+            &self.session_id,
+            source_kind,
+            workflow_name.as_deref(),
+            &state,
+            self.max_concurrent_agents,
+            spec.resume_run_id.is_some(),
+        );
+
         let (host_tx, host_rx) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
         let scratch_dir = self
@@ -241,9 +315,11 @@ impl WorkflowManager {
             .join(&run_id)
             .join("scratch");
 
+        let agent_stats = Arc::new(super::host_service::WorkflowAgentStats::default());
         let (host_service, host_drained) = spawn_workflow_host_service(
             WorkflowHostParams {
                 run_id: run_id.clone(),
+                max_concurrent_agents: self.max_concurrent_agents,
                 cwd: self.cwd.clone(),
                 scratch_dir,
                 tracker: self.tracker.clone(),
@@ -252,9 +328,12 @@ impl WorkflowManager {
                 subagent_event_tx: self.subagent_event_tx.clone(),
                 parent_session_id: self.session_id.clone(),
                 allow_fork_context,
+                effort: spec.effort,
                 templates: self.templates.clone(),
                 telemetry: self.telemetry.clone(),
+                stats: agent_stats.clone(),
                 cancel: cancel.clone(),
+                task_model_selection: self.task_model_selection.clone(),
             },
             host_rx,
         );
@@ -291,8 +370,13 @@ impl WorkflowManager {
         let session_cmd_tx = self.session_cmd_tx.clone();
         let watcher_run_id = run_id.clone();
         let watcher_cancel = cancel.clone();
+        let watcher_session_id = self.session_id.clone();
+        let watcher_agent_stats = agent_stats;
+        let watcher_workflow_name = workflow_name;
         let execution_epoch = self.tracker.lock().execution_epoch(&run_id).unwrap_or(0);
         tokio::spawn(async move {
+            let _active = active;
+            let _work = work;
             let mut outcome = exec.await.unwrap_or_else(|e| WorkflowOutcome::Failed {
                 error: format!("workflow executor panicked: {e}"),
             });
@@ -314,14 +398,19 @@ impl WorkflowManager {
                             .into(),
                 };
             }
-            let state = {
+            // Epoch check and lifecycle mutation stay under one lock, or a quick resume could let this stale watcher stomp the successor
+            let (epoch_matches, state) = {
                 let mut tracker = tracker.lock();
                 if tracker.execution_epoch(&watcher_run_id) != Some(execution_epoch) {
-                    None
+                    (false, None)
                 } else if drain_failed {
-                    tracker.interrupt(
-                        &watcher_run_id,
-                        "workflow cleanup timed out or could not be acknowledged; start a new run",
+                    (
+                        true,
+                        tracker.interrupt(
+                            &watcher_run_id,
+                            "workflow cleanup timed out or could not be acknowledged; start a \
+                             new run",
+                        ),
                     )
                 } else if pause_intent.load(Ordering::Relaxed)
                     && matches!(
@@ -329,11 +418,55 @@ impl WorkflowManager {
                         WorkflowOutcome::Cancelled | WorkflowOutcome::Paused { .. }
                     )
                 {
-                    tracker.pause_user(&watcher_run_id, None)
+                    (true, tracker.pause_user(&watcher_run_id, None))
                 } else {
-                    tracker.apply_outcome(&watcher_run_id, &outcome)
+                    (true, tracker.apply_outcome(&watcher_run_id, &outcome))
                 }
             };
+            if !epoch_matches {
+                // A quick resume took over; close this episode as superseded (cumulative fields may reflect the successor)
+                let (elapsed, agents_used, agent_budget) = {
+                    let tracker = tracker.lock();
+                    let run = tracker.get(&watcher_run_id);
+                    (
+                        tracker.elapsed_ms(&watcher_run_id),
+                        run.as_ref().map(|run| run.agents_used).unwrap_or_default(),
+                        run.as_ref().and_then(|run| run.agent_budget),
+                    )
+                };
+                log_run_ended(
+                    RunEndMetadata {
+                        run_id: &watcher_run_id,
+                        parent_session_id: &watcher_session_id,
+                        source: source_kind,
+                        workflow_name: watcher_workflow_name.as_deref(),
+                        status: codel_logging::events::WorkflowRunEndStatus::Superseded,
+                        duration_ms: elapsed,
+                        agents_used,
+                        agent_budget,
+                    },
+                    &watcher_agent_stats,
+                );
+                let _ = done_tx.send(());
+                let _ = outcome_tx.send(outcome);
+                return;
+            }
+            if state.is_none() {
+                // The run left the tracker; close the episode so its `workflow_run_started` is not orphaned
+                log_run_ended(
+                    RunEndMetadata {
+                        run_id: &watcher_run_id,
+                        parent_session_id: &watcher_session_id,
+                        source: source_kind,
+                        workflow_name: watcher_workflow_name.as_deref(),
+                        status: codel_logging::events::WorkflowRunEndStatus::Interrupted,
+                        duration_ms: 0,
+                        agents_used: 0,
+                        agent_budget: None,
+                    },
+                    &watcher_agent_stats,
+                );
+            }
             if let Some(mut state) = state {
                 let mut persisted = true;
                 if let Err(error) = store.persist_ack(&state).await {
@@ -357,12 +490,26 @@ impl WorkflowManager {
                         tracing::error!(run_id = %watcher_run_id, %interrupt_error, "failed to persist workflow interruption marker");
                     }
                 }
+                // Emit before the persist-failure return: every start event gets an end event
+                let elapsed = tracker.lock().elapsed_ms(&watcher_run_id);
+                log_run_ended(
+                    RunEndMetadata {
+                        run_id: &watcher_run_id,
+                        parent_session_id: &watcher_session_id,
+                        source: source_kind,
+                        workflow_name: watcher_workflow_name.as_deref(),
+                        status: run_ended_status(state.status),
+                        duration_ms: elapsed,
+                        agents_used: state.agents_used,
+                        agent_budget: state.agent_budget,
+                    },
+                    &watcher_agent_stats,
+                );
                 if !persisted {
                     let _ = done_tx.send(());
                     let _ = outcome_tx.send(outcome);
                     return;
                 }
-                let elapsed = tracker.lock().elapsed_ms(&watcher_run_id);
                 notify.broadcast(&state, elapsed, 0, true);
                 if state.status.is_completion_reportable() {
                     let _ = session_cmd_tx.send(
@@ -410,12 +557,15 @@ impl WorkflowManager {
             session_dir,
             std::env::temp_dir(),
             tracker.clone(),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             store,
             notify,
             mpsc::unbounded_channel().0,
             Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
             std::collections::HashMap::new(),
+            super::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
+            LatchedTaskModelSelection::default(),
         )));
         (manager, tracker)
     }
@@ -557,6 +707,45 @@ impl WorkflowManager {
         }
     }
 
+    /// Pause or stop the run whose id or display name is `key`, returning its
+    /// state as of before the op.
+    pub(crate) fn control_run(
+        &mut self,
+        key: &str,
+        control: WorkflowControl,
+    ) -> Result<WorkflowRunState, ControlError> {
+        let run = {
+            let tracker = self.tracker.lock();
+            tracker
+                .find_run_id(key)
+                .and_then(|run_id| tracker.get(&run_id))
+        }
+        .ok_or_else(|| ControlError::UnknownRun(key.to_owned()))?;
+        let not_applicable = |status: WorkflowRunStatus| ControlError::NotApplicable {
+            name: run.name.clone(),
+            status,
+            control,
+        };
+        if !run.status.accepts(control) {
+            return Err(not_applicable(run.status));
+        }
+        let applied = match control {
+            WorkflowControl::Pause => self.pause(&run.run_id),
+            WorkflowControl::Stop => self.cancel(&run.run_id),
+        };
+        if applied {
+            Ok(run)
+        } else {
+            // The run finished between the gate and the op; report the status it reached.
+            let status = self
+                .tracker
+                .lock()
+                .get(&run.run_id)
+                .map_or(run.status, |state| state.status);
+            Err(not_applicable(status))
+        }
+    }
+
     pub(crate) async fn cancel_all_and_drain(
         &mut self,
         timeout: std::time::Duration,
@@ -650,6 +839,77 @@ impl WorkflowManager {
     }
 }
 
+/// `workflow_name` is already privacy-filtered by `launch`; both lifecycle events must carry the same value.
+fn log_run_started(
+    run_id: &str,
+    parent_session_id: &str,
+    source: WorkflowSourceKind,
+    workflow_name: Option<&str>,
+    state: &crate::session::workflow::tracker::WorkflowRunState,
+    max_concurrent_agents: usize,
+    resumed: bool,
+) {
+    codel_logging::session_ctx::log_event(WorkflowRunStarted {
+        run_id: run_id.to_owned(),
+        parent_session_id: parent_session_id.to_owned(),
+        source,
+        workflow_name: workflow_name.map(str::to_owned),
+        agent_budget: state.agent_budget,
+        max_concurrent_agents: u32::try_from(max_concurrent_agents).unwrap_or(u32::MAX),
+        resumed,
+    });
+}
+
+struct RunEndMetadata<'a> {
+    run_id: &'a str,
+    parent_session_id: &'a str,
+    source: WorkflowSourceKind,
+    workflow_name: Option<&'a str>,
+    status: codel_logging::events::WorkflowRunEndStatus,
+    duration_ms: u64,
+    agents_used: u64,
+    agent_budget: Option<u64>,
+}
+
+fn log_run_ended(episode: RunEndMetadata<'_>, stats: &super::host_service::WorkflowAgentStats) {
+    codel_logging::session_ctx::log_event(codel_logging::events::WorkflowRunEnded {
+        run_id: episode.run_id.to_owned(),
+        parent_session_id: episode.parent_session_id.to_owned(),
+        source: episode.source,
+        workflow_name: episode.workflow_name.map(str::to_owned),
+        status: episode.status,
+        duration_ms: episode.duration_ms,
+        agents_used: episode.agents_used,
+        agent_budget: episode.agent_budget,
+        agents_failed: stats.agents_failed.load(Ordering::Relaxed),
+        peak_concurrent_agents: stats.peak_concurrent.load(Ordering::Relaxed),
+        slot_waits: stats.slot_waits.load(Ordering::Relaxed),
+        slot_wait_ms_total: stats.slot_wait_ms_total.load(Ordering::Relaxed),
+        slot_wait_ms_max: stats.slot_wait_ms_max.load(Ordering::Relaxed),
+    });
+}
+
+/// Exhaustive so a new tracker status forces a decision here.
+fn run_ended_status(
+    status: crate::session::workflow::tracker::WorkflowRunStatus,
+) -> codel_logging::events::WorkflowRunEndStatus {
+    use crate::session::workflow::tracker::WorkflowRunStatus as S;
+    use codel_logging::events::WorkflowRunEndStatus as E;
+    match status {
+        S::Active => E::Active,
+        S::UserPaused => E::UserPaused,
+        S::BackOffPaused => E::BackOffPaused,
+        S::NoProgressPaused => E::NoProgressPaused,
+        S::InfraPaused => E::InfraPaused,
+        S::Blocked => E::Blocked,
+        S::BudgetLimited => E::BudgetLimited,
+        S::Interrupted => E::Interrupted,
+        S::Complete => E::Complete,
+        S::Failed => E::Failed,
+        S::Cancelled => E::Cancelled,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,12 +979,15 @@ mod tests {
             session_dir,
             std::env::temp_dir(),
             tracker,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             store,
             notify,
             subagent_tx,
             Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
             HashMap::new(),
+            crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
+            LatchedTaskModelSelection::default(),
         );
         (manager, event_rx, cancels)
     }
@@ -734,8 +997,49 @@ mod tests {
             objective: "obj".into(),
             args: serde_json::json!({}),
             agent_budget: None,
+            effort: None,
             resume_run_id: None,
         }
+    }
+
+    fn parallel_n_script(n: usize) -> String {
+        format!(
+            "let meta = #{{ name: \"t\", description: \"d\" }};\n\
+             let jobs = [];\n\
+             let i = 0;\n\
+             while i < {n} {{\n\
+                 jobs.push(#{{ prompt: \"work \" + i.to_string() }});\n\
+                 i += 1;\n\
+             }}\n\
+             let results = parallel(jobs);\n\
+             complete(results.len());"
+        )
+    }
+
+    async fn recv_spawn(
+        rx: &mut SubagentEventRx,
+    ) -> codel_tools::implementations::codel_build::task::types::SubagentSpawnRequest {
+        use codel_tools::implementations::codel_build::task::types::SubagentEvent;
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(SubagentEvent::Spawn(req))) => req,
+            Ok(Some(_)) => panic!("expected spawn, got a non-spawn event"),
+            Ok(None) => panic!("expected spawn, channel closed"),
+            Err(_) => panic!("expected spawn, timed out"),
+        }
+    }
+
+    fn complete_spawn(
+        req: codel_tools::implementations::codel_build::task::types::SubagentSpawnRequest,
+    ) {
+        use codel_tools::implementations::codel_build::task::types::SubagentResult;
+        let id = req.id.clone();
+        let _ = req.result_tx.send(SubagentResult {
+            success: true,
+            output: std::sync::Arc::from("ok"),
+            subagent_id: id.clone(),
+            child_session_id: id,
+            ..Default::default()
+        });
     }
 
     #[tokio::test]
@@ -762,6 +1066,45 @@ mod tests {
                 .join(&run_id)
                 .join("script.rhai")
                 .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn running_workflow_keeps_session_active_work_nonzero() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut rx) = test_manager(Some(dir.path().to_path_buf()));
+
+        assert_eq!(
+            manager.active_work.load(Ordering::Acquire),
+            0,
+            "no active work before any run launches"
+        );
+
+        let (_run_id, outcome_rx) = manager
+            .launch(resolve_inline(parallel_n_script(1)).unwrap(), spec())
+            .unwrap();
+        let req = recv_spawn(&mut rx).await;
+        assert!(
+            manager.active_work.load(Ordering::Acquire) > 0,
+            "a running workflow must count toward the session's active work (GBT-6282)"
+        );
+
+        complete_spawn(req);
+        assert!(matches!(
+            outcome_rx.await.unwrap(),
+            WorkflowOutcome::Completed { .. }
+        ));
+        for _ in 0..200 {
+            if manager.active_work.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            manager.active_work.load(Ordering::Acquire),
+            0,
+            "active work returns to zero once the run completes"
         );
     }
 
@@ -805,6 +1148,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_reuses_immutable_launch_effort() {
+        use codel_tools::implementations::codel_build::task::types::SubagentEvent;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let script = "let meta = #{ name: \"t\", description: \"d\" };\n\
+                      await_user(\"user\", \"pause\");\n\
+                      let r = agent(\"after resume\");\n\
+                      complete(r.output);";
+        let (run_id, first_outcome) = manager
+            .launch(
+                resolve_inline(script.into()).unwrap(),
+                LaunchSpec {
+                    effort: Some(ReasoningEffort::High),
+                    ..spec()
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            first_outcome.await.unwrap(),
+            WorkflowOutcome::Paused { .. }
+        ));
+
+        let (_same_id, resumed_outcome) = manager
+            .launch(
+                resolve_inline(script.into()).unwrap(),
+                LaunchSpec {
+                    effort: None,
+                    resume_run_id: Some(run_id),
+                    ..spec()
+                },
+            )
+            .unwrap();
+        let SubagentEvent::Spawn(req) = subagent_rx.recv().await.expect("resumed spawn") else {
+            panic!("expected resumed spawn event");
+        };
+        assert_eq!(
+            req.runtime_overrides.reasoning_effort.as_deref(),
+            Some("high")
+        );
+        complete_spawn(req);
+        assert!(matches!(
+            resumed_outcome.await.unwrap(),
+            WorkflowOutcome::Completed { .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn pause_eagerly_marks_user_paused() {
         let dir = tempfile::tempdir().unwrap();
         let (mut manager, _rx) = test_manager(Some(dir.path().to_path_buf()));
@@ -815,6 +1206,7 @@ mod tests {
                 &run_id,
                 "let meta = #{ name: \"t\", description: \"d\" };",
                 &serde_json::json!({}),
+                None,
             )
             .unwrap();
         manager.tracker.lock().start_run(
@@ -840,66 +1232,6 @@ mod tests {
             "pause() must eagerly mark UserPaused so status is not still Active"
         );
         assert!(!manager.active.contains_key(&run_id));
-    }
-
-    #[tokio::test]
-    async fn pause_marks_user_paused_and_resume_replays() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
-        let script = "let meta = #{ name: \"t\", description: \"d\" };\nlet r = agent(\"work\");\ncomplete(r.output);";
-        let resolved = resolve_inline(script.into()).unwrap();
-        let (run_id, outcome_rx) = manager.launch(resolved, spec()).unwrap();
-
-        use codel_tools::implementations::codel_build::task::types::SubagentEvent;
-        let spawn_req = subagent_rx.recv().await.expect("spawn request");
-        let SubagentEvent::Spawn(_spawn) = spawn_req else {
-            panic!("expected spawn request");
-        };
-        assert!(manager.pause(&run_id));
-        assert_eq!(
-            manager.tracker.lock().get(&run_id).unwrap().status,
-            crate::session::workflow::tracker::WorkflowRunStatus::UserPaused,
-            "pause() must mark UserPaused immediately"
-        );
-        let outcome = outcome_rx.await.unwrap();
-        assert!(matches!(outcome, WorkflowOutcome::Cancelled));
-        let state = manager.tracker.lock().get(&run_id).unwrap();
-        assert_eq!(
-            state.status,
-            crate::session::workflow::tracker::WorkflowRunStatus::UserPaused,
-            "pause intent must map Cancelled → UserPaused"
-        );
-
-        let resolved = resolve_inline(script.into()).unwrap();
-        let (_run_id2, outcome_rx) = manager
-            .launch(
-                resolved,
-                LaunchSpec {
-                    resume_run_id: Some(run_id.clone()),
-                    ..spec()
-                },
-            )
-            .unwrap();
-        let spawn_req = subagent_rx.recv().await.expect("respawned agent");
-        use codel_tools::implementations::codel_build::task::types::SubagentResult;
-        if let SubagentEvent::Spawn(req) = spawn_req {
-            let id = req.id.clone();
-            let _ = req.result_tx.send(SubagentResult {
-                success: true,
-                output: std::sync::Arc::from("resumed output"),
-                subagent_id: id,
-                ..Default::default()
-            });
-        } else {
-            panic!("expected spawn event");
-        }
-        let outcome = outcome_rx.await.unwrap();
-        match outcome {
-            WorkflowOutcome::Completed { result } => {
-                assert_eq!(result, serde_json::json!("resumed output"));
-            }
-            other => panic!("expected Completed, got {other:?}"),
-        }
     }
 
     #[tokio::test]
@@ -1035,7 +1367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_cancelled_and_interrupted_runs_are_not_resumable() {
+    async fn completed_and_interrupted_runs_are_not_resumable() {
         use codel_tools::implementations::codel_build::task::types::{
             SubagentEvent, SubagentResult,
         };
@@ -1064,7 +1396,6 @@ mod tests {
         let state = manager.tracker.lock().get(&run_id).unwrap();
         for status in [
             crate::session::workflow::tracker::WorkflowRunStatus::Complete,
-            crate::session::workflow::tracker::WorkflowRunStatus::Cancelled,
             crate::session::workflow::tracker::WorkflowRunStatus::Interrupted,
         ] {
             let mut restored = state.clone();
@@ -1088,6 +1419,21 @@ mod tests {
                 "{status:?}: {err}"
             );
         }
+
+        let mut cancelled = state.clone();
+        cancelled.status = crate::session::workflow::tracker::WorkflowRunStatus::Cancelled;
+        manager.tracker = Arc::new(parking_lot::Mutex::new(WorkflowTracker::from_snapshot(
+            vec![cancelled],
+        )));
+        manager
+            .launch(
+                resolve_inline(script.into()).unwrap(),
+                LaunchSpec {
+                    resume_run_id: Some(run_id.clone()),
+                    ..spec()
+                },
+            )
+            .expect("cancelled /workflow stop runs stay resumable from the journal");
     }
 
     #[tokio::test]
@@ -1101,6 +1447,7 @@ mod tests {
                 &run_id,
                 "let meta = #{ name: \"t\", description: \"d\" };",
                 &serde_json::json!({}),
+                None,
             )
             .unwrap();
         manager.tracker.lock().start_run(
@@ -1129,7 +1476,7 @@ mod tests {
     #[tokio::test]
     async fn workflow_spawns_await_to_completion() {
         use codel_tools::implementations::codel_build::task::types::{
-            SubagentEvent, SubagentResult,
+            ModelOverrideProvenance, SubagentEvent, SubagentResult,
         };
 
         let dir = tempfile::tempdir().unwrap();
@@ -1157,9 +1504,12 @@ mod tests {
         );
         assert_eq!(
             req.runtime_overrides.model_override_provenance,
-            codel_tools::implementations::codel_build::task::types::ModelOverrideProvenance::Tool,
+            ModelOverrideProvenance::Tool {
+                selection: Default::default(),
+            },
             "script model overrides are untrusted tool provenance"
         );
+        assert_eq!(req.runtime_overrides.reasoning_effort, None);
         let id = req.id.clone();
         let _ = req.result_tx.send(SubagentResult {
             success: true,
@@ -1169,6 +1519,107 @@ mod tests {
         });
         let outcome = outcome_rx.await.unwrap();
         assert!(matches!(outcome, WorkflowOutcome::Completed { .. }));
+    }
+
+    #[tokio::test]
+    async fn launch_effort_applies_to_children_and_child_override_wins() {
+        use codel_tools::implementations::codel_build::task::types::SubagentEvent;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let resolved = resolve_inline(
+            "let meta = #{ name: \"t\", description: \"d\" };\n\
+             let results = parallel([\n\
+                 #{ prompt: \"inherits\" },\n\
+                 #{ prompt: \"overrides\", effort: \"LoW\" },\n\
+             ]);\n\
+             complete(results.len());"
+                .into(),
+        )
+        .unwrap();
+        let (_run_id, outcome_rx) = manager
+            .launch(
+                resolved,
+                LaunchSpec {
+                    effort: Some(ReasoningEffort::High),
+                    ..spec()
+                },
+            )
+            .unwrap();
+
+        let mut efforts = HashMap::new();
+        for _ in 0..2 {
+            let SubagentEvent::Spawn(req) = subagent_rx.recv().await.expect("spawn") else {
+                panic!("expected spawn event");
+            };
+            efforts.insert(
+                req.request.prompt.clone(),
+                req.request.runtime_overrides.reasoning_effort.clone(),
+            );
+            complete_spawn(req);
+        }
+        assert_eq!(
+            efforts.get("inherits").and_then(Option::as_deref),
+            Some("high")
+        );
+        assert_eq!(
+            efforts.get("overrides").and_then(Option::as_deref),
+            Some("low")
+        );
+        assert!(matches!(
+            outcome_rx.await.unwrap(),
+            WorkflowOutcome::Completed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn agent_rejects_invalid_effort_before_spawning() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let resolved = resolve_inline(
+            "let meta = #{ name: \"t\", description: \"d\" };\n\
+             agent(\"work\", #{ effort: \"turbo\" });"
+                .into(),
+        )
+        .unwrap();
+        let (_run_id, outcome_rx) = manager.launch(resolved, spec()).unwrap();
+
+        match outcome_rx.await.unwrap() {
+            WorkflowOutcome::Failed { error } => {
+                assert!(error.contains("invalid workflow agent effort"), "{error}");
+                assert!(error.contains("turbo"), "{error}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            subagent_rx.try_recv().is_err(),
+            "invalid effort must not reach the coordinator"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_nulls_invalid_child_effort_without_spawning() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let resolved = resolve_inline(
+            "let meta = #{ name: \"t\", description: \"d\" };\n\
+             let results = parallel([#{ prompt: \"work\", effort: \"turbo\" }]);\n\
+             complete(results);"
+                .into(),
+        )
+        .unwrap();
+        let (_run_id, outcome_rx) = manager.launch(resolved, spec()).unwrap();
+
+        match outcome_rx.await.unwrap() {
+            WorkflowOutcome::Completed { result } => {
+                assert_eq!(result, serde_json::json!([null]));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        assert!(
+            subagent_rx.try_recv().is_err(),
+            "invalid effort must not reach the coordinator"
+        );
     }
 
     #[tokio::test]
@@ -1418,45 +1869,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_uses_run_owned_cancel_event_without_parent_detach() {
-        use codel_tools::implementations::codel_build::task::types::{
-            SubagentCancelTarget, SubagentEvent,
-        };
-
+    async fn control_run_refuses_to_stop_a_budget_limited_run_so_resume_still_needs_a_raised_cap() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut manager, mut subagent_rx, cancels) =
-            test_manager_with_cancels(Some(dir.path().to_path_buf()));
-        let resolved = resolve_inline(
-            "let meta = #{ name: \"t\", description: \"d\" };\n\
-             let r = agent(\"work\");\ncomplete(r.output);"
-                .into(),
-        )
-        .unwrap();
-        let (run_id, outcome_rx) = manager
-            .launch(
-                resolved,
-                LaunchSpec {
-                    agent_budget: Some(100),
-                    ..spec()
-                },
-            )
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let script = "let meta = #{ name: \"t\", description: \"d\" };\n\
+                      let r = agent(\"work\");\ncomplete(r.output);";
+        let (run_id, _outcome) = manager
+            .launch(resolve_inline(script.into()).unwrap(), spec())
             .unwrap();
-        let SubagentEvent::Spawn(req) = subagent_rx.recv().await.expect("spawn") else {
-            panic!("expected spawn");
-        };
-        assert!(req.owner.is_workflow());
-        assert!(manager.cancel(&run_id));
-        let _ = outcome_rx.await;
-        assert!(
-            req.cancel_token.is_cancelled(),
-            "run cancel must cancel the child token, not silently detach the receiver"
+        let _child = recv_spawn(&mut subagent_rx).await;
+        manager.tracker.lock().apply_outcome(
+            &run_id,
+            &WorkflowOutcome::BudgetExceeded {
+                message: "budget".into(),
+            },
         );
-        assert!(
-            cancels.lock().iter().any(|target| matches!(
-                target,
-                SubagentCancelTarget::WorkflowRunId(id) if id == &run_id
-            )),
-            "cancellation must emit an explicit run-owned cancel event"
+
+        assert_eq!(
+            manager
+                .control_run(&run_id, WorkflowControl::Stop)
+                .unwrap_err(),
+            ControlError::NotApplicable {
+                name: "t".to_owned(),
+                status: WorkflowRunStatus::BudgetLimited,
+                control: WorkflowControl::Stop,
+            }
+        );
+        assert_eq!(
+            manager.tracker.lock().get(&run_id).unwrap().status,
+            WorkflowRunStatus::BudgetLimited
+        );
+        let resume = LaunchSpec {
+            resume_run_id: Some(run_id.clone()),
+            ..spec()
+        };
+        assert!(matches!(
+            manager
+                .launch(resolve_inline(script.into()).unwrap(), resume)
+                .unwrap_err(),
+            LaunchError::BudgetNotRaised { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn control_run_refuses_to_pause_an_engine_paused_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        let script = "let meta = #{ name: \"t\", description: \"d\" };\n\
+                      let r = agent(\"work\");\ncomplete(r.output);";
+        let (run_id, _outcome) = manager
+            .launch(resolve_inline(script.into()).unwrap(), spec())
+            .unwrap();
+        let _child = recv_spawn(&mut subagent_rx).await;
+        manager.tracker.lock().apply_outcome(
+            &run_id,
+            &WorkflowOutcome::Paused {
+                kind: codel_workflow::PauseKind::BackOff,
+                message: "backing off".into(),
+            },
+        );
+
+        // The run is still in `active`, so a bare pause() would report success without changing anything.
+        assert_eq!(
+            manager
+                .control_run(&run_id, WorkflowControl::Pause)
+                .unwrap_err(),
+            ControlError::NotApplicable {
+                name: "t".to_owned(),
+                status: WorkflowRunStatus::BackOffPaused,
+                control: WorkflowControl::Pause,
+            }
+        );
+        assert_eq!(
+            manager.tracker.lock().get(&run_id).unwrap().status,
+            WorkflowRunStatus::BackOffPaused
         );
     }
 
@@ -1502,5 +1988,44 @@ mod tests {
             state.status,
             crate::session::workflow::tracker::WorkflowRunStatus::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn parallel_panel_respects_concurrency_cap() {
+        const CAP: usize = 2;
+        const N: usize = 6;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut manager, mut subagent_rx) = test_manager(Some(dir.path().to_path_buf()));
+        manager.test_set_max_concurrent_agents(CAP);
+        let (_run_id, outcome_rx) = manager
+            .launch(resolve_inline(parallel_n_script(N)).unwrap(), spec())
+            .unwrap();
+
+        let mut live = Vec::new();
+        for _ in 0..CAP {
+            live.push(recv_spawn(&mut subagent_rx).await);
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), subagent_rx.recv())
+                .await
+                .is_err(),
+            "more than {CAP} children were live"
+        );
+
+        let mut completed = 0usize;
+        while completed + live.len() < N {
+            complete_spawn(live.remove(0));
+            completed += 1;
+            live.push(recv_spawn(&mut subagent_rx).await);
+        }
+        for req in live {
+            complete_spawn(req);
+        }
+
+        match outcome_rx.await.unwrap() {
+            WorkflowOutcome::Completed { result } => assert_eq!(result, serde_json::json!(N)),
+            other => panic!("expected Completed, got {other:?}"),
+        }
     }
 }

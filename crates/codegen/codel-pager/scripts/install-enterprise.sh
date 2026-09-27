@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Codel CLI installer (enterprise channel) — https://codel.dev/cli/enterprise-install.sh
+# Codel CLI installer (enterprise channel) — https://codel/cli/enterprise-install.sh
 #
 # Standalone installer for the enterprise channel. This is intentionally a full
 # copy of the install logic (not a wrapper around install.sh) so that changes to
@@ -10,9 +10,9 @@
 # Env: CODEL_BIN_DIR, CODEL_PROXY_URL
 #
 # Usage:
-#   curl -fsSL https://codel.dev/cli/enterprise-install.sh | bash            # latest enterprise
-#   curl -fsSL https://codel.dev/cli/enterprise-install.sh | bash -s 0.1.42  # specific version
-#   CODEL_DEPLOYMENT_KEY=<key> bash <(curl -fsSL https://codel.dev/cli/enterprise-install.sh)
+#   curl -fsSL https://codel/cli/enterprise-install.sh | bash            # latest enterprise
+#   curl -fsSL https://codel/cli/enterprise-install.sh | bash -s 0.1.42  # specific version
+#   CODEL_DEPLOYMENT_KEY=<key> bash <(curl -fsSL https://codel/cli/enterprise-install.sh)
 #
 # Windows: run under Git for Windows / MSYS2 Bash (same curl | bash flow); WSL
 # uses the Linux binary.
@@ -123,7 +123,7 @@ read_codel_token() {
 
 # Resolve auth: CODEL_DEPLOYMENT_KEY > OIDC token > legacy token
 OIDC_SCOPE="https://auth.codel.dev::b1a00492-073a-47ea-816f-4c329264a828"
-LEGACY_SCOPE="https://accounts.codel.dev/sign-in"
+LEGACY_SCOPE="https://accounts.codel/sign-in"
 AUTH_SOURCE=""
 
 if [ -n "$CODEL_DEPLOYMENT_KEY" ]; then
@@ -155,7 +155,20 @@ case "$(uname -m)" in
     *)                    echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-BASE_URL_PRIMARY="https://codel.dev/cli"
+# Rosetta lies: in a translated shell on Apple Silicon, uname -m reports
+# x86_64. Install the native arm64 build (faster startup, no translation).
+# sysctl lives in /usr/sbin, which pruned PATHs often drop — resolve the
+# binary first (PATH, then absolute) so the probe cannot quietly keep
+# x86_64. A probe that runs and finds no key is a genuine Intel Mac.
+if [ "$os" = "macos" ] && [ "$arch" = "x86_64" ]; then
+    sysctl_bin="$(command -v sysctl || echo /usr/sbin/sysctl)"
+    if [ "$("$sysctl_bin" -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+        echo "Apple Silicon detected (Rosetta shell); installing the native arm64 build." >&2
+        arch="aarch64"
+    fi
+fi
+
+BASE_URL_PRIMARY="https://codel/cli"
 BASE_URL_FALLBACK="https://storage.googleapis.com/codel-build-public-artifacts/cli"
 DOWNLOAD_DIR="$HOME/.codel/downloads"
 BIN_DIR="${CODEL_BIN_DIR:-$HOME/.codel/bin}"
@@ -280,14 +293,30 @@ fi
 
 # Fetch managed_config.toml + requirements.toml from server (deployment key only).
 if [ -n "$CODEL_DEPLOYMENT_KEY" ]; then
-    PROXY_URL="${CODEL_PROXY_URL:-https://cli-chat-proxy.codel.com/v1}"
+    PROXY_URL="${CODEL_PROXY_URL:-https://cli-chat-proxy.codel.dev/v1}"
+    # Refuse cleartext / userinfo / empty-host proxies before attaching the key.
+    proxy_authority="${PROXY_URL#*://}"
+    proxy_authority="${proxy_authority%%[/?#]*}"
+    proxy_ok=
+    case "$PROXY_URL" in
+        [hH][tT][tT][pP][sS]://*)
+            case "$proxy_authority" in
+                ""|*@*) ;;
+                *) proxy_ok=1 ;;
+            esac
+            ;;
+    esac
+    if [ -z "$proxy_ok" ]; then
+        echo "Error: CODEL_PROXY_URL must be an https:// URL." >&2
+        exit 1
+    fi
     echo "  Fetching deployment config..." >&2
     DEPLOY_RESPONSE=""
     AUTH_HEADER_FILE=$(mktemp 2>/dev/null) || AUTH_HEADER_FILE=""
     if [ -n "$AUTH_HEADER_FILE" ]; then
         chmod 600 "$AUTH_HEADER_FILE" 2>/dev/null || true
         printf 'Authorization: Bearer %s\n' "$CODEL_DEPLOYMENT_KEY" > "$AUTH_HEADER_FILE"
-        DEPLOY_RESPONSE=$(curl -sS -f \
+        DEPLOY_RESPONSE=$(curl -sS -f --proto '=https' \
             -H "@${AUTH_HEADER_FILE}" \
             "${PROXY_URL}/deployment/config" 2>/dev/null) || DEPLOY_RESPONSE=""
         : > "$AUTH_HEADER_FILE" 2>/dev/null || true

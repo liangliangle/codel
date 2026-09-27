@@ -1,9 +1,8 @@
-//! Single source of truth for the `sessionUpdate` discriminant strings the
-//! session-resume replay matchers compare against persisted `updates.jsonl` lines.
+//! Single source of truth for the `sessionUpdate` discriminant strings.
+//! The session-resume replay matchers compare them against persisted `updates.jsonl` lines.
 //!
-//! Each value is derived from its enum's serde impl (not a hand-written literal),
-//! so renaming a variant updates the matcher automatically. The guard test pins
-//! the wire format, turning an accidental serde change into a failing test.
+//! Each value is derived from its enum's serde impl (not a hand-written literal), so renaming a variant updates the matcher automatically.
+//! The guard test pins the wire format, turning an accidental serde change into a failing test.
 
 use std::sync::LazyLock;
 
@@ -12,8 +11,7 @@ use codel_tools::types::TaskSnapshot;
 
 use crate::extensions::notification::SessionUpdate as CodelSessionUpdate;
 
-/// Serialize an internally-tagged session-update value and return the
-/// `sessionUpdate` discriminant serde itself emits for that variant.
+/// Serialize an internally-tagged session-update value and return the `sessionUpdate` discriminant serde itself emits for that variant.
 fn tagged_discriminant<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
@@ -25,22 +23,33 @@ fn tagged_discriminant<T: serde::Serialize>(value: &T) -> String {
         .expect("internally-tagged session-update value must serialize with a sessionUpdate tag")
 }
 
-/// `acp::SessionUpdate::UserMessageChunk` discriminant.
 pub(crate) static USER_MESSAGE_CHUNK: LazyLock<String> = LazyLock::new(|| {
     tagged_discriminant(&acp::SessionUpdate::UserMessageChunk(
         acp::ContentChunk::new(acp::ContentBlock::from("")),
     ))
 });
 
-/// `acp::SessionUpdate::AvailableCommandsUpdate` discriminant.
 pub(crate) static AVAILABLE_COMMANDS_UPDATE: LazyLock<String> = LazyLock::new(|| {
     tagged_discriminant(&acp::SessionUpdate::AvailableCommandsUpdate(
         acp::AvailableCommandsUpdate::new(Vec::new()),
     ))
 });
 
-/// Codel `SessionUpdate::RewindMarker` discriminant. Appears verbatim in compact
-/// JSON, so it doubles as a cheap substring pre-filter.
+pub(crate) static TOOL_CALL_UPDATE: LazyLock<String> = LazyLock::new(|| {
+    tagged_discriminant(&acp::SessionUpdate::ToolCallUpdate(
+        acp::ToolCallUpdate::new(acp::ToolCallId::new("t"), acp::ToolCallUpdateFields::new()),
+    ))
+});
+
+/// `acp::ToolCallStatus::InProgress` wire string (`in_progress`).
+pub(crate) static TOOL_CALL_STATUS_IN_PROGRESS: LazyLock<String> = LazyLock::new(|| {
+    serde_json::to_value(acp::ToolCallStatus::InProgress)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .expect("ToolCallStatus::InProgress must serialize as a string")
+});
+
+/// Appears verbatim in compact JSON, so it doubles as a cheap substring pre-filter.
 pub(crate) static REWIND_MARKER: LazyLock<String> = LazyLock::new(|| {
     tagged_discriminant(&CodelSessionUpdate::RewindMarker {
         target_prompt_index: 0,
@@ -48,7 +57,6 @@ pub(crate) static REWIND_MARKER: LazyLock<String> = LazyLock::new(|| {
     })
 });
 
-/// Codel `SessionUpdate::TaskBackgrounded` discriminant.
 pub(crate) static TASK_BACKGROUNDED: LazyLock<String> = LazyLock::new(|| {
     tagged_discriminant(&CodelSessionUpdate::TaskBackgrounded {
         tool_call_id: String::new(),
@@ -61,7 +69,6 @@ pub(crate) static TASK_BACKGROUNDED: LazyLock<String> = LazyLock::new(|| {
     })
 });
 
-/// Codel `SessionUpdate::TaskCompleted` discriminant.
 pub(crate) static TASK_COMPLETED: LazyLock<String> = LazyLock::new(|| {
     tagged_discriminant(&CodelSessionUpdate::TaskCompleted {
         task_snapshot: TaskSnapshot {
@@ -80,23 +87,17 @@ pub(crate) static TASK_COMPLETED: LazyLock<String> = LazyLock::new(|| {
             kind: Default::default(),
             block_waited: false,
             explicitly_killed: false,
+            kill_result_delivered: false,
             owner_session_id: None,
             description: None,
+            is_backgrounded: false,
+            output_total_bytes: 0,
         },
         will_wake: false,
     })
 });
 
-/// Prefix the structural `params.update` object begins with for a real ACU (the
-/// enum tag serializes first). Built from [`AVAILABLE_COMMANDS_UPDATE`] so the
-/// literal is never hand-maintained.
-pub(crate) static AVAILABLE_COMMANDS_UPDATE_PREFIX: LazyLock<String> =
-    LazyLock::new(|| format!(r#"{{"sessionUpdate":"{}""#, *AVAILABLE_COMMANDS_UPDATE));
-
-/// The `"sessionUpdate":"user_message_chunk"` key/value pair as serialized (no
-/// leading `{`). Built from [`USER_MESSAGE_CHUNK`] so the literal isn't hand-
-/// maintained; the quoted key means it can't false-match the bare discriminant
-/// escaped inside user content.
+/// The quoted key means it cannot match the bare discriminant escaped inside user content.
 pub(crate) static USER_MESSAGE_CHUNK_PREFIX: LazyLock<String> =
     LazyLock::new(|| format!(r#""sessionUpdate":"{}""#, *USER_MESSAGE_CHUNK));
 
@@ -104,8 +105,7 @@ pub(crate) static USER_MESSAGE_CHUNK_PREFIX: LazyLock<String> =
 mod tests {
     use super::*;
 
-    /// Pins the wire format: each derived discriminant must equal the exact
-    /// string persisted in `updates.jsonl`, so a serde/wire change fails here.
+    /// Pins the wire format: each derived discriminant must equal the exact string persisted in `updates.jsonl`, so a serde/wire change fails here.
     #[test]
     fn derived_discriminants_match_wire_format() {
         assert_eq!(USER_MESSAGE_CHUNK.as_str(), "user_message_chunk");
@@ -113,13 +113,11 @@ mod tests {
             AVAILABLE_COMMANDS_UPDATE.as_str(),
             "available_commands_update"
         );
+        assert_eq!(TOOL_CALL_UPDATE.as_str(), "tool_call_update");
+        assert_eq!(TOOL_CALL_STATUS_IN_PROGRESS.as_str(), "in_progress");
         assert_eq!(REWIND_MARKER.as_str(), "rewind_marker");
         assert_eq!(TASK_BACKGROUNDED.as_str(), "task_backgrounded");
         assert_eq!(TASK_COMPLETED.as_str(), "task_completed");
-        assert_eq!(
-            AVAILABLE_COMMANDS_UPDATE_PREFIX.as_str(),
-            r#"{"sessionUpdate":"available_commands_update""#
-        );
         assert_eq!(
             USER_MESSAGE_CHUNK_PREFIX.as_str(),
             r#""sessionUpdate":"user_message_chunk""#

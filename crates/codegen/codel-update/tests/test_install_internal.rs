@@ -1,14 +1,10 @@
-//! End-to-end tests for `install_internal` — the GCS-bucket installer used
-//! when `installer = "internal"` is configured.
+//! End-to-end tests for `install_internal`, the GCS-bucket installer used when `installer = "internal"` is configured.
 //!
-//! Wires together a wiremock-mocked GCS bucket + an isolated `CODEL_HOME`
-//! tempdir so we can verify the full install pipeline:
-//!   fetch version → download codel binary → chmod → atomic symlink →
-//!   cleanup_old_downloads → persist installer config.
+//! Wires together a wiremock-mocked GCS bucket and an isolated `CODEL_HOME` tempdir to verify the full install pipeline:
+//! fetch version, download the codel binary, chmod, atomic symlink, cleanup_old_downloads, persist installer config.
 //!
-//! The function reads `codel_home()` (a process-wide `OnceLock`), so all
-//! tests in this binary share a single `CODEL_HOME` and run serially via
-//! `#[serial]`.
+//! The function reads `codel_home()` (a process-wide `OnceLock`).
+//! All tests in this binary therefore share one `CODEL_HOME` and run serially via `#[serial]`.
 
 #![cfg(unix)]
 
@@ -19,8 +15,11 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use common::{reset_home, test_home};
+use codel_logging::events::CliUpdateErrorKind;
 use codel_update::UpdateConfig;
-use codel_update::auto_update::{install_internal_from_base, install_internal_from_bases};
+use codel_update::auto_update::{
+    classify_install_error, install_internal_from_base, install_internal_from_bases,
+};
 
 fn host_platform() -> String {
     let os = if cfg!(target_os = "macos") {
@@ -51,7 +50,6 @@ fn make_config(channel: &str) -> UpdateConfig {
     }
 }
 
-/// Mount GCS endpoints for a given version. Returns the `MockServer`.
 async fn mount_gcs(version: &str, platform: &str) -> MockServer {
     let server = MockServer::start().await;
 
@@ -104,15 +102,14 @@ async fn install_internal_pinned_version_writes_binary_and_symlink() {
         format!("codel-0.1.181-{platform}").as_str()
     );
 
-    // `codel` and `agent` move together — see `swap_managed_bin_links`.
+    // `codel` and `agent` move together; see `swap_managed_bin_links`
     let agent_link = home.join("bin").join("agent");
     assert!(agent_link.is_symlink(), "agent symlink created");
     let agent_target = std::fs::read_link(&agent_link).unwrap();
     assert_eq!(agent_target, target, "agent and codel point at same target");
 }
 
-/// Regression: pre-existing `agent` symlink from a prior install must be
-/// swapped to the new version, not left stale (the original bug).
+/// Regression: pre-existing `agent` symlink from a prior install must be swapped to the new version, not left stale (the original bug).
 #[tokio::test]
 #[serial]
 async fn install_internal_updates_stale_agent_symlink_to_new_version() {
@@ -149,8 +146,7 @@ async fn install_internal_updates_stale_agent_symlink_to_new_version() {
     );
 }
 
-/// Rollback regression: if `agent` swap fails after `codel` succeeded,
-/// `codel` must roll back to its prior target (all-or-nothing).
+/// Rollback regression: if `agent` swap fails after `codel` succeeded, `codel` must roll back to its prior target (all-or-nothing).
 #[tokio::test]
 #[serial]
 async fn install_internal_rolls_back_codel_when_agent_swap_fails() {
@@ -172,7 +168,7 @@ async fn install_internal_rolls_back_codel_when_agent_swap_fails() {
         .join(format!("codel-0.1.180-{platform}"));
     std::os::unix::fs::symlink(&rel_old, bin_dir.join("codel")).unwrap();
 
-    // Sabotage the agent swap: non-empty directory → rename fails with EISDIR.
+    // Sabotage the agent swap: a non-empty directory makes the rename fail with EISDIR
     let agent_dir = bin_dir.join("agent");
     std::fs::create_dir(&agent_dir).unwrap();
     std::fs::write(agent_dir.join("blocker"), b"x").unwrap();
@@ -182,7 +178,6 @@ async fn install_internal_rolls_back_codel_when_agent_swap_fails() {
         .expect_err("agent swap must fail when target is a non-empty dir");
     drop(err);
 
-    // codel must be rolled back to the prior version.
     let codel_target = std::fs::read_link(bin_dir.join("codel")).unwrap();
     assert_eq!(
         codel_target.file_name().unwrap(),
@@ -191,9 +186,8 @@ async fn install_internal_rolls_back_codel_when_agent_swap_fails() {
     );
 }
 
-/// Absent-prior rollback regression: fresh install (no prior `codel` /
-/// `agent`), sabotaged `agent` swap must *remove* the just-created `codel`
-/// link so we don't leave it on the new binary while `agent` is absent.
+/// Rollback regression for a fresh install (no prior `codel` or `agent`): a sabotaged `agent` swap must *remove* the just-created `codel` link.
+/// Otherwise `codel` would stay on the new binary while `agent` is absent.
 #[tokio::test]
 #[serial]
 async fn install_internal_rollback_removes_absent_prior_codel_link() {
@@ -207,7 +201,7 @@ async fn install_internal_rollback_removes_absent_prior_codel_link() {
     let bin_dir = home.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
 
-    // No prior `codel`. Sabotage `agent` swap: non-empty directory → EISDIR.
+    // No prior `codel`. Sabotage the `agent` swap: a non-empty directory fails the rename with EISDIR.
     let agent_dir = bin_dir.join("agent");
     std::fs::create_dir(&agent_dir).unwrap();
     std::fs::write(agent_dir.join("blocker"), b"x").unwrap();
@@ -311,7 +305,7 @@ async fn install_internal_resolves_version_via_channel_pointer_when_no_target() 
     let server = mount_gcs("0.1.181", &platform).await;
     let cfg = make_config("stable");
 
-    // No pinned version → must fetch /stable pointer to resolve.
+    // No pinned version, so it must fetch the /stable pointer to resolve
     install_internal_from_base(None, &cfg, &server.uri())
         .await
         .unwrap();
@@ -333,7 +327,7 @@ async fn install_internal_alpha_channel_resolves_max_of_alpha_and_stable() {
     let platform = host_platform();
     let server = MockServer::start().await;
 
-    // Stable points to 0.1.181, alpha points to 0.1.180-alpha.5 — stable wins.
+    // Stable points to 0.1.181, alpha points to 0.1.180-alpha.5; stable wins
     Mock::given(method("GET"))
         .and(path("/stable"))
         .respond_with(ResponseTemplate::new(200).set_body_string("0.1.181"))
@@ -380,7 +374,7 @@ async fn install_internal_fails_on_codel_binary_404() {
         .respond_with(ResponseTemplate::new(200).set_body_string("0.1.181"))
         .mount(&server)
         .await;
-    // Main binary returns 404 — must propagate as error.
+    // The main binary returns 404, which must propagate as an error
     Mock::given(method("GET"))
         .and(path(format!("/codel-0.1.181-{platform}")))
         .respond_with(ResponseTemplate::new(404))
@@ -393,6 +387,8 @@ async fn install_internal_fails_on_codel_binary_404() {
         .unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("Download failed"), "msg: {msg}");
+    // A real download failure classifies as Download end to end.
+    assert_eq!(classify_install_error(&err), CliUpdateErrorKind::Download);
 }
 
 #[tokio::test]
@@ -421,12 +417,11 @@ async fn install_internal_cleans_up_old_versions_keeping_n_minus_one() {
     reset_home();
     let platform = host_platform();
 
-    // Install v1, v2, v3 sequentially. After v3, only v3 (current) and v2
-    // (N-1) should remain on disk; v1 should be deleted.
+    // Install v1, v2, v3 sequentially
+    // After v3, only v3 (current) and v2 (N-1) should remain on disk; v1 should be deleted
     for v in ["0.1.179", "0.1.180", "0.1.181"] {
-        // Age earlier installs: cleanup never deletes freshly-written
-        // binaries (concurrent-racer protection), so retention assertions
-        // need the previous installs to look like old leftovers.
+        // Age earlier installs: cleanup never deletes freshly-written binaries (a fresh file may be a concurrent racer's just-renamed download)
+        // The retention assertions need the previous installs to look like old leftovers
         common::backdate_downloads();
         let server = mount_gcs(v, &platform).await;
         let cfg = make_config("stable");
@@ -450,7 +445,6 @@ async fn install_internal_cleans_up_old_versions_keeping_n_minus_one() {
         "oldest deleted"
     );
 
-    // Symlink updated to latest.
     let target = std::fs::read_link(home.join("bin").join("codel")).unwrap();
     assert!(
         target
@@ -465,8 +459,7 @@ async fn install_internal_cleans_up_old_versions_keeping_n_minus_one() {
 #[tokio::test]
 #[serial]
 async fn install_internal_idempotent_for_same_version() {
-    // Re-installing the same version should not error and should leave the
-    // binary at the same path with the same content.
+    // Re-installing the same version should not error and should leave the binary at the same path with the same content
     let _ = test_home();
     reset_home();
     let platform = host_platform();
@@ -503,7 +496,7 @@ async fn install_internal_idempotent_for_same_version() {
 async fn install_internal_creates_codel_home_subdirs_if_missing() {
     let _ = test_home();
     reset_home();
-    // Explicitly delete bin/ and downloads/ so install must create them.
+    // Delete bin/ and downloads/ so the install must create them
     let _ = std::fs::remove_dir_all(test_home().join("bin"));
     let _ = std::fs::remove_dir_all(test_home().join("downloads"));
 
@@ -520,16 +513,13 @@ async fn install_internal_creates_codel_home_subdirs_if_missing() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Multi-base URL fallback: install_internal_from_bases tries each base in
-// preference order, falling through to the next on failure.
+// Multi-base URL fallback: install_internal_from_bases tries each base in preference order, falling through to the next on failure
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
 async fn install_internal_from_bases_falls_back_to_secondary_when_primary_fails() {
-    // Primary server returns 500 on every endpoint (CDN outage simulation);
-    // fallback server serves the install successfully. Result: install
-    // succeeds via fallback.
+    // Primary server returns 500 on every endpoint, simulating a CDN outage; the fallback serves the install successfully
     let _ = test_home();
     reset_home();
     let platform = host_platform();
@@ -562,11 +552,56 @@ async fn install_internal_from_bases_falls_back_to_secondary_when_primary_fails(
 
 #[tokio::test]
 #[serial]
+async fn install_internal_from_bases_does_not_fallback_on_smoke_failure() {
+    // A --version failure is a property of the artifact, not the CDN
+    // The fallback base must not be contacted (a dead fallback would fail differently if we retried)
+    let _ = test_home();
+    reset_home();
+    let platform = host_platform();
+
+    let primary = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/stable"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("0.1.181"))
+        .mount(&primary)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/codel-0.1.181-{platform}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"#!/bin/sh\nexit 1\n".to_vec()))
+        .mount(&primary)
+        .await;
+
+    // Live fallback so we can assert it was never contacted.
+    let fallback = MockServer::start().await;
+
+    let cfg = make_config("stable");
+    let err = install_internal_from_bases(
+        Some("0.1.181"),
+        &cfg,
+        &[primary.uri().as_str(), fallback.uri().as_str()],
+    )
+    .await
+    .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("failed to run") || msg.contains("exited"),
+        "expected smoke failure, got: {msg}"
+    );
+    assert!(
+        fallback
+            .received_requests()
+            .await
+            .expect("request recording enabled")
+            .is_empty(),
+        "smoke failure must not trigger a fallback-base retry"
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn install_internal_from_bases_uses_primary_when_it_works() {
-    // Both bases work; the install must use the primary (first one) and
-    // never touch the fallback. Verified by tearing down the fallback
-    // server immediately after configuration — if the install reached for
-    // it, the request would fail.
+    // Both bases work; the install must use the primary (first one) and never touch the fallback
+    // Verified by tearing down the fallback server immediately after configuration; if the install reached for it, the request would fail
     let _ = test_home();
     reset_home();
     let platform = host_platform();
@@ -593,8 +628,7 @@ async fn install_internal_from_bases_uses_primary_when_it_works() {
 #[tokio::test]
 #[serial]
 async fn install_internal_from_bases_propagates_last_error_when_all_fail() {
-    // Every base returns 500 — the install must fail, surfacing the final
-    // base's error rather than silently succeeding.
+    // Every base returns 500: the install must fail, surfacing the final base's error
     let _ = test_home();
     reset_home();
 
@@ -622,9 +656,8 @@ async fn install_internal_from_bases_propagates_last_error_when_all_fail() {
     assert!(msg.contains("Download failed"), "msg: {msg}");
 }
 
-/// Regression: a local failure after a successful download (sabotaged
-/// `agent` swap) must fail the install immediately — the fallback base must
-/// never be contacted for a pointless re-download.
+/// Regression: a local failure after a successful download (sabotaged `agent` swap) must fail the install immediately.
+/// The fallback base must never be contacted for a pointless re-download.
 #[tokio::test]
 #[serial]
 async fn install_internal_from_bases_does_not_redownload_on_local_swap_failure() {
@@ -639,19 +672,20 @@ async fn install_internal_from_bases_does_not_redownload_on_local_swap_failure()
     let home = test_home();
     let bin_dir = home.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
-    // Sabotage activation: agent as a non-empty dir fails the swap's
-    // rollback capture (read_link on a directory) before any rename.
+    // Sabotage activation: agent as a non-empty dir fails the swap's rollback capture (read_link on a directory) before any rename
     let agent_dir = bin_dir.join("agent");
     std::fs::create_dir(&agent_dir).unwrap();
     std::fs::write(agent_dir.join("blocker"), b"x").unwrap();
 
-    install_internal_from_bases(
+    let err = install_internal_from_bases(
         Some("0.1.181"),
         &cfg,
         &[primary.uri().as_str(), fallback.uri().as_str()],
     )
     .await
     .expect_err("swap failure must fail the install");
+    // A real activation failure classifies as Activate end to end.
+    assert_eq!(classify_install_error(&err), CliUpdateErrorKind::Activate);
 
     let fallback_requests = fallback
         .received_requests()

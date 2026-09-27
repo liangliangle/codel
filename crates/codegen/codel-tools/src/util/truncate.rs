@@ -9,22 +9,13 @@ pub const PREVIEW_SIZE: usize = 2_000;
 /// Marker appended by `truncate_str_with_marker` when content is cut.
 pub(crate) const TRUNCATION_MARKER: &str = "…";
 
-/// Truncate a line to at most `max_chars` characters, respecting UTF-8 boundaries.
-/// Content beyond `max_chars` is **discarded** and replaced with a marker.
-///
-/// Returns `Cow::Borrowed` if the line is already within the limit (zero-copy fast path).
-/// Returns `Cow::Owned` with a truncation marker appended if the line was cut.
-///
-/// Use this for tools where content beyond the limit is genuinely not useful
-/// to the model (e.g., grep match context) — clipped bytes are unrecoverable
-/// by the caller. For tools where all content matters (bash, task_output),
-/// use `soft_wrap_line` instead.
+/// Truncate a line to at most `max_chars` characters, respecting UTF-8 boundaries. Content beyond `max_chars` is
+/// **discarded** and replaced with a marker. Returns `Cow::Borrowed` if the line is already within the limit (zero-copy
+/// fast path). Returns `Cow::Owned` with a truncation marker appended if the line was cut.
 pub fn truncate_line(line: &str, max_chars: usize) -> Cow<'_, str> {
-    // Fast path: if byte length ≤ max_chars, then char count ≤ max_chars
-    // (every char is ≥1 byte). This avoids the O(n) chars().count() for
-    // ASCII-only strings. For multi-byte UTF-8 this may false-negative
-    // (byte_len > max_chars but char_count ≤ max_chars), falling through
-    // to the slow path — that's a perf miss, not a correctness bug.
+    // Fast path: if byte length ≤ max_chars, then char count ≤ max_chars (every char is ≥1 byte). This avoids the O(n)
+    // chars().count() for ASCII-only strings. For multi-byte UTF-8 this may false-negative (byte_len > max_chars but
+    // char_count ≤ max_chars), falling through to the slow path — that's a perf miss, not a correctness bug.
     if line.len() <= max_chars {
         return Cow::Borrowed(line);
     }
@@ -39,20 +30,14 @@ pub fn truncate_line(line: &str, max_chars: usize) -> Cow<'_, str> {
         .unwrap_or(line.len());
     Cow::Owned(format!(
         "{} [... truncated ({} chars total)]",
-        &line[..end_byte],
+        line.get(..end_byte).unwrap_or(""),
         char_count
     ))
 }
 
-/// Soft-wrap a long line by inserting newlines every `wrap_width` characters.
-/// **All content is preserved** — nothing is discarded.
-///
-/// Returns `Cow::Borrowed` if the line is already within `wrap_width` (zero-copy).
-///
-/// This is the correct strategy for bash and task_output, where the total output
-/// is already size-bounded (30KB) and the model benefits from seeing all of it.
-/// The problem with long lines isn't size — it's that the model has no structure
-/// to anchor on. Wrapping adds that structure without losing content.
+/// Soft-wrap a long line by inserting newlines every `wrap_width` characters. **All content is preserved** — nothing is discarded. Returns
+/// `Cow::Borrowed` if the line is already within `wrap_width` (zero-copy). This is the correct strategy for bash and task_output, where the
+/// total output is already size-bounded (30KB) and the model benefits from seeing all of it.
 pub fn soft_wrap_line(line: &str, wrap_width: usize) -> Cow<'_, str> {
     // Fast path: same byte-length optimization as truncate_line (see comment there).
     if line.len() <= wrap_width {
@@ -76,11 +61,9 @@ pub fn soft_wrap_line(line: &str, wrap_width: usize) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
-/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 boundary.
-/// Returns the original string if it fits. No truncation marker is added.
-///
-/// Walks back from `max_bytes` until a char boundary is found. At most 3
-/// steps back since UTF-8 multibyte sequences are at most 4 bytes.
+/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 boundary. Returns the original
+/// string if it fits. No truncation marker is added. Walks back from `max_bytes` until a char
+/// boundary is found. At most 3 steps back since UTF-8 multibyte sequences are at most 4 bytes.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
@@ -89,51 +72,74 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     while !s.is_char_boundary(end) {
         end -= 1;
     }
-    &s[..end]
+    s.get(..end).unwrap_or("")
 }
 
-/// Truncate output to a UTF-8-safe preview plus a model-visible footer.
-///
-/// The cap decides whether truncation happens. When triggered, the returned
-/// value contains the first `preview_bytes` bytes snapped to a char boundary
-/// followed by `[Output truncated - <N> bytes total...]`.
+/// Text on hand, and the size of the output it came from. The two differ when
+/// the caller holds only part of a larger output and the reader still needs
+/// the real size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartialOutput<'a> {
+    text: &'a str,
+    total_bytes: usize,
+}
+
+impl<'a> PartialOutput<'a> {
+    pub fn whole(text: &'a str) -> Self {
+        Self {
+            text,
+            total_bytes: text.len(),
+        }
+    }
+
+    /// Part of an output of `total_bytes`.
+    pub fn part_of(text: &'a str, total_bytes: usize) -> Self {
+        Self {
+            text,
+            total_bytes: total_bytes.max(text.len()),
+        }
+    }
+
+    pub fn text(&self) -> &'a str {
+        self.text
+    }
+
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+}
+
+/// Truncate output to a UTF-8-safe preview plus a model-visible footer. The cap decides whether truncation happens.
+/// When triggered, the returned value contains the first `preview_bytes` bytes snapped to a char boundary followed by
+/// `[Output truncated - <N> bytes total...]`, where `N` is the size of the whole output, not of the part on hand.
 pub fn truncate_with_preview(
-    output: &str,
+    output: PartialOutput<'_>,
     max_bytes: usize,
     preview_bytes: usize,
     footer_hint: Option<&str>,
 ) -> (String, bool) {
-    if output.len() <= max_bytes {
-        return (output.to_string(), false);
+    let PartialOutput { text, total_bytes } = output;
+    let whole = total_bytes <= text.len();
+    if whole && text.len() <= max_bytes {
+        return (text.to_string(), false);
     }
 
-    let preview = truncate_str(output, preview_bytes.min(output.len()));
     let footer = match footer_hint {
-        Some(hint) => format!("[Output truncated - {} bytes total. {hint}]", output.len()),
-        None => format!("[Output truncated - {} bytes total]", output.len()),
+        Some(hint) => format!("[Output truncated - {total_bytes} bytes total. {hint}]"),
+        None => format!("[Output truncated - {total_bytes} bytes total]"),
     };
+    // Text that fits the limit can still be part of a larger output; the
+    // reader still needs the total size and where to find the rest.
+    if text.len() <= max_bytes {
+        return (format!("{text}\n\n{footer}"), true);
+    }
+    let preview = truncate_str(text, preview_bytes.min(text.len()));
     (format!("{preview}\n\n{footer}"), true)
 }
 
-/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 boundary,
-/// appending `TRUNCATION_MARKER` when truncation actually happens.
-///
-/// Total byte length of the returned string is always `<= max_bytes`.
-///
-/// Returns `Cow::Borrowed` when the input already fits (no marker added --
-/// only signal truncation when truncation actually happened). Returns
-/// `Cow::Owned` with the marker appended when content was cut. When
-/// `max_bytes == TRUNCATION_MARKER.len()`, returns just the marker so the
-/// truncation signal is preserved. When `max_bytes < TRUNCATION_MARKER.len()`,
-/// the marker cannot fit and we fall back to the marker-free `truncate_str`
-/// behavior to honor the byte budget; this branch is only reachable when the
-/// caller passes a pathologically tiny budget and is not exercised by any
-/// production caller (`MIN_DESC_LENGTH` and other call-site minimums keep
-/// the budget well above the marker size).
-///
-/// Use this when the reader needs to distinguish a natural string ending
-/// from a truncation (e.g., model-visible listings). For purely visual
-/// width-based truncation in the TUI, see `codel_pager`'s own helpers.
+/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 boundary, appending `TRUNCATION_MARKER` when truncation actually happens.
+/// Total byte length of the returned string is always `<= max_bytes`. Returns `Cow::Borrowed` when the input already fits (no marker added
+/// --only signal truncation when truncation actually happened). Returns `Cow::Owned` with the marker appended when content was cut.
 pub fn truncate_str_with_marker(s: &str, max_bytes: usize) -> Cow<'_, str> {
     if s.len() <= max_bytes {
         return Cow::Borrowed(s);
@@ -150,13 +156,16 @@ pub fn truncate_str_with_marker(s: &str, max_bytes: usize) -> Cow<'_, str> {
     while !s.is_char_boundary(end) {
         end -= 1;
     }
-    Cow::Owned(format!("{}{}", &s[..end], TRUNCATION_MARKER))
+    Cow::Owned(format!(
+        "{}{}",
+        s.get(..end).unwrap_or(""),
+        TRUNCATION_MARKER
+    ))
 }
 
-/// Find the largest byte index `<= index` that is a char boundary in `s`.
-///
-/// Polyfill for [`str::floor_char_boundary`] (stabilized in Rust 1.91; repo
-/// toolchain is 1.90). Remove once the toolchain is bumped.
+/// Find the largest byte index `<= index` that is a char boundary in `s`. Polyfill for
+/// [`str::floor_char_boundary`] (stabilized in Rust 1.91; repo toolchain is 1.90). Remove once the
+/// toolchain is bumped.
 pub fn floor_char_boundary(s: &str, index: usize) -> usize {
     if index >= s.len() {
         return s.len();
@@ -168,10 +177,9 @@ pub fn floor_char_boundary(s: &str, index: usize) -> usize {
     i
 }
 
-/// Find the smallest byte index `>= index` that is a char boundary in `s`.
-///
-/// Polyfill for [`str::ceil_char_boundary`] (stabilized in Rust 1.91; repo
-/// toolchain is 1.90). Remove once the toolchain is bumped.
+/// Find the smallest byte index `>= index` that is a char boundary in `s`. Polyfill for
+/// [`str::ceil_char_boundary`] (stabilized in Rust 1.91; repo toolchain is 1.90). Remove once the
+/// toolchain is bumped.
 pub fn ceil_char_boundary(s: &str, index: usize) -> usize {
     if index >= s.len() {
         return s.len();
@@ -183,10 +191,9 @@ pub fn ceil_char_boundary(s: &str, index: usize) -> usize {
     i
 }
 
-/// Estimate the number of tokens in a string using the bytes/4 heuristic.
-/// Thin wrapper around [`codel_token_estimation::estimate_tokens`] preserving
-/// the historical `usize` return type used by tool-side callers
-/// (`read_file`, `attach_file`, `inspect`, `compaction` file gates).
+/// Estimate the number of tokens in a string using the bytes/4 heuristic. Thin wrapper around
+/// [`codel_token_estimation::estimate_tokens`] preserving the historical `usize` return type used by
+/// tool-side callers (`read_file`, `attach_file`, `inspect`, `compaction` file gates).
 pub fn estimate_tokens(s: &str) -> usize {
     codel_token_estimation::estimate_tokens(s) as usize
 }
@@ -197,14 +204,21 @@ pub fn estimate_chars(s: u64) -> u64 {
     codel_token_estimation::estimate_chars(s)
 }
 
-pub fn format_bytes(bytes: usize) -> String {
-    if bytes >= 1_000_000 {
-        format!("{:.1}MB", bytes as f64 / 1_000_000.0)
-    } else if bytes >= 1_000 {
-        format!("{:.1}KB", bytes as f64 / 1_000.0)
-    } else {
-        format!("{}B", bytes)
+/// Human-readable size in powers of 1024: integral bytes (`512 B`), one
+/// decimal above (`1.5 MB`). Every output fits nine columns.
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
     }
+    const UNITS: &[&str] = &["KB", "MB", "GB", "TB", "PB"];
+    let mut val = bytes as f64 / 1024.0;
+    for unit in UNITS {
+        if val < 1023.95 {
+            return format!("{val:.1} {unit}");
+        }
+        val /= 1024.0;
+    }
+    format!("{val:.1} EB")
 }
 
 /// Apply soft-wrapping to every line in a multi-line string.
@@ -226,10 +240,11 @@ pub fn soft_wrap_lines(text: &str, wrap_width: usize) -> String {
     result
 }
 
-/// Truncate a string keeping the first half and last half of the character
-/// budget, inserting a separator in the middle.
-///
-/// Returns `(result, was_truncated)`. When `s.len() <= max_chars` the
+/// Separator between the retained head and tail of a truncated output.
+pub(crate) const FRONT_BACK_TRUNCATION_MARKER: &str = "\n\n... (output truncated) ...\n\n";
+
+/// Truncate a string keeping the first half and last half of the character budget, inserting a
+/// separator in the middle. Returns `(result, was_truncated)`. When `s.len() <= max_chars` the
 /// original string is returned unchanged and `was_truncated` is `false`.
 pub fn truncate_front_and_back(s: &str, max_chars: usize) -> (String, bool) {
     if s.len() <= max_chars {
@@ -252,21 +267,17 @@ pub fn truncate_front_and_back(s: &str, max_chars: usize) -> (String, bool) {
                 .unwrap_or(0)
         }
     };
-    let ellipsis = "\n\n... (output truncated) ...\n\n";
+    let ellipsis = FRONT_BACK_TRUNCATION_MARKER;
     let mut result = String::with_capacity(front_end + ellipsis.len() + (s.len() - back_start));
-    result.push_str(&s[..front_end]);
+    result.push_str(s.get(..front_end).unwrap_or(""));
     result.push_str(ellipsis);
-    result.push_str(&s[back_start..]);
+    result.push_str(s.get(back_start..).unwrap_or(""));
     (result, true)
 }
 
-/// Truncate a string by keeping the first and last halves of a **character**
-/// budget, inserting `"..."` in the middle. Used in the image-description
-/// pipeline.
-///
-/// When `s.chars().count() <= max_chars` the input is returned unchanged.
-/// Otherwise the result contains `⌊max_chars/2⌋` chars from the start,
-/// the literal `"..."`, then `⌊max_chars/2⌋` chars from the end.
+/// Truncate a string by keeping the first and last halves of a **character** budget, inserting `"..."` in the middle. Used in the
+/// image-description pipeline. When `s.chars().count() <= max_chars` the input is returned unchanged. Otherwise the result contains
+/// `⌊max_chars/2⌋` chars from the start, the literal `"..."`, then `⌊max_chars/2⌋` chars from the end.
 pub fn truncate_middle(s: &str, max_chars: usize) -> String {
     const MARKER: &str = "...";
     const MARKER_LEN: usize = MARKER.len();
@@ -298,17 +309,15 @@ pub fn truncate_middle(s: &str, max_chars: usize) -> String {
             .unwrap_or(0)
     };
     let mut result = String::with_capacity(front_end + MARKER_LEN + (s.len() - back_start));
-    result.push_str(&s[..front_end]);
+    result.push_str(s.get(..front_end).unwrap_or(""));
     result.push_str(MARKER);
-    result.push_str(&s[back_start..]);
+    result.push_str(s.get(back_start..).unwrap_or(""));
     result
 }
 
-/// Truncate a multi-line string at line boundaries to fit within a character
-/// budget.
-///
-/// Returns `(result, was_truncated)`. When the content already fits, the
-/// joined+trimmed content is returned unchanged.
+/// Truncate a multi-line string at line boundaries to fit within a character budget. Returns
+/// `(result, was_truncated)`. When the content already fits, the joined+trimmed content is returned
+/// unchanged.
 pub fn truncate_lines_to_char_budget(content: &str, budget: usize) -> (String, bool) {
     let trimmed = content.trim();
     if trimmed.len() <= budget {
@@ -321,10 +330,10 @@ pub fn truncate_lines_to_char_budget(content: &str, budget: usize) -> (String, b
         .rev()
         .find(|&i| trimmed.is_char_boundary(i))
         .unwrap_or(0);
-    let truncated = &trimmed[..safe_end];
+    let truncated = trimmed.get(..safe_end).unwrap_or("");
     let last_nl = truncated.rfind('\n');
     match last_nl {
-        Some(idx) => (trimmed[..idx].trim().to_string(), true),
+        Some(idx) => (trimmed.get(..idx).unwrap_or("").trim().to_string(), true),
         None => (
             "... [First line would be too large to fit within character budget] ...".to_string(),
             true,
@@ -335,6 +344,22 @@ pub fn truncate_lines_to_char_budget(content: &str, budget: usize) -> (String, b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_bytes_scales_units() {
+        let cases = [
+            (0, "0 B"),
+            (512, "512 B"),
+            (1024, "1.0 KB"),
+            (1536, "1.5 KB"),
+            (1_048_575, "1.0 MB"),
+            (1 << 50, "1.0 PB"),
+            (u64::MAX, "16.0 EB"),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(format_bytes(bytes), expected, "bytes = {bytes}");
+        }
+    }
 
     // ---- estimate_tokens ----
 
@@ -419,9 +444,9 @@ mod tests {
         let r = soft_wrap_line(&line, 2_000);
         let lines: Vec<&str> = r.split('\n').collect();
         assert_eq!(lines.len(), 3); // 2000 + 2000 + 1000
-        assert_eq!(lines[0].len(), 2_000);
-        assert_eq!(lines[1].len(), 2_000);
-        assert_eq!(lines[2].len(), 1_000);
+        assert_eq!(lines.first().map(|l| l.len()), Some(2_000));
+        assert_eq!(lines.get(1).map(|l| l.len()), Some(2_000));
+        assert_eq!(lines.get(2).map(|l| l.len()), Some(1_000));
     }
 
     #[test]
@@ -429,8 +454,8 @@ mod tests {
         let line = "😀".repeat(3_000);
         let r = soft_wrap_line(&line, 2_000);
         let lines: Vec<&str> = r.split('\n').collect();
-        assert_eq!(lines[0].chars().count(), 2_000);
-        assert_eq!(lines[1].chars().count(), 1_000);
+        assert_eq!(lines.first().map(|l| l.chars().count()), Some(2_000));
+        assert_eq!(lines.get(1).map(|l| l.chars().count()), Some(1_000));
     }
 
     // ---- truncate_str ----
@@ -505,7 +530,7 @@ mod tests {
 
     #[test]
     fn truncate_with_preview_short_output_unchanged() {
-        let (result, truncated) = truncate_with_preview("hello", 10, 5, None);
+        let (result, truncated) = truncate_with_preview(PartialOutput::whole("hello"), 10, 5, None);
         assert_eq!(result, "hello");
         assert!(!truncated);
     }
@@ -513,7 +538,8 @@ mod tests {
     #[test]
     fn truncate_with_preview_caps_large_output() {
         let output = "x".repeat(5_000_000);
-        let (result, truncated) = truncate_with_preview(&output, 4_000, 2_000, None);
+        let (result, truncated) =
+            truncate_with_preview(PartialOutput::whole(&output), 4_000, 2_000, None);
 
         assert!(truncated);
         assert!(result.len() < 2_200, "result was {} bytes", result.len());
@@ -524,7 +550,8 @@ mod tests {
     #[test]
     fn truncate_with_preview_utf8_boundary() {
         let output = "😀".repeat(1_500);
-        let (result, truncated) = truncate_with_preview(&output, 4_000, 2_001, None);
+        let (result, truncated) =
+            truncate_with_preview(PartialOutput::whole(&output), 4_000, 2_001, None);
 
         assert!(truncated);
         assert!(result.starts_with(&"😀".repeat(500)));
@@ -535,7 +562,7 @@ mod tests {
     fn truncate_with_preview_with_footer_hint() {
         let output = "x".repeat(10_000);
         let (result, truncated) = truncate_with_preview(
-            &output,
+            PartialOutput::whole(&output),
             4_000,
             2_000,
             Some("Use read_file for full content"),
@@ -545,10 +572,38 @@ mod tests {
         assert!(result.contains("Use read_file for full content"));
     }
 
+    /// A partial copy always states the size of the output it came from,
+    /// whether or not the text on hand needed cutting.
+    #[test]
+    fn a_partial_copy_always_states_the_real_size() {
+        // The text fits the limit: kept whole, footer added.
+        let (result, truncated) = truncate_with_preview(
+            PartialOutput::part_of("held", 5_000_000),
+            4_000,
+            2_000,
+            Some("Use read_file for full content"),
+        );
+        assert!(truncated);
+        assert!(result.starts_with("held"), "{result}");
+        assert!(result.contains("5000000 bytes total"), "{result}");
+        assert!(
+            result.contains("Use read_file for full content"),
+            "{result}"
+        );
+
+        // The text is over the limit: cut, and the footer keeps the total.
+        let held = "x".repeat(10_000);
+        let (result, truncated) =
+            truncate_with_preview(PartialOutput::part_of(&held, 5_000_000), 4_000, 2_000, None);
+        assert!(truncated);
+        assert!(result.contains("5000000 bytes total"), "{result}");
+    }
+
     #[test]
     fn truncate_with_preview_without_footer_hint() {
         let output = "x".repeat(10_000);
-        let (result, truncated) = truncate_with_preview(&output, 4_000, 2_000, None);
+        let (result, truncated) =
+            truncate_with_preview(PartialOutput::whole(&output), 4_000, 2_000, None);
 
         assert!(truncated);
         assert!(result.contains("[Output truncated - 10000 bytes total]"));
@@ -562,9 +617,9 @@ mod tests {
         let text = format!("short\n{}\nanother", "x".repeat(5_000));
         let result = soft_wrap_lines(&text, 2_000);
         let lines: Vec<&str> = result.split('\n').collect();
-        assert_eq!(lines[0], "short");
-        assert_eq!(lines[1].len(), 2_000); // first chunk of wrapped line
-        assert_eq!(lines[4], "another");
+        assert_eq!(lines.first().copied(), Some("short"));
+        assert_eq!(lines.get(1).map(|l| l.len()), Some(2_000)); // first chunk of wrapped line
+        assert_eq!(lines.get(4).copied(), Some("another"));
         // Total content preserved
         let unwrapped: String = result.chars().filter(|c| *c != '\n').collect();
         let original: String = text.chars().filter(|c| *c != '\n').collect();

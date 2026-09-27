@@ -1,12 +1,14 @@
 //! `codel/rollout/survey` extension handler.
 //!
-//! Logs a rollout-survey submission via analytics (Mixpanel + BigQuery).
+//! Logs a rollout-survey submission via telemetry (Mixpanel + BigQuery).
 
 use agent_client_protocol as acp;
 
 use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;
 use crate::session::{RolloutSurveyRequest, RolloutSurveyResponse};
+use codel_logging::events::RolloutSurvey;
+use codel_logging::session_ctx::log_event;
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(_agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -14,14 +16,19 @@ pub async fn handle(_agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         "codel/rollout/survey" => {
             let req: RolloutSurveyRequest = parse_params(args)?;
 
-            tracing::info_span!(
+            codel_logging::event_span!(
                 "feedback.survey",
                 survey_type = "rollout",
                 event_type = "responded",
                 has_feedback_text = !req.feedback.is_empty(),
                 preference_count = req.preferences.len() as i64,
-            )
-            .in_scope(|| {});
+            );
+
+            log_event(RolloutSurvey {
+                session_id: req.session_id.clone(),
+                preferences: req.preferences.clone(),
+                has_feedback: !req.feedback.is_empty(),
+            });
 
             tracing::info!(
                 "Rollout survey received for session {}: preferences={:?}, feedback={}",

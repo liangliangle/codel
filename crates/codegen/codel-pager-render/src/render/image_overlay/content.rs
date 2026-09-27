@@ -6,6 +6,7 @@ use ratatui::text::Span;
 
 use crate::prompt_images::PastedImage;
 use crate::render::SafeBuf;
+use crate::util::format_bytes;
 
 pub(super) fn paint_path_line(
     buf: &mut Buffer,
@@ -36,7 +37,7 @@ pub(super) fn build_meta_line(image: &PastedImage, display_path: Option<&Path>) 
     if let Some((width, height)) = image.preview_dimensions() {
         parts.push(format!("{}x{}", width, height));
     }
-    parts.push(format_bytes(image.byte_len));
+    parts.push(format_bytes(image.byte_len as u64));
     if let Some(path) = display_path
         && let Some(name) = path.file_name()
     {
@@ -57,16 +58,6 @@ pub(super) fn format_mime(mime: &str) -> String {
     }
 }
 
-pub(super) fn format_bytes(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 pub(super) fn truncate_path_for_overlay(path: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -81,7 +72,10 @@ pub(super) fn truncate_path_for_overlay(path: &str, max_chars: usize) -> String 
     let keep = max_chars.saturating_sub(3) / 2;
     let end_keep = max_chars.saturating_sub(3) - keep;
     let chars: Vec<char> = path.chars().collect();
-    let head: String = chars[..keep].iter().collect();
-    let tail: String = chars[chars.len() - end_keep..].iter().collect();
+    let head: String = chars.iter().take(keep).collect();
+    let tail: String = match chars.len().checked_sub(end_keep) {
+        Some(start) => chars.iter().skip(start).collect(),
+        None => String::new(),
+    };
     format!("{head}...{tail}")
 }

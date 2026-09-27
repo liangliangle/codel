@@ -62,6 +62,37 @@ impl AsyncFileSystem for MockFs {
         })
     }
 
+    fn supports_bounded_read(&self) -> bool {
+        true
+    }
+
+    async fn read_file_bounded(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ComputerError> {
+        max_bytes.checked_add(1).ok_or_else(|| {
+            ComputerError::io_with_kind(
+                "file read limit overflow",
+                std::io::ErrorKind::InvalidInput,
+            )
+        })?;
+        let files = self.files.read().await;
+        let bytes = files.get(path).ok_or_else(|| {
+            ComputerError::io_with_kind(
+                format!("File not found: {}", path.display()),
+                std::io::ErrorKind::NotFound,
+            )
+        })?;
+        if bytes.len() > max_bytes {
+            return Err(ComputerError::io_with_kind(
+                "file exceeds byte limit",
+                std::io::ErrorKind::FileTooLarge,
+            ));
+        }
+        Ok(bytes.clone())
+    }
+
     async fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), ComputerError> {
         self.files
             .write()
@@ -73,6 +104,10 @@ impl AsyncFileSystem for MockFs {
     async fn delete_file(&self, path: &Path) -> Result<(), ComputerError> {
         self.files.write().await.remove(path);
         Ok(())
+    }
+
+    async fn file_exists(&self, path: &Path) -> Result<bool, ComputerError> {
+        Ok(self.files.read().await.contains_key(path))
     }
 }
 
@@ -86,6 +121,7 @@ mod tests {
 
         // File doesn't exist initially
         assert!(fs.read_file(Path::new("/test.txt")).await.is_err());
+        assert!(!fs.file_exists(Path::new("/test.txt")).await.unwrap());
 
         // Write a file
         fs.write_file(Path::new("/test.txt"), b"hello world")
@@ -95,6 +131,7 @@ mod tests {
         // Read it back
         let content = fs.read_file(Path::new("/test.txt")).await.unwrap();
         assert_eq!(content, b"hello world");
+        assert!(fs.file_exists(Path::new("/test.txt")).await.unwrap());
     }
 
     #[tokio::test]

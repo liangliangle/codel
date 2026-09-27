@@ -1,19 +1,6 @@
-use crate::terminal::TerminalContext;
-
-/// Wrap an escape sequence in tmux DCS passthrough.
-///
-/// Doubles any embedded ESC bytes so the inner terminal sees them verbatim
-/// once tmux strips the outer passthrough envelope.
-pub fn tmux_passthrough(sequence: &str) -> String {
-    let escaped = sequence.replace('\x1b', "\x1b\x1b");
-    format!("\x1bPtmux;{escaped}\x1b\\")
-}
-
-/// Returns `true` when the session is tmux-backed and the server version
-/// is 3.3 or later (the minimum for reliable DCS passthrough).
-pub fn passthrough_available(ctx: &TerminalContext) -> bool {
-    ctx.is_tmux_backed() && ctx.is_tmux_version_or_later(3, 3)
-}
+pub use codel_pager_render::terminal::{
+    passthrough_available, tmux_passthrough_str as tmux_passthrough,
+};
 
 #[cfg(test)]
 mod tests {
@@ -24,7 +11,7 @@ mod tests {
     fn passthrough_wraps_osc9_sequence() {
         let seq = "\x1b]9;task done\x07";
         let wrapped = tmux_passthrough(seq);
-        // ESC bytes doubled, wrapped in DCS tmux; ... ST
+        // Each ESC byte is doubled and the whole sequence is wrapped in DCS `tmux;` ... ST
         assert_eq!(wrapped, "\x1bPtmux;\x1b\x1b]9;task done\x07\x1b\\");
     }
 

@@ -1,27 +1,31 @@
-//! Single source of truth for the `codel.dev/mcp/*` ACP wire strings.
+//! Single source of truth for the `codel/mcp/*` ACP wire strings.
 //!
-//! These method/`_meta` keys are part of the cross-language MCP-over-ACP
-//! protocol the SDK speaks (mirrors the SDK's `_mcp_wire.py` / `mcpWire.ts`).
-//! Reference these constants instead of re-typing the literals so the agent and
-//! SDK can't drift apart.
+//! These method/`_meta` keys are part of the cross-language MCP-over-ACP protocol the SDK speaks (mirrors the SDK's `_mcp_wire.py` / `mcpWire.ts`).
+//! Reference these constants instead of re-typing the literals so the agent and SDK can't drift apart.
 
-/// Forward tool-invocation method (client -> agent): `codel.dev/mcp/call`.
+/// Forward tool-invocation method (client to agent): `codel/mcp/call`.
 ///
-/// The pager/client asks the agent to invoke an MCP tool on a server the agent is
-/// connected to, outside the LLM loop. See `extensions::mcp::handle_call`.
-pub const MCP_CALL: &str = "codel.dev/mcp/call";
+/// The pager/client asks the agent to invoke an MCP tool on a server the agent is connected to, outside the LLM loop.
+/// See `extensions::mcp::handle_call`.
+pub const MCP_CALL: &str = "codel/mcp/call";
 
-/// Reverse zero-IPC tool-invocation method (agent -> client): `codel.dev/mcp/sdk_call`.
+/// Reverse zero-IPC tool-invocation method (agent to client): `codel/mcp/sdk_call`.
+/// The agent invokes a tool in the SDK's in-process MCP server by sending the MCP JSON-RPC message back to the client over the ACP reverse channel.
+/// It is distinct from [`MCP_CALL`] so the two disjoint schemas don't share a method string for metrics/tracing.
+pub const MCP_SDK_CALL: &str = "codel/mcp/sdk_call";
+
+/// `session/new` `_meta` key listing in-process SDK MCP servers: `codel/mcp/servers`.
+pub const MCP_SERVERS: &str = "codel/mcp/servers";
+
+/// `initialize` `_meta` capability flag advertising in-process SDK MCP support (enables the SDK's `transport="acp"`): `codel/mcp/sdk`.
+pub const MCP_SDK: &str = "codel/mcp/sdk";
+
+/// Reverse elicitation method (agent to client): `codel/mcp/elicit`.
 ///
-/// The agent invokes a tool that lives in the SDK's in-process MCP server by sending
-/// the MCP JSON-RPC message back to the client over the ACP reverse channel. Distinct
-/// from [`MCP_CALL`] so the two disjoint schemas don't share a method string for
-/// metrics/tracing. See the agent-side ACP invoker that handles this method.
-pub const MCP_SDK_CALL: &str = "codel.dev/mcp/sdk_call";
+/// The agent forwards an MCP server's `elicitation/create` request to the client, which shows the user a popup and returns accept/decline/cancel.
+pub const MCP_ELICIT: &str = "codel/mcp/elicit";
 
-/// `session/new` `_meta` key listing in-process SDK MCP servers: `codel.dev/mcp/servers`.
-pub const MCP_SERVERS: &str = "codel.dev/mcp/servers";
-
-/// `initialize` `_meta` capability flag advertising in-process SDK MCP support
-/// (enables the SDK's `transport="acp"`): `codel.dev/mcp/sdk`.
-pub const MCP_SDK: &str = "codel.dev/mcp/sdk";
+/// Elicitation-complete notification (agent to client): `codel/mcp/elicit_complete`.
+///
+/// The agent forwards a server's `notifications/elicitation/complete` so the client can dismiss the popup for the given `elicitationId`.
+pub const MCP_ELICIT_COMPLETE: &str = "codel/mcp/elicit_complete";

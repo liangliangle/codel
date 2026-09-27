@@ -1,8 +1,6 @@
-//! codel.dev chat-product model catalog: caches `/rest/modes` and maps modes to
-//! the `SessionModelState` returned by `load_chat_session` (the chat analogue of
-//! [`crate::agent::models::ModelsManager`]). NB: these "modes" populate the
-//! desktop MODEL picker, not the ACP session plan-modes in `LoadSessionResponse.modes`.
-use crate::auth::AuthManager;
+//! codel.dev chat-product model catalog: caches `/rest/modes` and maps modes to the `SessionModelState` returned by `load_chat_session`
+//! (the chat analogue of [`crate::agent::remote_config::ModelsManager`]).
+//! These "modes" populate the desktop MODEL picker, not the ACP session plan-modes in `LoadSessionResponse.modes`.
 use crate::remote::chat_models_client::{
     ChatModelsClient, ChatModelsError, ListModesResponse, Mode,
 };
@@ -10,13 +8,14 @@ use agent_client_protocol as acp;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use codel_login::AuthManager;
 /// ~54 min, matching codel-web's refetch cadence.
 const CACHE_TTL: Duration = Duration::from_secs(54 * 60);
 /// Cold-miss budget on the `session/load` critical path (warm/stale served instantly).
 const COLD_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_LOCALE: &str = "en";
-/// Process-wide flag set by the pager when started with `--chat` so initialize
-/// and early UI seed the chat `/rest/modes` catalog instead of build models.
+/// Process-wide flag set by the pager when started with `--chat`.
+/// Initialize and early UI then seed the chat `/rest/modes` catalog instead of build models.
 pub const CODEL_CHAT_MODE_ENV: &str = "CODEL_CHAT_MODE";
 /// True when the process is a gateway light-frontend (`--chat`) agent.
 /// Hard-off in release builds so it can't be enabled via env.
@@ -33,7 +32,7 @@ struct CachedModes {
 }
 /// Thread-safe, cheaply-cloneable manager. Cloning bumps the inner `Arc`.
 #[derive(Clone)]
-pub struct ChatModesManager {
+pub(crate) struct ChatModesManager {
     inner: Arc<Inner>,
 }
 struct Inner {
@@ -43,7 +42,7 @@ struct Inner {
     fetch_lock: tokio::sync::Mutex<()>,
 }
 impl ChatModesManager {
-    pub fn new(auth: Arc<AuthManager>) -> Self {
+    pub(crate) fn new(auth: Arc<AuthManager>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 auth,
@@ -52,14 +51,14 @@ impl ChatModesManager {
             }),
         }
     }
-    /// The active codel.dev identity, or `None` when unauthenticated. Modes are
-    /// per-identity (tier/ACL), so every cache key and store is gated on it.
+    /// The active codel.dev identity, or `None` when unauthenticated.
+    /// Modes are per-identity (tier/ACL), so every cache key and store is gated on it.
     fn current_user_id(&self) -> Option<String> {
         self.inner.auth.current_or_expired().map(|a| a.user_id)
     }
-    /// Chat model state for a `session/load` response. On missing auth or fetch
-    /// failure, serves last-good cache else empty — never the build catalog.
-    pub async fn model_state(&self) -> acp::SessionModelState {
+    /// Chat model state for a `session/load` response.
+    /// On missing auth or fetch failure, serves last-good cache else empty, never the build catalog.
+    pub(crate) async fn model_state(&self) -> acp::SessionModelState {
         let Some(user_id) = self.current_user_id() else {
             return empty_state();
         };
@@ -149,9 +148,8 @@ impl ChatModesManager {
             }
         });
     }
-    /// Kick a background `/rest/modes` fill when auth is already present so
-    /// `--chat` initialize / first `session/new` hit a warm cache.
-    pub fn warm_in_background(&self) {
+    /// Kick a background `/rest/modes` fill when auth is already present so `--chat` initialize / first `session/new` hit a warm cache.
+    pub(crate) fn warm_in_background(&self) {
         let Some(user_id) = self.current_user_id() else {
             return;
         };
@@ -161,10 +159,9 @@ impl ChatModesManager {
 fn empty_state() -> acp::SessionModelState {
     acp::SessionModelState::new(acp::ModelId::from(String::new()), Vec::new())
 }
-/// Maps codel.dev modes → `SessionModelState`: keeps only `available` modes,
-/// reconciles `current_model_id` (default → first available → empty, never
-/// out-of-set), and stashes `badgeText`/`iconHint`/`tags` in `_meta`.
-pub fn modes_to_model_state(resp: &ListModesResponse) -> acp::SessionModelState {
+/// Maps codel.dev modes to `SessionModelState`: keeps only `available` modes and stashes `badgeText`/`iconHint`/`tags` in `_meta`.
+/// Reconciles `current_model_id` (default, else first available, else empty, never out-of-set).
+pub(crate) fn modes_to_model_state(resp: &ListModesResponse) -> acp::SessionModelState {
     let available_models: Vec<acp::ModelInfo> = resp
         .modes
         .iter()
@@ -301,23 +298,28 @@ mod tests {
             default_mode_id: "auto".to_owned(),
         };
         let state = modes_to_model_state(&resp);
-        let info = &state.available_models[0];
+        let Some(info) = state.available_models.first() else {
+            panic!("expected a model: {:?}", state.available_models);
+        };
         assert_eq!(info.name, "Auto");
         assert_eq!(info.description.as_deref(), Some("Picks the best model"));
         let meta = info.meta.as_ref().unwrap();
-        assert_eq!(meta["badgeText"], serde_json::json!("New"));
-        assert_eq!(meta["iconHint"], serde_json::json!("rocket"));
-        assert_eq!(meta["tags"], serde_json::json!(["TAG_PRIMARY"]));
+        assert_eq!(meta.get("badgeText"), Some(&serde_json::json!("New")));
+        assert_eq!(meta.get("iconHint"), Some(&serde_json::json!("rocket")));
+        assert_eq!(meta.get("tags"), Some(&serde_json::json!(["TAG_PRIMARY"])));
     }
     #[test]
     fn name_falls_back_to_id_when_title_blank() {
-        let mut m = available("test-model", "");
+        let mut m = available("codel-4.5", "");
         m.title = "   ".to_owned();
         let resp = ListModesResponse {
             modes: vec![m],
             default_mode_id: String::new(),
         };
         let state = modes_to_model_state(&resp);
-        assert_eq!(state.available_models[0].name, "test-model");
+        assert_eq!(
+            state.available_models.first().map(|m| m.name.as_str()),
+            Some("codel-4.5")
+        );
     }
 }

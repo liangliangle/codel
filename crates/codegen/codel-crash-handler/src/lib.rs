@@ -1,7 +1,11 @@
 //! Cross-platform crash handler with startup crash detection.
 //!
-//! - **Unix**: SIGBUS/SIGSEGV via `sigaction(2)`.
+//! - **Unix**: SIGBUS/SIGSEGV/SIGABRT via `sigaction(2)`. SIGABRT capture
+//!   means `panic = "abort"` builds (every shipped release) leave a crash
+//!   report when a Rust panic aborts the process.
 //! - **Windows**: access violations via `SetUnhandledExceptionFilter`.
+//!   SIGABRT capture is Unix-only — `abort()` on Windows does not route
+//!   through the unhandled-exception filter.
 //!
 //! # Usage
 //!
@@ -26,6 +30,8 @@
 //!     crash_dir: crash_dir.clone(),
 //! });
 //! ```
+
+#![deny(clippy::indexing_slicing)]
 
 pub mod format;
 mod handler;
@@ -66,53 +72,35 @@ pub struct CrashReport {
     pub report_path: PathBuf,
 }
 
-/// Install the crash handler for SIGBUS and SIGSEGV.
-///
-/// Must be called early in `main()`, before any async runtime or thread
-/// spawning. Creates `crash_dir` if it does not exist.
-///
-/// Returns `true` if the handler was installed successfully.
-/// On unsupported platforms, this is a no-op that returns `false`.
+/// Install the crash handler for SIGBUS, SIGSEGV, and SIGABRT (Unix; Windows: access violations).
+/// Call early in `main()`, before any async runtime or thread spawning. Creates `crash_dir` if needed.
+/// Returns `true` on success; unsupported platforms are a no-op returning `false`.
 pub fn install(config: CrashHandlerConfig) -> bool {
     handler::install(&config.crash_dir, &config.app_version)
 }
 
-/// Install a minimal SIGSEGV/SIGBUS handler that only restores the terminal.
-///
-/// On Unix, saves the current termios state, allocates an alternate signal
-/// stack, and registers a handler that writes terminal restore escape
-/// sequences to stderr, restores termios, then re-raises with default
-/// disposition (preserving core dumps).
-///
-/// On Windows, registers an unhandled-exception filter that writes restore
-/// sequences; no termios equivalent.
-///
+/// Install a minimal SIGSEGV/SIGBUS/SIGABRT handler that only restores the terminal.
+/// No crash reporting (no file I/O, no stack walking). If [`install`] is called later, it replaces these.
 /// No-op on unsupported platforms.
-///
-/// No crash reporting (no file I/O, no stack walking). If [`install`] is
-/// called later, it replaces these handlers with full crash-reporting
-/// variants.
 pub fn install_terminal_restore_only() {
     handler::install_terminal_restore_only()
 }
 
-/// Upgrade SIGSEGV/SIGBUS handlers to include terminal escape code
+/// Upgrade SIGSEGV/SIGBUS/SIGABRT handlers to include terminal escape code
 /// restoration. Call when TUI modes are enabled.
 pub fn enable_terminal_escape_restore() {
     handler::enable_terminal_escape_restore()
 }
 
-/// Downgrade SIGSEGV/SIGBUS handlers to termios-only restoration.
+/// Downgrade SIGSEGV/SIGBUS/SIGABRT handlers to termios-only restoration.
 /// Call when TUI modes are disabled.
 pub fn disable_terminal_escape_restore() {
     handler::disable_terminal_escape_restore()
 }
 
 /// Check for a crash from the previous session.
-///
-/// Reads `crash_dir/last-crash.bin`, symbolicates the backtrace,
-/// writes a human-readable report, and archives it. Returns `Some` if
-/// a valid crash file was found, `None` otherwise.
+/// Reads `crash_dir/last-crash.bin`, symbolicates, writes a report, and archives it.
+/// `Some` if a valid crash file was found.
 pub fn check_previous_crash(crash_dir: &Path) -> Option<CrashReport> {
     let crash_file = crash_dir.join("last-crash.bin");
     let data = std::fs::read(&crash_file).ok()?;
@@ -143,9 +131,7 @@ pub fn check_previous_crash(crash_dir: &Path) -> Option<CrashReport> {
 }
 
 /// Write `contents` with owner-only permissions when the platform allows it.
-///
-/// Crash reports may include source paths and backtraces; when they land under
-/// `$CODEL_HOME` they must not be world-readable.
+/// Crash reports may include source paths and backtraces; under `$CODEL_HOME` they must not be world-readable.
 fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -188,8 +174,13 @@ fn archive_report(crash_dir: &Path, report_text: &str, timestamp: u64) {
             .filter(|p| p.extension().is_some_and(|e| e == "txt"))
             .collect();
         files.sort();
-        if files.len() > MAX_HISTORY {
-            for old in &files[..files.len() - MAX_HISTORY] {
+        if files.len() > MAX_HISTORY
+            && let Some(old_files) = files
+                .len()
+                .checked_sub(MAX_HISTORY)
+                .and_then(|n| files.get(..n))
+        {
+            for old in old_files {
                 let _ = std::fs::remove_file(old);
             }
         }

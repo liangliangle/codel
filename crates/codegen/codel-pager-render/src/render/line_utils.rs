@@ -1,10 +1,9 @@
-//! Line and string utility functions for ratatui text manipulation.
-
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 pub use super::tool_paths::{path_basename, path_for_tool_header, shorten_path};
+pub use crate::util::byte_offset_at_width;
 
 /// Clone a borrowed ratatui `Line` into an owned `'static` line.
 pub fn line_to_static(line: &Line<'_>) -> Line<'static> {
@@ -29,13 +28,9 @@ pub fn push_owned_lines(src: &[Line<'_>], out: &mut Vec<Line<'static>>) {
     }
 }
 
-/// True for a character unsafe to render from untrusted/server text:
-/// C0/C1 controls (the terminal-escape-injection vector) plus the Unicode
-/// bidi-control and zero-width/format set (Trojan-Source spoofing) — U+061C,
-/// U+200B–200F, U+202A–202E, U+2060–206F, U+FEFF.
-///
-/// Shared by every untrusted-text strip/scrub site (chip labels, toast error
-/// scrub, settings editor input) so the set never drifts between them.
+/// True for a character unsafe to render from untrusted or server-supplied text.
+/// C0/C1 controls can inject terminal escapes; the bidi-control and zero-width format characters enable Trojan-Source spoofing.
+/// Every place that scrubs untrusted text (chip labels, toast error scrub, the settings editor input) calls this so the set never drifts.
 pub fn is_unsafe_display_char(c: char) -> bool {
     c.is_control()
         || matches!(
@@ -59,57 +54,12 @@ pub fn floor_char_boundary(s: &str, index: usize) -> usize {
     i
 }
 
-/// Byte offset at which cumulative display width exceeds `max_width`.
-/// Returns `s.len()` when the entire string fits.
-pub fn byte_offset_at_width(s: &str, max_width: usize) -> usize {
-    let mut width = 0;
-    for (i, ch) in s.char_indices() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + cw > max_width {
-            return i;
-        }
-        width += cw;
-    }
-    s.len()
-}
-
-/// Truncate a string to fit within `max_width` display columns.
-///
-/// Uses Unicode-aware width measurement (handles CJK wide chars,
-/// multi-byte UTF-8 like em-dash, etc.). If truncated, the last character
-/// is replaced with `…` so the result fits within `max_width`.
-///
-/// Returns the original string (owned) if it already fits.
+/// Like [`crate::util::truncate_to_width`] but returns an owned `String`.
 pub fn truncate_str(s: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-
-    let end = byte_offset_at_width(s, max_width);
-    let needs_ellipsis = end < s.len();
-
-    if needs_ellipsis && max_width > 1 {
-        // Back up one char to make room for '…' (1 display column).
-        let truncated_end = s[..end]
-            .char_indices()
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        format!("{}…", &s[..truncated_end])
-    } else if needs_ellipsis {
-        "…".to_string()
-    } else {
-        s[..end].to_string()
-    }
+    crate::util::truncate_to_width(s, max_width).into_owned()
 }
 
-/// Truncate a styled `Line` (multiple spans) to fit within `max_width` display columns.
-///
-/// Walks spans left-to-right, consuming width budget. When the budget is
-/// exhausted mid-span, that span is truncated and `…` is appended. Spans
-/// beyond the budget are dropped. All styles are preserved.
-///
-/// Returns the line unchanged if it already fits.
+/// Truncate on the span where the budget runs out and append `…` in that span's style. Unchanged if it already fits.
 pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
     if max_width == 0 {
         return Line::from(vec![]);
@@ -132,7 +82,7 @@ pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
             used += sw;
             out.push(span);
         } else {
-            // Partial fit — truncate this span.
+            // Partial fit: truncate this span
             let remaining = budget - used;
             if remaining > 0 {
                 let truncated = take_width(&span.content, remaining);
@@ -149,17 +99,8 @@ pub fn truncate_line(line: Line<'static>, max_width: usize) -> Line<'static> {
     Line::from(out)
 }
 
-/// Clip or pad a styled `Line` to exactly `width` display columns.
-///
-/// Wider lines are clipped on grapheme boundaries (a multi-`char` grapheme like
-/// `⚠\u{FE0F}` is never split) with no ellipsis; narrower lines are padded with
-/// trailing spaces. This keeps a rendered row "self-owning" — the app writes a
-/// real cell in every column, so a terminal drawing a glyph wider than the app
-/// measured cannot strand a stale cell past the row (the markdown-table ghost
-/// glyph bug). Width uses [`UnicodeWidthStr`], matching the table layout.
-///
-/// `width` must be a bounded display width: the pad branch allocates
-/// `width - total` spaces.
+/// Clip on grapheme boundaries (no ellipsis) or pad with spaces so every column is a real cell.
+/// Otherwise a wider glyph strands a stale cell (ghost glyphs beside tables). `width` must be bounded: the pad allocates `width - total` spaces.
 pub fn fit_line_to_width<'a>(line: Line<'a>, width: usize) -> Line<'a> {
     let total: usize = line.spans.iter().map(|s| s.content.width()).sum();
     if total == width {
@@ -194,7 +135,7 @@ pub fn fit_line_to_width<'a>(line: Line<'a>, width: usize) -> Line<'a> {
             }
             continue;
         }
-        // This span straddles the boundary — take whole graphemes that fit.
+        // This span straddles the boundary: take whole graphemes that fit
         let remaining = width - used;
         let mut taken = String::new();
         let mut taken_width = 0usize;
@@ -226,26 +167,13 @@ pub fn fit_line_to_width<'a>(line: Line<'a>, width: usize) -> Line<'a> {
 
 /// Take the first `n` display columns from a string.
 fn take_width(s: &str, n: usize) -> String {
-    let mut width = 0;
-    let mut end = s.len();
-    for (i, ch) in s.char_indices() {
-        let cw = ch.width().unwrap_or(0);
-        if width + cw > n {
-            end = i;
-            break;
-        }
-        width += cw;
-    }
-    s[..end].to_string()
+    let Some(prefix) = s.get(..byte_offset_at_width(s, n)) else {
+        return String::new();
+    };
+    prefix.to_owned()
 }
 
-/// Cascade-truncate multiple text elements to fit within `avail` display columns.
-///
-/// Returns `(type, description, activity, meta)` truncated to fit.
-/// Priority (highest first): type, activity, meta. Description is truncated
-/// first. If overhead (type + activity + meta) >= avail, description is dropped
-/// and the remaining elements are cascaded: meta is dropped first, then
-/// activity is truncated, then type.
+/// Fit `(type, description, activity, meta)` in `avail`. Drop description first, then meta, then truncate activity, then type.
 pub fn cascade_truncate(
     avail: usize,
     type_text: &str,
@@ -303,7 +231,7 @@ mod tests {
         for c in ['a', ' ', '/', '\u{00e9}', '\u{05d0}'] {
             assert!(!is_unsafe_display_char(c), "{c:?} must be safe");
         }
-        // Unsafe: C0/C1 controls + the full bidi-control / zero-width set.
+        // Unsafe: C0/C1 controls plus the full bidi-control and zero-width set
         for c in [
             '\u{1b}', '\n', '\t', '\u{061C}', '\u{200B}', '\u{200F}', '\u{202E}', '\u{2066}',
             '\u{2069}', '\u{206F}', '\u{FEFF}',
@@ -316,39 +244,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn truncate_str_fits() {
-        assert_eq!(truncate_str("hello", 10), "hello");
-        assert_eq!(truncate_str("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_str_truncates() {
-        assert_eq!(truncate_str("hello world!", 5), "hell…");
-        assert_eq!(truncate_str("abcdef", 4), "abc…");
-    }
-
-    #[test]
-    fn truncate_str_empty_and_zero() {
-        assert_eq!(truncate_str("hello", 0), "");
-        assert_eq!(truncate_str("", 5), "");
-    }
-
-    #[test]
-    fn truncate_str_width_1() {
-        assert_eq!(truncate_str("hello", 1), "…");
-        assert_eq!(truncate_str("x", 1), "x");
-    }
-
-    #[test]
-    fn truncate_str_multibyte() {
-        // em-dash is 1 display column but 3 bytes
-        let s = "hello — world";
-        let result = truncate_str(s, 8);
-        assert!(result.ends_with('…'));
-        assert!(result.len() <= 12); // safe byte length
-    }
-
     // ── truncate_line tests ─────────────────────────────────────────
 
     #[test]
@@ -356,8 +251,11 @@ mod tests {
         let line = Line::from(vec![Span::raw("Hello "), Span::raw("world")]);
         let result = truncate_line(line, 20);
         assert_eq!(result.spans.len(), 2);
-        assert_eq!(result.spans[0].content.as_ref(), "Hello ");
-        assert_eq!(result.spans[1].content.as_ref(), "world");
+        let [a, b] = result.spans.as_slice() else {
+            panic!("expected two spans: {:?}", result.spans);
+        };
+        assert_eq!(a.content.as_ref(), "Hello ");
+        assert_eq!(b.content.as_ref(), "world");
     }
 
     #[test]
@@ -366,7 +264,7 @@ mod tests {
             Span::raw("Edit "),
             Span::raw("very/long/path/to/file.rs"),
         ]);
-        // Total = 29, budget = 15 → "Edit very/long…"
+        // Truncating to 15 cuts inside the second span and yields "Edit very/long…"
         let result = truncate_line(line, 15);
         let text: String = result.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.ends_with('\u{2026}'));
@@ -427,8 +325,8 @@ mod tests {
 
     #[test]
     fn fit_line_does_not_split_emoji_grapheme() {
-        // a(1)+b(1)+⚠️(2) = 4. Clipping to 3 must drop the width-2 grapheme
-        // whole (never split it) and pad → "ab" + 1 space.
+        // The line is 4 columns wide: a and b, then the width-2 ⚠️ grapheme
+        // Clipping to 3 drops that grapheme whole and pads with one space
         let line = Line::from(vec![Span::raw("ab\u{26A0}\u{FE0F}")]);
         let out = fit_line_to_width(line, 3);
         assert_eq!(line_text(&out).width(), 3);
@@ -437,8 +335,7 @@ mod tests {
 
     #[test]
     fn fit_line_clips_grapheme_straddle_in_later_span() {
-        // The straddle happens in a later span: keep "ab", then 1 col left →
-        // ⚠️ (width 2) won't fit → dropped whole and padded.
+        // The straddle happens in a later span: after "ab" one column is left, so the width-2 ⚠️ is dropped whole and the gap padded
         let line = Line::from(vec![Span::raw("ab"), Span::raw("\u{26A0}\u{FE0F}cd")]);
         let out = fit_line_to_width(line, 3);
         assert_eq!(line_text(&out).width(), 3);
@@ -454,7 +351,6 @@ mod tests {
         ]);
         let out = fit_line_to_width(line, 5);
         assert_eq!(line_text(&out), "hello");
-        // The straddling/later spans must be dropped entirely.
         assert_eq!(out.spans.len(), 1);
     }
 
@@ -480,9 +376,11 @@ mod tests {
         let line = Line::from(vec![Span::styled("hi", bold)]);
         let out = fit_line_to_width(line, 5);
         assert_eq!(line_text(&out).width(), 5);
+        let Some(span) = out.spans.first() else {
+            panic!("expected a span: {:?}", out.spans);
+        };
         assert!(
-            out.spans[0]
-                .style
+            span.style
                 .add_modifier
                 .contains(ratatui::style::Modifier::BOLD)
         );
@@ -531,7 +429,7 @@ mod tests {
 
     #[test]
     fn cascade_truncate_desc_gone_meta_truncated() {
-        // overhead = 6+10+6 = 22 > avail 20 → desc gone, type 6 + activity 10 + meta truncated to 4
+        // Overhead 22 exceeds avail 20, so the description goes and meta is truncated to the 4 columns left
         let (t, d, a, m) = cascade_truncate(20, "type  ", "desc", " \u{2014} running", "  meta");
         assert_eq!(t, "type  ");
         assert_eq!(d, "");
@@ -541,7 +439,7 @@ mod tests {
 
     #[test]
     fn cascade_truncate_meta_and_activity_gone() {
-        // avail=8, type=6 fits (budget=2), activity truncated to 2, meta gone
+        // With avail 8, type takes 6, activity is truncated to the 2 columns left, and meta goes
         let (t, d, a, m) = cascade_truncate(8, "type  ", "desc", " \u{2014} running", "  meta");
         assert_eq!(t, "type  ");
         assert_eq!(d, "");
@@ -569,7 +467,7 @@ mod tests {
 
     #[test]
     fn cascade_truncate_unicode() {
-        // ✗ = 1 display column; — = 1 display column
+        // `✗` and `—` are each 1 display column wide
         let (t, d, a, m) = cascade_truncate(10, "\u{2717}  ", "description", " \u{2014} run", "");
         assert_eq!(t, "\u{2717}  ");
         assert_eq!(d, "\u{2026}");
@@ -579,7 +477,7 @@ mod tests {
 
     #[test]
     fn cascade_truncate_overhead_equals_avail() {
-        // overhead exactly equals avail → desc empty, everything else fits
+        // Overhead exactly equals avail, so the description is empty and everything else fits
         let (t, d, a, m) = cascade_truncate(22, "type  ", "desc", " \u{2014} running", "  meta");
         assert_eq!(t, "type  ");
         assert_eq!(d, "");

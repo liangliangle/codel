@@ -1,13 +1,10 @@
 //! `codel/rewind/*` extension handlers.
 //!
-//! - `rewind/execute`: rewind a session to a target prompt index, optionally
-//!   forcing past in-flight prompts and choosing a `RewindMode`.
+//! - `rewind/execute`: rewind a session to a target prompt index, optionally forcing past in-flight prompts and choosing a `RewindMode`.
 //! - `rewind/points`: list the prompt indices that can be rewound to.
 //!
-//! Local mode dispatches [`handle`]. In gateway-bridge mode the agent's
-//! routing hook calls [`handle_bridge`], which composes the server's
-//! conversation rewind with the local file half so the pager-facing ACP
-//! response is identical either way.
+//! Local mode dispatches [`handle`]. In gateway-bridge mode the agent's routing hook calls [`handle_bridge`].
+//! That composes the server's conversation rewind with the local file half, so the pager-facing ACP response is identical either way.
 use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;
 use crate::session::handle::SessionHandle;
@@ -58,14 +55,10 @@ struct RewindPointsRequest {
     #[serde(alias = "sessionId")]
     session_id: String,
 }
-/// Look up a `SessionHandle` by id string, or return a `resource_not_found`
-/// `acp::Error`. Used by both arms below.
+/// Look up a `SessionHandle` by id string, or return a `resource_not_found` `acp::Error`. Used by both arms below.
 fn lookup_session(agent: &MvpAgent, session_id: String) -> Result<SessionHandle, acp::Error> {
     agent
-        .sessions
-        .borrow()
-        .get(&acp::SessionId::new(session_id))
-        .cloned()
+        .resident_handle(&acp::SessionId::new(session_id))
         .ok_or_else(|| acp::Error::resource_not_found(Some("session not found".into())))
 }
 async fn handle_execute(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {

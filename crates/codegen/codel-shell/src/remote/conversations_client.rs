@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{AuthManager, CodelAuth};
+use codel_login::{AuthManager, CodelAuth};
 
 const CODEL_WEB_URL: &str = "https://codel.dev";
 
@@ -124,7 +124,7 @@ impl ConversationsClient {
         let mut builder = builder
             .header("Authorization", format!("Bearer {}", auth.key))
             .header(
-                "X-Codel-Token-Auth",
+                "X-CODEL-Token-Auth",
                 self.auth.codel_com_config().token_header.clone(),
             )
             .header("x-userid", &auth.user_id)
@@ -133,11 +133,15 @@ impl ConversationsClient {
                 "x-codel-client-identifier",
                 crate::http::process_client_identifier(),
             )
+            .header(
+                crate::http::CLIENT_MODE_HEADER,
+                crate::http::process_client_mode(),
+            )
             .header(reqwest::header::ACCEPT, "application/json");
         if let Some(email) = &auth.email {
             builder = builder.header("x-email", email);
         }
-        codel_file_utils::trace_context::inject_trace_context_into_request(builder)
+        codel_otel::inject_trace_context_into_request(builder)
     }
 
     pub async fn list_conversations(
@@ -172,11 +176,9 @@ impl ConversationsClient {
         let wire: ListConversationsResponseWire = serde_json::from_slice(&bytes)?;
 
         let searching = q.search_query.as_deref().is_some_and(|s| !s.is_empty());
-        // During an active search, results come exclusively from
-        // `text_search_matches`. Never fall back to `wire.conversations` here:
-        // an empty match set means "no hits", and the server may return
-        // recent/unfiltered conversations in `conversations` that are NOT search
-        // matches — surfacing those would be wrong.
+        // During an active search, results come exclusively from `text_search_matches`
+        // Never fall back to `wire.conversations` here: an empty match set means "no hits"
+        // The server may return recent/unfiltered conversations in `conversations` that are NOT search matches; showing those would be wrong
         let conversations = if searching {
             wire.text_search_matches
                 .into_iter()
@@ -192,7 +194,7 @@ impl ConversationsClient {
         })
     }
 
-    /// `PUT /rest/app-chat/conversations/{conversation_id}` — rename and/or star.
+    /// `PUT /rest/app-chat/conversations/{conversation_id}`: rename and/or star.
     pub async fn update_conversation(
         &self,
         conversation_id: &str,
@@ -218,8 +220,11 @@ impl ConversationsClient {
         Ok(())
     }
 
-    /// `DELETE /rest/app-chat/conversations/soft/{conversation_id}` — soft-delete.
-    pub async fn soft_delete_conversation(&self, conversation_id: &str) -> Result<(), ConvError> {
+    /// `DELETE /rest/app-chat/conversations/soft/{conversation_id}`: soft-delete.
+    pub(crate) async fn soft_delete_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<(), ConvError> {
         let auth = self.require_codel_auth().await?;
         let url = format!(
             "{}/rest/app-chat/conversations/soft/{}",
@@ -230,8 +235,7 @@ impl ConversationsClient {
 
         let response = builder.send().await?;
         let status = response.status();
-        // 404 = already soft-deleted; keep deletion idempotent like the
-        // build path's `classify_remote_delete`.
+        // A 404 means already soft-deleted; keep deletion idempotent like the build path's `classify_remote_delete`
         if !status.is_success() && status.as_u16() != 404 {
             return Err(ConvError::Http {
                 status: status.as_u16(),
@@ -259,13 +263,17 @@ mod tests {
             "nextPageToken": "tok2"
         });
         let wire: ListConversationsResponseWire = serde_json::from_value(json).unwrap();
-        assert_eq!(wire.conversations.len(), 1);
-        let c = &wire.conversations[0];
+        let [c] = wire.conversations.as_slice() else {
+            panic!("expected one conversation: {:?}", wire.conversations);
+        };
         assert_eq!(c.conversation_id, "conv_abc");
         assert_eq!(c.title, "Compare GPU vendors");
         assert!(c.starred);
         assert_eq!(c.modify_time.as_deref(), Some("2026-06-18T18:02:00Z"));
-        assert_eq!(c.workspaces[0].workspace_id, "ws_9f3a");
+        let [ws, ..] = c.workspaces.as_slice() else {
+            panic!("expected one workspace: {:?}", c.workspaces);
+        };
+        assert_eq!(ws.workspace_id, "ws_9f3a");
         assert_eq!(wire.next_page_token.as_deref(), Some("tok2"));
     }
 
@@ -273,7 +281,9 @@ mod tests {
     fn missing_fields_default_gracefully() {
         let json = serde_json::json!({ "conversations": [{ "conversationId": "c1" }] });
         let wire: ListConversationsResponseWire = serde_json::from_value(json).unwrap();
-        let c = &wire.conversations[0];
+        let [c, ..] = wire.conversations.as_slice() else {
+            panic!("expected one conversation: {:?}", wire.conversations);
+        };
         assert_eq!(c.conversation_id, "c1");
         assert!(c.title.is_empty());
         assert!(c.modify_time.is_none());

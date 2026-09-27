@@ -1,6 +1,5 @@
 use crate::sampling::{ConversationItem, ConversationRequest};
-
-pub(crate) const GOAL_EVALUATOR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+use codel_sampling_types::SyntheticReason;
 
 const TRANSCRIPT_MAX_BYTES: usize = 32 * 1024;
 const ITEM_MAX_BYTES: usize = 4 * 1024;
@@ -118,14 +117,27 @@ pub(crate) fn bounded_goal_transcript(items: &[ConversationItem]) -> String {
     let mut used = 0usize;
 
     for item in items.iter().rev() {
-        let role = match item {
+        let (role, warning) = match item {
             ConversationItem::System(_) => continue,
-            ConversationItem::User(_) => "user",
-            ConversationItem::Assistant(_) => "assistant",
-            ConversationItem::ToolResult(_) => "tool",
+            ConversationItem::User(user)
+                if user.synthetic_reason == SyntheticReason::AgentMessage =>
+            {
+                (
+                    "agent_message",
+                    Some(codel_chat_state::compaction_utils::AGENT_MESSAGE_MODEL_LABEL),
+                )
+            }
+            ConversationItem::User(_) => ("user", None),
+            ConversationItem::Assistant(_) => ("assistant", None),
+            ConversationItem::ToolResult(_) => ("tool", None),
             ConversationItem::BackendToolCall(_) | ConversationItem::Reasoning(_) => continue,
         };
         let text = item.text_content();
+        let text = if let Some(warning) = warning {
+            format!("{warning} {text}")
+        } else {
+            text
+        };
         let trimmed = text.trim();
         if trimmed.is_empty() {
             continue;
@@ -149,7 +161,7 @@ pub(crate) fn build_goal_evaluator_request(
     transcript: &str,
     plan: Option<&str>,
     model: String,
-    _session_id: &str,
+    session_id: &str,
 ) -> ConversationRequest {
     let input = serde_json::json!({
         "objective": objective,
@@ -169,6 +181,10 @@ pub(crate) fn build_goal_evaluator_request(
         max_output_tokens: None,
         reasoning_effort: None,
         json_schema: Some(goal_evaluator_json_schema()),
+        x_codel_conv_id: Some(session_id.to_owned()),
+        x_codel_req_id: Some(format!("codel-goal-eval-{}", uuid::Uuid::new_v4())),
+        x_codel_session_id: Some(session_id.to_owned()),
+        x_codel_agent_id: Some(codel_logging::id::agent_id()),
         ..ConversationRequest::default()
     }
 }
@@ -229,6 +245,19 @@ mod tests {
         assert!(!transcript.contains("secret system"));
         assert!(transcript.contains("[assistant] worked"));
         assert!(transcript.ends_with("[user] latest"));
+    }
+
+    #[test]
+    fn transcript_marks_agent_message_as_untrusted_not_human() {
+        let transcript =
+            bounded_goal_transcript(&[ConversationItem::agent_message("review this change")]);
+        assert_eq!(
+            transcript,
+            format!(
+                "[agent_message] {} review this change",
+                codel_chat_state::compaction_utils::AGENT_MESSAGE_MODEL_LABEL
+            )
+        );
     }
 
     #[test]

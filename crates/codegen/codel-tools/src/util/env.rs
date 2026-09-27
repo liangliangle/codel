@@ -7,11 +7,30 @@
 
 pub use codel_tty_utils::{detach_from_tty, pager_env};
 
-/// Env var set on agent-spawned terminal processes so host tools (e.g. `x ban`)
-/// can distinguish agent invocations from human interactive shells.
-/// Note: the CLI also uses `CODEL_AGENT` as an
-/// optional agent-definition selector for launching `codel` itself; child terminal
-/// processes only need the sentinel value `"1"`.
+/// The positive-integer env contract shared by limits and timeouts: plain
+/// digits only; `None` for anything else, including zero.
+pub fn parse_positive(value: &str) -> Option<u64> {
+    value.parse::<u64>().ok().filter(|&parsed| parsed > 0)
+}
+
+/// Parse a positive whole-number env value into a count. A set-but-invalid
+/// value warns and reads as unset, so the caller's default applies.
+pub fn parse_positive_env(var: &str, value: Option<String>) -> Option<usize> {
+    let value = value?;
+    let parsed = parse_positive(&value).and_then(|parsed| usize::try_from(parsed).ok());
+    if parsed.is_none() {
+        tracing::warn!(
+            var,
+            %value,
+            "env value is not a positive whole number in plain digits; using the default"
+        );
+    }
+    parsed
+}
+
+/// Env var set on agent-spawned terminal processes so host tools (e.g. `x ban`) can distinguish agent invocations from
+/// human interactive shells. Note: the CLI also uses `CODEL_AGENT` as an optional agent-definition selector for
+/// launching `codel` itself; child terminal processes only need the sentinel value `"1"`.
 pub const CODEL_AGENT_ENV: &str = "CODEL_AGENT";
 
 /// Sentinel value for [`CODEL_AGENT_ENV`] on agent tool terminals.
@@ -23,10 +42,9 @@ pub fn apply_codel_agent_marker(cmd: &mut tokio::process::Command) {
     cmd.env(CODEL_AGENT_ENV, CODEL_AGENT_ENV_VALUE);
 }
 
-/// Expand the four plugin-path tokens (`${CLAUDE_PLUGIN_ROOT}` / `${CODEL_PLUGIN_ROOT}`
-/// and `${CLAUDE_PLUGIN_DATA}` / `${CODEL_PLUGIN_DATA}`) in `s`. Each pair is expanded
-/// only when its value is provided. Single source of truth for plugin agent bodies,
-/// plugin skill/command bodies, and plugin MCP/hook config substitution.
+/// Expand the four plugin-path tokens (`${CLAUDE_PLUGIN_ROOT}` / `${CODEL_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` /
+/// `${CODEL_PLUGIN_DATA}`) in `s`. Each pair is expanded only when its value is provided. Single source of truth for
+/// plugin agent bodies, plugin skill/command bodies, and plugin MCP/hook config substitution.
 pub fn substitute_plugin_tokens(
     s: &str,
     plugin_root: Option<&str>,

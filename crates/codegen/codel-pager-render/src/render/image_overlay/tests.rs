@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-use super::content::{format_bytes, format_mime};
+use super::content::format_mime;
 use super::geometry::{overlay_geometry, plan_image_preview};
 use super::*;
 use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
@@ -114,16 +114,72 @@ fn paint_pixels_with_path_returns_footer_and_exact_transmission() {
         text.contains("Path: /tmp/logo.png"),
         "rendered footer missing path: {text:?}",
     );
-    assert!(escapes.as_str().starts_with(&format!(
-        "\x1b[{};{}H",
-        placement.y + 1,
-        placement.x + 1
-    )));
+    let esc = escapes.as_str();
     assert!(
-        escapes
-            .as_str()
-            .contains(&format!("c={},r={}", placement.cols, placement.rows))
+        esc.contains("a=d,d=i"),
+        "first paint must delete id 1 before placing: {esc}"
     );
+    assert!(
+        esc.contains(&format!("\x1b[{};{}H", placement.y + 1, placement.x + 1)),
+        "first paint must CUP to the placement cell: {esc}"
+    );
+    assert!(
+        esc.contains("a=T"),
+        "first paint must be one transmit+display: {esc}"
+    );
+    assert!(
+        esc.contains(&format!("c={},r={}", placement.cols, placement.rows)),
+        "placement geometry missing: {esc}"
+    );
+}
+
+#[test]
+fn paint_pixels_iterm2_emits_osc1337_and_restores_cursor() {
+    let _guard = set_protocol_for_test(GraphicsProtocol::ITerm2);
+    crate::terminal::overlay::reset_owner();
+    let image = sample_image(Some("/tmp/logo.png"), true);
+    let (render, text) = render_to_string(&image, Rect::new(10, 5, 60, 20));
+    let render = render.unwrap();
+    let placement = render.image_placement.unwrap();
+    let esc = render.escapes.unwrap().into_string();
+    assert!(text.contains("Image #1"));
+    assert!(esc.starts_with("\x1b7"), "must save the cursor: {esc:?}");
+    assert!(esc.ends_with("\x1b8"), "must restore the cursor: {esc:?}");
+    assert!(
+        esc.contains(&format!("\x1b[{};{}H", placement.y + 1, placement.x + 1)),
+        "must CUP to the placement cell: {esc:?}"
+    );
+    assert!(esc.contains("\x1b]1337;File="));
+    assert!(esc.contains(&format!(
+        "width={}cells;height={}cells",
+        placement.cols, placement.rows
+    )));
+}
+
+#[test]
+fn iterm2_clear_releases_ownership_so_reopen_repaints() {
+    let _guard = set_protocol_for_test(GraphicsProtocol::ITerm2);
+    crate::terminal::overlay::reset_owner();
+    let image = sample_image(None, true);
+    let area = Rect::new(0, 0, 60, 20);
+
+    let (first, _) = render_to_string(&image, area);
+    let first = first.unwrap().escapes.unwrap();
+    assert!(first.as_str().contains("1337"));
+    let _ = first.commit();
+
+    // Same frame geometry while the preview stays open: keep, no payload.
+    let (kept, _) = render_to_string(&image, area);
+    assert!(kept.unwrap().escapes.unwrap().as_str().is_empty());
+
+    // Closing the preview repaints its cells (that's what erases iTerm2 pixels); clear() carries the ownership release
+    let clear = crate::terminal::overlay::clear().expect("iTerm2 clear must release ownership");
+    assert!(clear.as_str().is_empty(), "iTerm2 has no clear escape");
+    let _ = clear.commit();
+
+    // Reopening the identical preview must re-emit the image, not keep a placement whose pixels are gone
+    let (reopened, _) = render_to_string(&image, area);
+    assert!(reopened.unwrap().escapes.unwrap().as_str().contains("1337"));
 }
 
 #[test]
@@ -189,13 +245,10 @@ fn geometry_honors_plan_specific_minima() {
 }
 
 #[test]
-fn formatting_helpers_cover_known_and_unknown_values() {
+fn format_mime_covers_known_and_unknown_values() {
     assert_eq!(format_mime("image/png"), "PNG");
     assert_eq!(
         format_mime("application/octet-stream"),
         "application/octet-stream"
     );
-    assert_eq!(format_bytes(512), "512 B");
-    assert_eq!(format_bytes(1536), "1.5 KB");
-    assert_eq!(format_bytes(2_500_000), "2.4 MB");
 }

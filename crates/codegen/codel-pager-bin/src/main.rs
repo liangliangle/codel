@@ -5,13 +5,13 @@
     unreachable_code,
     dead_code
 )]
+#![deny(clippy::indexing_slicing)]
 #[cfg(all(feature = "jemalloc", unix))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[cfg(all(feature = "jemalloc", feature = "release-dist", unix))]
 mod jemalloc_malloc_conf {
-    /// jemalloc looks up `extern const char *malloc_conf` — a thin pointer,
-    /// not a Rust `&[u8]` fat pointer.
+    /// jemalloc looks up `extern const char *malloc_conf`, a thin pointer, not a Rust `&[u8]` fat pointer.
     #[repr(transparent)]
     struct MallocConfPtr(*const u8);
     unsafe impl Sync for MallocConfPtr {}
@@ -26,16 +26,18 @@ mod jemalloc_malloc_conf {
     static MALLOC_CONF: MallocConfPtr = MallocConfPtr(CONF.as_ptr());
 }
 use anyhow::Result;
-use std::env;
+use std::io::Write;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use tokio_util::sync::CancellationToken;
+use codel_pager::agent_runtime::AgentRuntime;
 use codel_pager::app::{
-    AgentCmd, Command, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand, LeaderTargetArgs,
-    PagerArgs, join_early_prefetch, resolve_use_leader,
+    AgentCmd, Command, EARLY_PREFETCH_WAIT, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand,
+    LeaderMode, LeaderTargetArgs, PagerArgs, resolve_use_leader, warn_leader_disabled_by_sandbox,
 };
 use codel_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
 use codel_pager::client_identity::PAGER_CLIENT_VERSION;
-use codel_shell::agent::app::{run_headless, run_leader, run_stdio_agent};
+use codel_shell::agent::app::{run_headless, run_leader};
 use codel_shell::agent::config::Config as AgentConfig;
 use codel_shell::leader::{
     ClientCapabilities, ClientMode, ControlCommand, LeaderCapabilities, LeaderDescriptor,
@@ -44,10 +46,121 @@ use codel_shell::leader::{
 use codel_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
 };
+use codel_logging::process_info::{
+    Entrypoint, Interactivity, ProcessIdentity, ReleaseChannel, set_identity, set_release_channel,
+};
+mod agent_command;
+fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<ProcessIdentity> {
+    use codel_logging::process_info::LeaderMode::Standalone;
+    let (entrypoint, interactivity) = match command {
+        Some(Command::Agent(_)) => return None,
+        Some(Command::Dashboard) => return None,
+        Some(Command::Login { .. }) => (Entrypoint::Cli, Interactivity::Interactive),
+        Some(
+            Command::Inspect { .. }
+            | Command::Doctor(_)
+            | Command::Leader(_)
+            | Command::Logout
+            | Command::Mcp(_)
+            | Command::Plugin(_)
+            | Command::Memory(_)
+            | Command::Models
+            | Command::Sessions(_)
+            | Command::Usage(_)
+            | Command::Setup { .. }
+            | Command::Share(_)
+            | Command::Wrap(_)
+            | Command::Export(_)
+            | Command::Trace(_)
+            | Command::Update { .. }
+            | Command::Version { .. }
+            | Command::Completions { .. }
+            | Command::Worktree(_)
+            | Command::DiskUsage(_)
+            | Command::Workspace(_),
+        ) => (Entrypoint::Cli, Interactivity::Unattended),
+        None if is_interactive => return None,
+        None => (Entrypoint::Headless, Interactivity::Unattended),
+    };
+    Some(ProcessIdentity {
+        entrypoint,
+        leader: Standalone,
+        interactivity,
+    })
+}
+/// True when this command later boots an agent (`spawn_codel_shell` / agent subcommand) that heals managed policy after `apply_sandbox`.
+fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
+    match command {
+        None
+        | Some(Command::Agent(_))
+        | Some(Command::Dashboard)
+        | Some(Command::Models)
+        | Some(Command::Worktree(_)) => true,
+        Some(
+            Command::Inspect { .. }
+            | Command::Doctor(_)
+            | Command::Leader(_)
+            | Command::Logout
+            | Command::Login { .. }
+            | Command::Mcp(_)
+            | Command::Plugin(_)
+            | Command::Memory(_)
+            | Command::Sessions(_)
+            | Command::Usage(_)
+            | Command::Setup { .. }
+            | Command::Share(_)
+            | Command::Wrap(_)
+            | Command::Export(_)
+            | Command::Trace(_)
+            | Command::Update { .. }
+            | Command::Version { .. }
+            | Command::Completions { .. }
+            | Command::DiskUsage(_)
+            | Command::Workspace(_),
+        ) => false,
+    }
+}
+use std::env;
 use codel_update::{UpdateConfig, auto_update, enforce_version_policy_or_exit};
-/// Apply headless args to an existing config, only overriding values that are
-/// explicitly set. This allows environment defaults to be preserved when
-/// specific args are not provided.
+#[cfg(all(feature = "test-seams", debug_assertions))]
+mod test_seam {
+    const TEST_TRUSTED_PUBKEY_FILE_ENV: &str = "CODEL_TEST_TRUSTED_PUBKEY_FILE";
+    pub(super) fn install() {
+        let Ok(path) = std::env::var(TEST_TRUSTED_PUBKEY_FILE_ENV) else {
+            return;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("codel test-seams: cannot read {path}: {e}");
+                return;
+            }
+        };
+        let Some(separator) = bytes.iter().position(|byte| *byte == b'\n') else {
+            eprintln!("codel test-seams: pubkey file lacks a key_id separator");
+            return;
+        };
+        let (key_id, rest) = bytes.split_at(separator);
+        let Some(public_key) = rest.get(1..) else {
+            return;
+        };
+        let Ok(key_id) = std::str::from_utf8(key_id) else {
+            eprintln!("codel test-seams: key_id is not utf8");
+            return;
+        };
+        let key_id = key_id.trim();
+        if public_key.len() != 32 {
+            eprintln!(
+                "codel test-seams: pubkey must be 32 bytes, found {}",
+                public_key.len()
+            );
+            return;
+        }
+        codel_config::signed_policy::test_seam::set_embedded_keys(Some(&[(key_id, public_key)]));
+    }
+}
+/// Apply headless args to an existing config, only overriding values that are explicitly set.
+/// Unset args leave the environment defaults in place.
 fn apply_headless_args_to_config(args: &HeadlessArgs, config: &mut AgentConfig) {
     if let Some(v) = &args.codel_ws_origin {
         config.codel_com_config.codel_ws_origin = v.clone();
@@ -103,32 +216,60 @@ fn print_serve_startup_info(bind_addr: SocketAddr, secret: &str) {
 const HEADLESS_ENTRYPOINT: &str = "headless";
 /// Initialize simple tracing for non-TUI agent modes.
 fn init_tracing_simple(app_entrypoint: &'static str) {
-    use tracing_subscriber::{
-        EnvFilter, Layer as _, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
-    };
+    use tracing_subscriber::{EnvFilter, Layer as _, fmt, layer::SubscriberExt as _};
+    use codel_logging::debug_log::RMCP_SSE_NOISE_TARGET;
     let default_filter = if app_entrypoint == HEADLESS_ENTRYPOINT {
         "off"
     } else {
         "error"
     };
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter));
+    let env_filter = match EnvFilter::try_from_default_env() {
+        Ok(filter) => filter.add_directive(
+            format!("{RMCP_SSE_NOISE_TARGET}=error")
+                .parse()
+                .expect("static rmcp directive must parse"),
+        ),
+        Err(_) => EnvFilter::new(default_filter),
+    };
     let fmt_layer = fmt::layer()
         .with_target(false)
         .with_ansi(true)
         .with_writer(std::io::stderr);
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(fmt_layer.with_filter(env_filter))
-        .init();
+        .with(codel_logging::sampling_log::layer())
+        .with(codel_logging::span_profile::layer(app_entrypoint))
+        .with(codel_logging::instrumentation::layer())
+        .with(codel_logging::hooks_log::layer())
+        .with(codel_logging::otel_layer::build_otel_layer(
+            codel_logging::otel_layer::OtelClientInfo {
+                client_name: "codel-pager",
+                client_version: codel_version::VERSION,
+                service_version: env!("VERSION_WITH_COMMIT"),
+                app_entrypoint,
+            },
+            codel_shell::agent::init::build_default_otel_layer_config(),
+        ));
+    codel_logging::debug_log::install_firehose(registry, app_entrypoint);
+    codel_logging::external::init(
+        codel_shell::agent::config::resolve_external_otel_config(
+            codel_logging::external::config::ExternalClientInfo {
+                service_version: env!("VERSION_WITH_COMMIT").to_owned(),
+                client_version: codel_version::VERSION.to_owned(),
+                app_entrypoint: app_entrypoint.to_owned(),
+            },
+        ),
+    );
 }
-/// `codel setup`: rendering + exit codes only; fetch logic lives in `codel_shell::managed_config`.
+/// `codel setup`: rendering and exit codes only; fetch logic lives in `codel_shell::managed_config`.
 /// `json` prints the served configuration instead of installing it.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn run_setup_command(json: bool) {
     use codel_shell::managed_config::{self, SetupOutcome};
     if !managed_config::has_principal() {
         eprintln!("No deployment key or team sign-in found.");
         eprintln!();
-        eprintln!("To install managed configuration, configure api_key or env_key in your model config (~/.codel/config.toml),");
+        eprintln!("To install managed configuration, sign in with a team using `codel login`,");
         eprintln!("or set a deployment key:");
         eprintln!();
         if cfg!(unix) {
@@ -179,12 +320,18 @@ async fn run_setup_command(json: bool) {
                 "Managed configuration was not applied this run (another process held the apply lock, or the credential changed during the fetch). Run `codel setup` again."
             );
         }
+        SetupOutcome::Staged => {
+            eprintln!(
+                "Managed configuration update verified; it takes effect the next time Codel starts."
+            );
+        }
         SetupOutcome::Failed(e) => {
             eprintln!("Couldn't apply managed configuration. {e}");
             std::process::exit(1);
         }
     }
 }
+#[tracing::instrument(level = "debug", skip_all)]
 async fn run_leader_mgmt(args: LeaderMgmtArgs) -> Result<()> {
     match args.command {
         LeaderMgmtCommand::Kill => kill_leaders().await,
@@ -231,6 +378,7 @@ async fn run_leader_mgmt(args: LeaderMgmtArgs) -> Result<()> {
         }
     }
 }
+#[tracing::instrument(level = "debug", skip_all)]
 async fn kill_leaders() -> Result<()> {
     let leaders = codel_shell::leader::discover_leaders().await;
     if leaders.is_empty() {
@@ -276,6 +424,7 @@ fn resolve_target(args: &LeaderTargetArgs) -> LeaderTarget {
         None => LeaderTarget::Environment(codel_shell::env::CodelBuildEnvironment::Production),
     }
 }
+#[tracing::instrument(skip_all)]
 async fn connect_to_leader(
     args: &LeaderTargetArgs,
 ) -> Result<(LeaderDescriptor, codel_shell::leader::LeaderClient)> {
@@ -295,7 +444,7 @@ async fn connect_to_leader(
     .await?;
     Ok((selection.descriptor, client))
 }
-/// Prefer socket-verified live PID over a possibly-recycled lock file PID.
+/// Prefer the PID verified live over the socket; the lock file's PID may have been recycled.
 fn leader_pid(d: &LeaderDescriptor) -> Option<u32> {
     d.live_info.as_ref().map(|li| li.pid).or(d.pid_from_lock)
 }
@@ -328,9 +477,11 @@ fn leader_info_json(
     info: Option<&codel_shell::leader::ControlPayload>,
 ) -> Result<serde_json::Value> {
     let mut val = leader_descriptor_json(d);
-    val["clientId"] = serde_json::json!(reg.client_id);
-    if let Some(info) = info {
-        val["info"] = serde_json::to_value(info)?;
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("clientId".to_owned(), serde_json::json!(reg.client_id));
+        if let Some(info) = info {
+            obj.insert("info".to_owned(), serde_json::to_value(info)?);
+        }
     }
     Ok(val)
 }
@@ -339,27 +490,40 @@ fn ensure_control_caps(reg: &LeaderRegistration) -> Result<&LeaderCapabilities> 
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Leader does not advertise capabilities (legacy version)"))
 }
-/// Env override for the `codel workspace` gate: any truthy value enables the
-/// command locally, a falsy one disables it — bypassing the remote settings flag.
+/// Env override for the `codel workspace` gate: any truthy value enables the command locally, a falsy one disables it.
+/// Either way it bypasses the remote settings flag.
 const WORKSPACE_COMMAND_ENV: &str = "CODEL_WORKSPACE_COMMAND";
-/// Resolution of the `codel workspace` gate. `Unknown` is kept separate from
-/// `Disabled` so we don't tell the user the flag is off when the settings were
-/// simply never read (both fail closed, but `Unknown` earns an honest message).
+/// One leader door's CLI identity, shared by `connect_leader_control` and `spawn_and_connect_leader`.
+struct LeaderDoorCli {
+    /// The command name as the user types it (`codel workspace`); `<name> start` is its start command.
+    name: &'static str,
+    /// IPC client type the leader records for connections from this command.
+    client_type: &'static str,
+    /// Why the door needs leader mode, for the "requires leader mode" refusal.
+    leader_mode_reason: &'static str,
+}
+const WORKSPACE_DOOR: LeaderDoorCli = LeaderDoorCli {
+    name: "codel workspace",
+    client_type: "codel-workspace-cli",
+    leader_mode_reason: "the workspace is shared via the leader",
+};
+/// Resolution of the `codel workspace` gate.
+/// `Unknown` is kept separate from `Disabled` so we don't tell the user the flag is off when the settings were never read.
+/// Both fail closed, but `Unknown` earns an honest message.
 #[derive(Debug, PartialEq, Eq)]
 enum WorkspaceGate {
     Enabled,
     Disabled,
     Unknown,
 }
-/// The `CODEL_WORKSPACE_COMMAND` override, if set (`Some(true)`/`Some(false)`);
-/// `None` defers to the remote settings flag.
+/// The `CODEL_WORKSPACE_COMMAND` override, if set (`Some(true)`/`Some(false)`); `None` defers to the remote settings flag.
 fn workspace_command_env_override() -> Option<bool> {
     std::env::var(WORKSPACE_COMMAND_ENV)
         .ok()
         .map(|v| env_flag_enabled(&v))
 }
-/// Resolve the gate. Precedence: env override > remote `Some(true)` >
-/// loaded-but-off (`Disabled`) > settings-not-loaded (`Unknown`).
+/// Resolve the gate.
+/// Precedence: the env override, then remote `Some(true)`, then loaded-but-off (`Disabled`), then settings-not-loaded (`Unknown`).
 fn workspace_command_gate(
     env_override: Option<bool>,
     remote_settings: Option<&codel_shell::util::config::RemoteSettings>,
@@ -377,22 +541,60 @@ fn workspace_command_gate(
         None => WorkspaceGate::Unknown,
     }
 }
-/// Truthy parse for codel on/off env vars: everything enables except the common
-/// falsy spellings (`0`, `false`, `off`, `no`, empty).
+/// Truthy parse for codel on/off env vars: everything enables except the common falsy spellings (`0`, `false`, `off`, `no`, empty).
 fn env_flag_enabled(value: &str) -> bool {
     !matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "" | "0" | "false" | "off" | "no"
     )
 }
-/// Blocking fetch of remote settings via the startup prefetch path.
-fn fetch_remote_settings() -> Option<codel_shell::util::config::RemoteSettings> {
-    join_early_prefetch(codel_shell::agent::models::start_early_prefetch(None))
+/// File and managed IdP for a settings query that runs before effective-config load.
+fn load_codel_com_config_for_settings() -> codel_shell::auth::CodelComConfig {
+    codel_shell::config::load_agent_config_disk_only()
+        .map(|cfg| cfg.codel_com_config)
+        .unwrap_or_default()
 }
+/// Async fetch of remote settings via the startup getter, capped at the
+/// early-prefetch wait so a slow endpoint cannot stall the CLI. Awaits the async
+/// getter directly: this runs under a current-thread runtime where the sync
+/// `block_on_startup_settings` returns `TimedOut` immediately with no published
+/// value, so it would fall open and let workspace refuse the command before the
+/// load could complete.
+async fn fetch_remote_settings(
+    codel_com_config: &codel_shell::auth::CodelComConfig,
+) -> Option<codel_shell::util::config::RemoteSettings> {
+    let query = codel_shell::agent::remote_config::settings_get::SettingsQuery::resolve(
+        None,
+        Some(codel_com_config.clone()),
+    );
+    let wait = codel_shell::agent::remote_config::settings_get::await_startup_settings(
+        query,
+        EARLY_PREFETCH_WAIT,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    codel_shell::agent::remote_config::settings_get::consume_wait(wait, None, codel_com_config)
+}
+#[tracing::instrument(level = "debug", skip_all)]
 async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
+    if matches!(
+        &args.command,
+        WorkspaceMgmtCommand::Start(_)
+            | WorkspaceMgmtCommand::Restart(_)
+            | WorkspaceMgmtCommand::Resume { .. }
+    ) && let Some(profile) = codel_sandbox::requested_confinement_profile()
+    {
+        anyhow::bail!(
+            "`codel workspace` start/restart/resume is unavailable under sandbox profile '{profile}': \
+             those commands (re)activate shared-leader workspace exposure that this session cannot \
+             prove is confined by that profile. Disable the profile at the source that selected it \
+             (CLI, env, config, or a managed requirement)."
+        );
+    }
     let env_override = workspace_command_env_override();
+    let codel_com_config = load_codel_com_config_for_settings();
     let remote_settings = if env_override.is_none() {
-        fetch_remote_settings()
+        fetch_remote_settings(&codel_com_config).await
     } else {
         None
     };
@@ -407,18 +609,25 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
         WorkspaceGate::Unknown => {
             anyhow::bail!(
                 "Could not load your settings for `codel workspace`. Check your \
-             network connection (configure api_key or env_key in your model config \
-             (~/.codel/config.toml) if not configured), then \
+             network connection (run `codel login` if you are signed out), then \
              try again."
             )
         }
     }
     match args.command {
         WorkspaceMgmtCommand::Start(a) => {
-            workspace_start(a, false, remote_settings.or_else(fetch_remote_settings)).await
+            let settings = match remote_settings {
+                Some(settings) => Some(settings),
+                None => fetch_remote_settings(&codel_com_config).await,
+            };
+            workspace_start(a, false, settings).await
         }
         WorkspaceMgmtCommand::Restart(a) => {
-            workspace_start(a, true, remote_settings.or_else(fetch_remote_settings)).await
+            let settings = match remote_settings {
+                Some(settings) => Some(settings),
+                None => fetch_remote_settings(&codel_com_config).await,
+            };
+            workspace_start(a, true, settings).await
         }
         WorkspaceMgmtCommand::Pause { target, json } => {
             workspace_control(&target, json, ControlCommand::WorkspacePause).await
@@ -444,9 +653,13 @@ fn ensure_workspace_caps(reg: &LeaderRegistration) -> Result<()> {
     }
     Ok(())
 }
-async fn connect_workspace_control(
+/// Control connection for a leader door CLI: by PID when given, else the socket of the configured
+/// environment.
+#[tracing::instrument(level = "debug", skip_all)]
+async fn connect_leader_control(
     agent_config: &AgentConfig,
     target: &LeaderTargetArgs,
+    door: &LeaderDoorCli,
 ) -> Result<LeaderClient> {
     if target.pid.is_some() {
         let (_descriptor, client) = connect_to_leader(target).await?;
@@ -456,7 +669,7 @@ async fn connect_workspace_control(
     let socket = socket_path_for_ws_url(ws_url);
     LeaderClient::connect(
         socket,
-        "codel-workspace-cli",
+        door.client_type,
         ClientMode::Stdio,
         ClientCapabilities::default(),
     )
@@ -464,54 +677,48 @@ async fn connect_workspace_control(
     .map_err(|e| {
         anyhow::anyhow!(
             "no running leader for this environment ({e}). \
-             Start a codel session, or run `codel workspace start`."
+             Start a codel session, or run `{} start`.",
+            door.name
         )
     })
 }
-async fn workspace_control(
-    target: &LeaderTargetArgs,
-    json: bool,
-    command: ControlCommand,
-) -> Result<()> {
-    let raw_config = codel_shell::config::load_effective_config_disk_only()
-        .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-    let agent_config = AgentConfig::new_from_toml_cfg(&raw_config)
-        .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-    let client = connect_workspace_control(&agent_config, target).await?;
-    ensure_workspace_caps(client.registration())?;
-    let payload = client.send_control(command).await??;
-    render_workspace_payload(&payload, json);
-    client.cancel();
-    Ok(())
-}
-async fn workspace_start(
-    args: WorkspaceStartArgs,
-    restart: bool,
-    remote_settings: Option<codel_shell::util::config::RemoteSettings>,
-) -> Result<()> {
-    use codel_shell::auth::ensure_authenticated;
-    codel_shell::util::config::set_remote_campaigns_from_settings(remote_settings.as_ref());
+/// The `start` handshake shared by the door CLIs: effective config, the leader-mode decision,
+/// cached credentials, `connect_or_spawn`, then a fresh control client on the leader socket.
+#[tracing::instrument(level = "debug", skip_all)]
+async fn spawn_and_connect_leader(
+    leader: bool,
+    no_leader: bool,
+    remote_settings: Option<&codel_shell::util::config::RemoteSettings>,
+    door: &LeaderDoorCli,
+) -> Result<LeaderClient> {
+    use codel_login::ensure_authenticated;
+    codel_shell::util::config::set_remote_campaigns_from_settings(remote_settings);
     let raw_config = codel_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
     let agent_config = AgentConfig::new_from_toml_cfg(&raw_config)
         .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
     let (use_leader, _) = resolve_use_leader(
-        args.leader,
-        args.no_leader,
+        leader,
+        no_leader,
         &raw_config,
-        remote_settings.as_ref(),
+        remote_settings,
         true,
+        codel_sandbox::requested_confinement_profile(),
     );
     if !use_leader {
         anyhow::bail!(
-            "`codel workspace` requires leader mode (the workspace is shared via the leader).\n\
-             Enable it with `[cli] use_leader = true` in ~/.codel/config.toml, or pass --leader."
+            "`{}` requires leader mode ({}).\n\
+             Enable it with `[cli] use_leader = true` in ~/.codel/config.toml, or pass --leader.",
+            door.name,
+            door.leader_mode_reason
         );
     }
     ensure_authenticated(
         &agent_config.codel_com_config,
+        agent_config.login_device_flow,
+        agent_config.endpoints.proxy_url(),
         false,
-        Some("No cached credentials found. Configure api_key or env_key in your model config (~/.codel/config.toml)."),
+        Some("No cached credentials found. Run `codel login` first."),
     )
     .await?;
     let env_urls = LeaderEnvUrls::from(&agent_config.codel_com_config);
@@ -519,17 +726,40 @@ async fn workspace_start(
         client_version: Some(PAGER_CLIENT_VERSION.to_string()),
         ..Default::default()
     };
-    let conn = connect_or_spawn(
-        "codel-workspace-cli",
-        ClientMode::Stdio,
-        &env_urls,
-        capabilities,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("failed to start or connect to leader: {e}"))?;
+    let conn = connect_or_spawn(door.client_type, ClientMode::Stdio, &env_urls, capabilities)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to start or connect to leader: {e}"))?;
     drop(conn);
-    let target = LeaderTargetArgs::default();
-    let client = connect_workspace_control(&agent_config, &target).await?;
+    connect_leader_control(&agent_config, &LeaderTargetArgs::default(), door).await
+}
+#[tracing::instrument(level = "debug", skip_all)]
+async fn workspace_control(
+    target: &LeaderTargetArgs,
+    json: bool,
+    command: ControlCommand,
+) -> Result<()> {
+    let agent_config = codel_shell::config::load_agent_config_disk_only()
+        .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+    let client = connect_leader_control(&agent_config, target, &WORKSPACE_DOOR).await?;
+    ensure_workspace_caps(client.registration())?;
+    let payload = client.send_control(command).await??;
+    render_workspace_payload(&payload, json);
+    client.cancel();
+    Ok(())
+}
+#[tracing::instrument(level = "debug", skip_all)]
+async fn workspace_start(
+    args: WorkspaceStartArgs,
+    restart: bool,
+    remote_settings: Option<codel_shell::util::config::RemoteSettings>,
+) -> Result<()> {
+    let client = spawn_and_connect_leader(
+        args.leader,
+        args.no_leader,
+        remote_settings.as_ref(),
+        &WORKSPACE_DOOR,
+    )
+    .await?;
     ensure_workspace_caps(client.registration())?;
     if restart {
         let _ = client.send_control(ControlCommand::WorkspaceStop).await;
@@ -601,9 +831,8 @@ fn render_workspace_payload(payload: &ControlPayload, json: bool) {
 /// How to rebuild one session's `session/load` after a leader reconnect.
 #[derive(Default, Clone)]
 struct CachedSession {
-    /// Verbatim `session/load` request JSON (preferred replay form: preserves
-    /// the client's exact cwd / mcpServers / meta). `None` when the session
-    /// was only ever created via `session/new` — the load is synthesized.
+    /// Verbatim `session/load` request JSON (preferred replay form: preserves the client's exact cwd / mcpServers / meta).
+    /// `None` when the session was only ever created via `session/new`; the load is synthesized.
     load_request_json: Option<String>,
     /// `cwd` captured from `session/new` / `session/load` params.
     cwd: Option<String>,
@@ -611,25 +840,18 @@ struct CachedSession {
     mcp_servers_json: Option<String>,
 }
 /// ACP state cached from the stdio stream for replay after leader reconnect.
-///
-/// Tracks EVERY session the external client has open (IDE clients drive
-/// multiple sessions over one bridge), not just the most recent one — a
-/// leader crash must restore all of them or the others die with
-/// "unknown session id" on their next prompt.
+/// Tracks EVERY session the external client has open (IDE clients drive multiple sessions over one bridge), not just the most recent one.
+/// A leader crash must restore all of them or the others die with "unknown session id" on their next prompt.
 #[derive(Default, Clone)]
 struct StdioReplayState {
     initialize_json: Option<String>,
-    /// Sessions to restore on reconnect, keyed by session id, in first-seen
-    /// order (Vec keeps replay order deterministic).
+    /// Sessions to restore on reconnect, keyed by session id, in first-seen order (Vec keeps replay order deterministic).
     sessions: Vec<(String, CachedSession)>,
-    /// cwd/mcp from the most recent `session/new` REQUEST whose response has
-    /// not been observed yet. Folded into `sessions` when the response
-    /// carrying the assigned session id arrives. Never replayed while
-    /// unconfirmed (the id is unknown; the client's own request died with the
-    /// old leader and is its to retry).
+    /// cwd/mcp from the most recent `session/new` REQUEST whose response has not been observed yet.
+    /// Folded into `sessions` when the response carrying the assigned session id arrives.
+    /// Never replayed while unconfirmed (the id is unknown; the client's own request died with the old leader and is its to retry).
     pending_new: Option<CachedSession>,
-    /// Most recently created/loaded session id — reported in
-    /// `codel.dev/leader_reconnected` as the primary restored session.
+    /// Most recently created/loaded session id, reported in `codel/leader_reconnected` as the primary restored session.
     last_session_id: Option<String>,
 }
 impl StdioReplayState {
@@ -646,8 +868,53 @@ impl StdioReplayState {
             self.last_session_id = None;
         }
     }
+    /// A resume names a session the client is already attached to, so an entry from its original `session/load` is the better one to replay.
+    /// That entry carries the client's `_meta`, which a synthesized load cannot reproduce.
+    fn insert_session_if_new(&mut self, sid: &str, cached: CachedSession) {
+        if !self.sessions.iter().any(|(id, _)| id == sid) {
+            self.sessions.push((sid.to_string(), cached));
+        }
+    }
 }
+/// Read `sessionId`, `cwd`, and `mcpServers` off a session request's params.
+fn cached_session_from_params(
+    params: &serde_json::Value,
+    verbatim: Option<&str>,
+) -> Option<(String, CachedSession)> {
+    let sid = params
+        .get("sessionId")
+        .or_else(|| params.get("session_id"))
+        .and_then(|v| v.as_str())?;
+    Some((
+        sid.to_string(),
+        CachedSession {
+            load_request_json: verbatim.map(str::to_string),
+            cwd: params
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            mcp_servers_json: params
+                .get("mcpServers")
+                .and_then(|m| serde_json::to_string(m).ok()),
+        },
+    ))
+}
+/// Methods whose requests the replay cache reads.
+/// One list shared by the prefilter and the match below so the two cannot drift apart.
+/// Quoted JSON spellings so prose mentioning a method does not trigger a parse.
+const CACHED_METHODS: &[&str] = &[
+    "\"initialize\"",
+    "\"session/new\"",
+    "\"session/load\"",
+    "\"session/resume\"",
+    "\"session/close\"",
+    "\"codel/session/close\"",
+    "\"_codel/session/close\"",
+];
 fn cache_outgoing_acp_state(msg: &str, state: &std::sync::Mutex<StdioReplayState>) {
+    if !CACHED_METHODS.iter().any(|m| msg.contains(m)) {
+        return;
+    }
     let Ok(json) = serde_json::from_str::<serde_json::Value>(msg) else {
         return;
     };
@@ -661,27 +928,26 @@ fn cache_outgoing_acp_state(msg: &str, state: &std::sync::Mutex<StdioReplayState
             s.initialize_json = Some(msg.to_string());
         }
         "session/load" => {
+            let Some(params) = json.get("params") else {
+                return;
+            };
+            let Some((sid, cached)) = cached_session_from_params(params, Some(msg)) else {
+                return;
+            };
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(params) = json.get("params") {
-                let sid = params
-                    .get("sessionId")
-                    .or_else(|| params.get("session_id"))
-                    .and_then(|v| v.as_str());
-                if let Some(sid) = sid {
-                    let cached = CachedSession {
-                        load_request_json: Some(msg.to_string()),
-                        cwd: params
-                            .get("cwd")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string),
-                        mcp_servers_json: params
-                            .get("mcpServers")
-                            .and_then(|m| serde_json::to_string(m).ok()),
-                    };
-                    s.upsert_session(sid, cached);
-                    s.last_session_id = Some(sid.to_string());
-                }
-            }
+            s.upsert_session(&sid, cached);
+            s.last_session_id = Some(sid);
+        }
+        "session/resume" => {
+            let Some(params) = json.get("params") else {
+                return;
+            };
+            let Some((sid, cached)) = cached_session_from_params(params, None) else {
+                return;
+            };
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            s.insert_session_if_new(&sid, cached);
+            s.last_session_id = Some(sid);
         }
         "session/new" => {
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -697,7 +963,7 @@ fn cache_outgoing_acp_state(msg: &str, state: &std::sync::Mutex<StdioReplayState
                     .and_then(|m| serde_json::to_string(m).ok()),
             });
         }
-        "codel.dev/session/close" | "_codel.dev/session/close" => {
+        "session/close" | "codel/session/close" | "_codel/session/close" => {
             if let Some(sid) = json
                 .get("params")
                 .and_then(|p| p.get("sessionId").or_else(|| p.get("session_id")))
@@ -726,14 +992,12 @@ fn cache_incoming_session_id(msg: &str, state: &std::sync::Mutex<StdioReplayStat
         s.last_session_id = Some(sid.to_string());
     }
 }
-/// Synthetic JSON-RPC id for the `session/load` the bridge constructs itself
-/// (when the external client only ever sent `session/new`). A string id can
-/// never collide with a numeric id the external client may have in flight.
-const REPLAY_LOAD_REQUEST_ID: &str = "codel.dev/leader-replay/session-load";
+/// Synthetic JSON-RPC id for the `session/load` the bridge constructs itself (when the external client only ever sent `session/new`).
+/// A string id can never collide with a numeric id the external client may have in flight.
+const REPLAY_LOAD_REQUEST_ID: &str = "codel/leader-replay/session-load";
 /// Max silence between two messages from the leader during a replayed request.
-/// A `session/load` streams replay notifications continuously once it starts,
-/// but the pre-replay phase (MCP resolution, session file reads) can be quiet
-/// for a while on large sessions.
+/// A `session/load` streams replay notifications continuously once it starts.
+/// The phase before the replay (MCP resolution, session file reads) can be quiet for a while on large sessions.
 const REPLAY_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// Overall deadline for one replayed request's response.
 const REPLAY_RESPONSE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
@@ -746,8 +1010,7 @@ enum ReplayOutcome {
     /// The connection closed / timed out / stdout broke before the response.
     Failed,
 }
-/// True when `msg` is the JSON-RPC *response* to the request with `expected_id`
-/// (no `method` key + matching `id`).
+/// True when `msg` is the JSON-RPC *response* to the request with `expected_id` (no `method` key and a matching `id`).
 fn parse_replay_response(msg: &str, expected_id: &serde_json::Value) -> Option<ReplayOutcome> {
     let json = serde_json::from_str::<serde_json::Value>(msg).ok()?;
     if json.get("method").is_some() {
@@ -762,21 +1025,10 @@ fn parse_replay_response(msg: &str, expected_id: &serde_json::Value) -> Option<R
         Some(ReplayOutcome::ResponseOk)
     }
 }
-/// Send one replayed request to the (new) leader and pump messages until its
-/// response arrives.
-///
-/// `session/load` emits the full replay stream (session/update notifications)
-/// BEFORE its response, so "wait for the next message" is not "wait for the
-/// response". Everything that is not the response itself is forwarded verbatim
-/// to the external client's stdout — exactly what the pre-reconnect stream
-/// would have carried. Only the response to the replayed request is swallowed
-/// (the external client already received a response for its original send and
-/// must not see a duplicate or unknown-id response).
-///
-/// Returning before the `session/load` response is the root cause of the
-/// "unknown session id" failures after a leader crash: the bridge declared
-/// the reconnect complete while the new leader was still loading the session,
-/// and the client's next `session/prompt` raced (and lost against) the load.
+/// That is exactly what the stream would have carried before the reconnect. Only the response to the replayed
+/// request is swallowed. Returning before the `session/load` response is the root cause of the "unknown session id"
+/// failures after a leader crash.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn replay_request_until_response(
     tx: &tokio::sync::mpsc::UnboundedSender<String>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -832,9 +1084,8 @@ async fn replay_request_until_response(
         }
     }
 }
-/// Build the `session/load` JSON to replay for one cached session: the
-/// verbatim client request when available, else a synthesized load from the
-/// captured `session/new` parameters.
+/// Build the `session/load` JSON to replay for one cached session.
+/// Prefer the verbatim client request when available, else synthesize a load from the captured `session/new` parameters.
 fn replay_load_json(sid: &str, cached: &CachedSession) -> Option<String> {
     if let Some(ref verbatim) = cached.load_request_json {
         return Some(verbatim.clone());
@@ -844,10 +1095,11 @@ fn replay_load_json(sid: &str, cached: &CachedSession) -> Option<String> {
         "sessionId": sid,
         "cwd": cwd,
     });
-    if let Some(ref mcp_raw) = cached.mcp_servers_json
+    if let Some(mcp_raw) = &cached.mcp_servers_json
         && let Ok(mcp_val) = serde_json::from_str::<serde_json::Value>(mcp_raw)
+        && let Some(obj) = params.as_object_mut()
     {
-        params["mcpServers"] = mcp_val;
+        obj.insert("mcpServers".to_owned(), mcp_val);
     }
     Some(
         serde_json::json!({
@@ -859,16 +1111,9 @@ fn replay_load_json(sid: &str, cached: &CachedSession) -> Option<String> {
         .to_string(),
     )
 }
-/// Replay cached `initialize` + every cached `session/load` to a freshly
-/// (re-)elected leader, blocking until the leader has actually finished
-/// loading EACH session (loads are sent strictly sequentially, each awaiting
-/// its response — the synthesized-id reuse relies on this ordering).
-///
-/// Returns the primary restored session id (the most recently active one,
-/// falling back to any successfully restored session). `None` when there was
-/// nothing to replay or every restore failed — callers emit
-/// `codel.dev/leader_reconnected` with empty params in that case, signalling the
-/// external client to re-establish state itself.
+/// Replay the cached `initialize` and every cached `session/load` to a freshly (re-)elected leader. `None` when
+/// there was nothing to replay or every restore failed.
+#[tracing::instrument(skip_all)]
 async fn replay_acp_state_after_reconnect(
     tx: &tokio::sync::mpsc::UnboundedSender<String>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -925,14 +1170,25 @@ async fn replay_acp_state_after_reconnect(
         .cloned()
         .or_else(|| restored.last().cloned())
 }
-/// Exit. Used by the agent/headless signal handler.
-///
-/// Does NOT write terminal escape codes — agent mode never enables TUI modes.
-/// The TUI has its own signal handler (`app::signal_handler`) that does the
-/// full crossterm teardown.
-fn shutdown_and_exit(exit_code: i32) -> ! {
+/// Flush observability, then exit. Used by the agent/headless signal handler.
+/// Does NOT write terminal escape codes; agent mode never enables TUI modes.
+/// The TUI has its own signal handler (`app::signal_handler`) that does the full crossterm teardown.
+fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
+    {
+        let _exit_span = tracing::info_span!("teardown.process_exit").entered();
+        codel_logging::sentry::flush_on_shutdown();
+    }
+    codel_logging::otel_layer::shutdown_otel();
+    codel_logging::debug_log::flush();
+    finalize_span_profile();
     std::process::exit(exit_code);
 }
+fn finalize_span_profile() {
+    if let Some(path) = codel_logging::span_profile::finalize() {
+        eprintln!("codel: span profile written to {}", path.display());
+    }
+}
+#[tracing::instrument(level = "debug", skip_all)]
 async fn forward_stdio_line_to_leader(
     line: Vec<u8>,
     leader_tx: &tokio::sync::Mutex<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -944,12 +1200,7 @@ async fn forward_stdio_line_to_leader(
     if trimmed.is_empty() {
         return;
     }
-    if trimmed.contains("\"initialize\"")
-        || trimmed.contains("\"session/load\"")
-        || trimmed.contains("\"session/new\"")
-    {
-        cache_outgoing_acp_state(&trimmed, replay_state);
-    }
+    cache_outgoing_acp_state(&trimmed, replay_state);
     let send_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         {
@@ -968,11 +1219,11 @@ async fn forward_stdio_line_to_leader(
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
 }
-/// Emitted by both leader guards (server mode and leader-connect) so the two sites
-/// can't drift.
+/// Emitted by both leader guards (server mode and leader-connect) so the two sites can't drift.
 const PLUGIN_DIR_LEADER_WARNING: &str = "codel: --plugin-dir is ignored in leader mode; run with --no-leader to \
      load per-process plugins";
 /// Run the `agent` subcommand, dispatching to the appropriate mode.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn run_agent_command(
     agent_args: Box<codel_pager::app::AgentArgs>,
     permission_mode_flag: Option<String>,
@@ -981,35 +1232,41 @@ async fn run_agent_command(
     disable_web_search: bool,
     update_config: &UpdateConfig,
 ) -> Result<()> {
-    let _signal_flush = tokio::spawn(async {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{SignalKind, signal};
-            use codel_pager::app::signal_handler::next_signal_code;
-            let mut term = signal(SignalKind::terminate()).ok();
-            let mut hup = signal(SignalKind::hangup()).ok();
-            let code = next_signal_code(&mut term, &mut hup).await;
-            shutdown_and_exit(code);
-        }
-        #[cfg(not(unix))]
-        {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                shutdown_and_exit(130);
-            }
-        }
-    });
+    let signal_flush = agent_command::spawn_signal_flush();
+    if matches!(
+        agent_args.mode,
+        Some(AgentCmd::Leader(_) | AgentCmd::Stdio | AgentCmd::Headless(_) | AgentCmd::Serve(_))
+    ) {
+        codel_shell::agent::app::suppress_otel();
+    }
     init_tracing_simple("agent");
+    let _otel_guard = codel_logging::otel_layer::otel_guard();
+    codel_logging::instrumentation::install_panic_hook();
     if trust {
+        use codel_workspace::folder_trust::{grant_folder_trust, report_cli_trust_grant};
         match std::env::current_dir() {
-            Ok(cwd) => codel_shell::agent::folder_trust::grant_folder_trust(&cwd),
+            Ok(cwd) => report_cli_trust_grant(&grant_folder_trust(&cwd)),
             Err(e) => {
-                tracing::warn!(error = %e, "--trust: failed to resolve cwd; folder not trusted")
+                tracing::warn!(error = %e, "--trust: failed to resolve cwd; folder not trusted");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "error: --trust: failed to resolve cwd; folder not trusted: {e}"
+                );
             }
         }
     }
-    let early_prefetch = codel_shell::agent::models::start_early_prefetch(None);
-    codel_shell::agent::mvp_agent::warm_async_http_client();
-    tokio::task::spawn_blocking(|| {});
+    let codel_com_config = load_codel_com_config_for_settings();
+    let settings_query = codel_shell::agent::remote_config::settings_get::SettingsQuery::resolve(
+        None,
+        Some(codel_com_config.clone()),
+    );
+    let had_prefetch =
+        codel_shell::agent::remote_config::settings_get::is_eligible(&settings_query);
+    if had_prefetch {
+        codel_shell::agent::remote_config::settings_get::warm_startup_settings(
+            settings_query.clone(),
+        );
+    }
     let is_stdio = matches!(agent_args.mode, Some(AgentCmd::Stdio));
     let is_leader = matches!(agent_args.mode, Some(AgentCmd::Leader(_)));
     if !is_stdio && !is_leader {
@@ -1024,13 +1281,28 @@ async fn run_agent_command(
             auto_update::run_update_if_available(
                 auto_update::UpdateRunMode::NonBlocking,
                 false,
+                auto_update::CliUpdateTrigger::AutoBackground,
                 update_config,
             )
             .await
             .ok();
         }
     }
-    let remote_settings = join_early_prefetch(early_prefetch);
+    let remote_settings = if had_prefetch {
+        let wait = codel_shell::agent::remote_config::settings_get::await_startup_settings(
+            settings_query,
+            EARLY_PREFETCH_WAIT,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+        codel_shell::agent::remote_config::settings_get::consume_wait(
+            wait,
+            None,
+            &codel_com_config,
+        )
+    } else {
+        None
+    };
     codel_shell::util::config::set_remote_campaigns_from_settings(remote_settings.as_ref());
     let raw_config = codel_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
@@ -1054,6 +1326,7 @@ async fn run_agent_command(
         agent_args.yolo,
         permission_mode_flag.as_deref(),
         None,
+        codel_shell::util::config::PermissionMode::Ask,
     );
     agent_config.agent_profile_path = agent_args
         .agent_profile
@@ -1074,26 +1347,45 @@ async fn run_agent_command(
         cli_subagents: None,
         cli_web_search_model: None,
         cli_session_summary_model: None,
-        cli_experimental_memory: false,
-        cli_no_memory: false,
+        memory_enabled_override: None,
         disable_web_search,
         todo_gate: false,
         laziness_debug_log: None,
         storage_mode: None,
     });
     let agent_memory_config = agent_config.memory_config.clone();
-    let leader_eligible = matches!(
-        &agent_args.mode,
-        None | Some(AgentCmd::Stdio) | Some(AgentCmd::Headless(_))
+    let runtime = AgentRuntime::from_args(&agent_args, &agent_config, &raw_config);
+    let requested_confinement = codel_sandbox::requested_confinement_profile();
+    let LeaderMode {
+        use_leader,
+        policy_disable_reason,
+        disabled_by_confinement,
+    } = runtime.leader_mode();
+    tracing::info!(
+        use_leader,
+        ?policy_disable_reason,
+        sandbox_profile = ?requested_confinement,
+        leader_disabled_by_sandbox = disabled_by_confinement.is_some(),
+        "leader mode resolved"
     );
-    let (use_leader, policy_disable_reason) = resolve_use_leader(
-        agent_args.leader,
-        agent_args.no_leader,
-        &raw_config,
-        remote_settings.as_ref(),
-        leader_eligible,
-    );
-    tracing::info!(use_leader, ?policy_disable_reason, "leader mode resolved");
+    if let Some(profile) = disabled_by_confinement {
+        warn_leader_disabled_by_sandbox(profile);
+    }
+    use codel_logging::process_info::LeaderMode::{Attached, Standalone};
+    set_identity(ProcessIdentity {
+        entrypoint: match &agent_args.mode {
+            Some(AgentCmd::Stdio) => Entrypoint::Embedded,
+            Some(AgentCmd::Leader(_)) => Entrypoint::Leader,
+            Some(AgentCmd::Serve(_)) => Entrypoint::Workspace,
+            Some(AgentCmd::Headless(_)) | None => Entrypoint::Headless,
+        },
+        leader: if use_leader || matches!(agent_args.mode, Some(AgentCmd::Leader(_))) {
+            Attached
+        } else {
+            Standalone
+        },
+        interactivity: Interactivity::Unattended,
+    });
     let managed_install = is_managed_install(
         std::env::current_exe().ok(),
         &codel_shell::util::codel_home::codel_home(),
@@ -1109,6 +1401,7 @@ async fn run_agent_command(
             auto_update::run_update_if_available(
                 auto_update::UpdateRunMode::NonBlocking,
                 false,
+                auto_update::CliUpdateTrigger::AutoBackground,
                 &update_config,
             )
             .await
@@ -1147,6 +1440,8 @@ async fn run_agent_command(
             terminal: false,
             fs_read: false,
             fs_write: false,
+            status_line: false,
+            user_message_echo: false,
         };
         let conn = connect_or_spawn(&client_type, mode, &env_urls, capabilities.clone()).await?;
         let (tx, rx) = conn.into_channels();
@@ -1161,6 +1456,13 @@ async fn run_agent_command(
         let cancel = CancellationToken::new();
         match mode {
             ClientMode::Stdio => {
+                if let Err(error) = codel_tty_utils::kill_current_process_on_parent_death() {
+                    tracing::warn!(
+                        %error,
+                        "failed to bind to parent death; stdio bridge will not die \
+                         with its parent — stdin EOF remains the only cleanup"
+                    );
+                }
                 let replay_state = Arc::new(std::sync::Mutex::new(StdioReplayState::default()));
                 let leader_tx = Arc::new(TokioMutex::new(tx));
                 let leader_tx_stdin = leader_tx.clone();
@@ -1236,7 +1538,7 @@ async fn run_agent_command(
                                             None => "{}".to_string(),
                                         };
                                         let notification = format!(
-                                            r#"{{"jsonrpc":"2.0","method":"codel.dev/leader_reconnected","params":{params}}}"#
+                                            r#"{{"jsonrpc":"2.0","method":"codel/leader_reconnected","params":{params}}}"#
                                         );
                                         let _ = stdout.write_all(notification.as_bytes()).await;
                                         let _ = stdout.write_all(b"\n").await;
@@ -1292,7 +1594,9 @@ async fn run_agent_command(
         }
     }
     match agent_args.mode {
-        Some(AgentCmd::Stdio) => run_stdio_agent(&agent_config, None, agent_memory_config).await,
+        Some(AgentCmd::Stdio) => {
+            agent_command::run_stdio(&runtime, &agent_config, signal_flush).await
+        }
         Some(AgentCmd::Headless(a)) => {
             let mut agent_config = agent_config.clone();
             apply_headless_args_to_config(&a, &mut agent_config);
@@ -1365,12 +1669,16 @@ async fn run_agent_command(
                     }),
                 })
             };
+            let cursor_worker = None;
             run_leader(
                 &agent_config,
-                a.no_exit_on_disconnect,
-                a.relay_on_demand,
-                leader_auto_update,
-                agent_memory_config,
+                codel_shell::agent::app::LeaderRunOptions {
+                    no_exit_on_disconnect: a.no_exit_on_disconnect,
+                    relay_on_demand: a.relay_on_demand,
+                    auto_update_check: leader_auto_update,
+                    memory_config: agent_memory_config,
+                    cursor_worker,
+                },
             )
             .await
         }
@@ -1386,18 +1694,8 @@ async fn run_agent_command(
         }
     }
 }
-/// Raise the per-process fd soft limit toward the hard limit.
-///
-/// Default soft limits (256 macOS, commonly 1024 Linux) are easily exceeded:
-/// each session thread's runtime costs ~3 fds, and a wide parallel subagent
-/// wave adds spawn-burst transients — a 1024 limit fails with EMFILE under a
-/// ~100-session wave. Targets 65536 on Linux (hard limits typically >= 1M)
-/// and 8192 on macOS (`kern.maxfilesperproc` is often ~10k). No known
-/// in-tree `select(2)` users (Rust std/tokio use epoll/kqueue); residual
-/// third-party `FD_SETSIZE` risk is accepted — the prior 8192 cap already
-/// exceeded FD_SETSIZE.
-///
-/// Best-effort: never blocks startup (containers/cgroups may pin limits).
+/// Raise the per-process fd soft limit toward the hard limit. A 1024 limit fails with EMFILE under a ~100-session
+/// wave. Best-effort: never blocks startup (containers/cgroups may pin limits).
 #[cfg(unix)]
 fn raise_fd_limit() {
     #[cfg(target_os = "macos")]
@@ -1425,20 +1723,9 @@ fn raise_fd_limit() {
 }
 #[cfg(not(unix))]
 fn raise_fd_limit() {}
-/// Single audit point for the `Command::Dashboard` soft-subcommand.
-/// Sets `CODEL_OPEN_DASHBOARD_AT_STARTUP=1` if the user asked for
-/// `codel dashboard`, and clears `args.command` so the regular
-/// subcommand match doesn't try to handle it.
-///
-/// The dashboard is independent of leader mode — it renders local
-/// sessions and, when a leader happens to be present, additionally shows
-/// the leader roster — so `codel dashboard` does NOT force leader mode and
-/// is compatible with `--no-leader`.
-///
-/// The only gate is the feature flag: a disabled dashboard
-/// (`[dashboard].enabled = false` / `CODEL_AGENT_DASHBOARD=0`) is a CLI
-/// error here, before the TUI starts, because the welcome view silently
-/// drops the equivalent runtime toast.
+/// Clears `args.command` so the regular subcommand match doesn't try to handle it. The only gate is the feature
+/// flag: a disabled dashboard (`[dashboard].enabled = false` / `CODEL_AGENT_DASHBOARD=0`) is a CLI error. It fires
+/// here, before the TUI starts, because the welcome view silently drops the equivalent runtime toast.
 fn flag_dashboard_at_startup_if_requested(args: &mut PagerArgs) -> Result<()> {
     if !matches!(args.command, Some(Command::Dashboard)) {
         return Ok(());
@@ -1454,9 +1741,131 @@ fn flag_dashboard_at_startup_if_requested(args: &mut PagerArgs) -> Result<()> {
     unsafe { std::env::set_var("CODEL_OPEN_DASHBOARD_AT_STARTUP", "1") };
     Ok(())
 }
+/// Kick off background work that overlaps startup. Add new prewarms here.
+fn schedule_startup_prewarm() {
+    codel_shell::agent::mvp_agent::warm_async_http_client();
+}
+fn configure_process_env(mut args: PagerArgs) -> Result<PagerArgs> {
+    flag_dashboard_at_startup_if_requested(&mut args)?;
+    let args = args.apply_cwd()?;
+    unsafe {
+        if let Some(mode) = args.compaction_mode.as_deref() {
+            std::env::set_var("CODEL_COMPACTION_MODE", mode);
+        }
+        if let Some(detail) = args.compaction_detail.as_deref() {
+            std::env::set_var("CODEL_COMPACTION_DETAIL", detail);
+        }
+        if args.chat() {
+            std::env::set_var(codel_shell::agent::chat_modes::CODEL_CHAT_MODE_ENV, "1");
+        }
+        if let Some(socket) = args.leader_socket.as_deref() {
+            std::env::set_var(codel_shell::leader::LEADER_SOCKET_ENV, socket);
+        }
+        if args.log_sampling {
+            std::env::set_var("CODEL_LOG_SAMPLING", "1");
+        }
+        if let Some(path) = args.debug_file.as_deref() {
+            std::env::set_var("CODEL_DEBUG_LOG", path);
+            std::env::remove_var("CODEL_LOG_FILE");
+        }
+        if args.debug || args.debug_file.is_some() {
+            if std::env::var_os("CODEL_DEBUG_LOG").is_none() {
+                std::env::set_var("CODEL_DEBUG_LOG", "1");
+            }
+            if std::env::var_os("CODEL_HOOKS_LOG").is_none() {
+                std::env::set_var("CODEL_HOOKS_LOG", "1");
+            }
+        }
+    }
+    Ok(args)
+}
 const RUNTIME_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-/// A plain runtime drop blocks forever on an uncancellable in-flight blocking
-/// task; `shutdown_timeout` abandons it after `grace` so exit can't hang.
+const CODEL_WORKER_THREADS_ENV: &str = "CODEL_WORKER_THREADS";
+/// tokio defaults to one worker per logical CPU.
+/// On a host with hundreds of CPUs that can exhaust a cgroup thread budget at startup and abort under `panic = "abort"`.
+/// A terminal UI is I/O-bound, so cap at 8.
+const DEFAULT_MAX_WORKER_THREADS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+/// How `CODEL_WORKER_THREADS` resolved.
+#[derive(Debug, PartialEq, Eq)]
+enum WorkerCount {
+    Accepted(NonZeroUsize),
+    Clamped {
+        requested: i128,
+        used: NonZeroUsize,
+        cores: NonZeroUsize,
+    },
+    Ignored {
+        value: String,
+        used: NonZeroUsize,
+    },
+}
+impl WorkerCount {
+    fn used(&self) -> NonZeroUsize {
+        match self {
+            Self::Accepted(used) | Self::Clamped { used, .. } | Self::Ignored { used, .. } => *used,
+        }
+    }
+    fn notice(&self) -> Option<String> {
+        match self {
+            Self::Accepted(_) => None,
+            Self::Clamped {
+                requested,
+                used,
+                cores,
+            } => Some(format!(
+                "codel: clamped {CODEL_WORKER_THREADS_ENV}={requested} to {used} (valid range is 1..={cores})"
+            )),
+            Self::Ignored { value, .. } => Some(format!(
+                "codel: ignoring {CODEL_WORKER_THREADS_ENV}={value:?} (not a valid integer)"
+            )),
+        }
+    }
+}
+fn cli_worker_threads() -> NonZeroUsize {
+    let cores = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+    let resolved = match std::env::var(CODEL_WORKER_THREADS_ENV) {
+        Ok(value) => worker_threads_from(Some(&value), cores),
+        Err(std::env::VarError::NotPresent) => worker_threads_from(None, cores),
+        Err(std::env::VarError::NotUnicode(value)) => WorkerCount::Ignored {
+            value: value.to_string_lossy().into_owned(),
+            used: default_worker_threads(cores),
+        },
+    };
+    if let Some(notice) = resolved.notice() {
+        eprintln!("{notice}");
+    }
+    resolved.used()
+}
+fn worker_threads_from(env_override: Option<&str>, cores: NonZeroUsize) -> WorkerCount {
+    match env_override {
+        Some(value) => resolve_worker_override(value, cores),
+        None => WorkerCount::Accepted(default_worker_threads(cores)),
+    }
+}
+fn default_worker_threads(cores: NonZeroUsize) -> NonZeroUsize {
+    cores.min(DEFAULT_MAX_WORKER_THREADS)
+}
+fn resolve_worker_override(value: &str, cores: NonZeroUsize) -> WorkerCount {
+    let Ok(requested) = value.trim().parse::<i128>() else {
+        return WorkerCount::Ignored {
+            value: value.to_owned(),
+            used: default_worker_threads(cores),
+        };
+    };
+    let clamped = requested.clamp(1, cores.get() as i128) as usize;
+    let used = NonZeroUsize::new(clamped).expect("clamp floor of 1 guarantees non-zero");
+    if requested == used.get() as i128 {
+        WorkerCount::Accepted(used)
+    } else {
+        WorkerCount::Clamped {
+            requested,
+            used,
+            cores,
+        }
+    }
+}
+/// A plain runtime drop blocks forever on an uncancellable in-flight blocking task.
+/// `shutdown_timeout` abandons it after `grace` so exit can't hang.
 fn run_and_shutdown<F: std::future::Future>(
     runtime: tokio::runtime::Runtime,
     fut: F,
@@ -1466,14 +1875,8 @@ fn run_and_shutdown<F: std::future::Future>(
     runtime.shutdown_timeout(grace);
     output
 }
-/// Return freed-but-retained jemalloc pages to the OS.
-///
-/// `arena.<MALLCTL_ARENAS_ALL>.purge` madvises away all dirty/muzzy pages in
-/// every arena. The pager invokes this (via the `memory_release` seam) right
-/// after known memory cliffs — e.g. dropping a session load's replay
-/// transient — so a long-session resume doesn't leave hundreds of MB of dead
-/// pages counted against the process for its lifetime (macOS keeps
-/// `MADV_FREE`d pages in RSS until systemwide pressure).
+/// Return freed-but-retained jemalloc pages to the OS. Resuming a long session then doesn't leave hundreds of MB of
+/// dead pages counted against the process for its lifetime.
 #[cfg(all(feature = "jemalloc", unix))]
 fn purge_jemalloc_retained_pages() {
     static NAME: &[u8] = b"arena.4096.purge\0";
@@ -1496,11 +1899,9 @@ fn purge_jemalloc_retained_pages() {
         });
     }
 }
-/// Allocator gauges for the memory trace (`memory_trace` seam): advance the
-/// jemalloc epoch so the `stats.*` reads are current, then read each gauge.
-/// Returns `None` if any mallctl fails (trace records the absence). Rides
-/// the `tikv-jemalloc-ctl` raw helpers (introduced by the heap-profile
-/// hooks below) instead of hand-rolled mallctl.
+/// Allocator gauges for the memory trace (`memory_trace` hook): advance the jemalloc epoch so the `stats.*` reads are current, then read each gauge.
+/// Returns `None` if any mallctl fails (trace records the absence).
+/// Uses the `tikv-jemalloc-ctl` raw helpers (shared with the heap-profile hooks below) instead of hand-rolled mallctl.
 #[cfg(all(feature = "jemalloc", unix))]
 fn jemalloc_allocator_stats() -> Option<codel_pager::memory_trace::AllocatorStats> {
     /// SAFETY: callers pass fixed NUL-terminated `stats.*` size_t ctl names.
@@ -1523,11 +1924,9 @@ fn jemalloc_allocator_stats() -> Option<codel_pager::memory_trace::AllocatorStat
         })
     }
 }
-/// Full jemalloc statistics dump for threshold snapshots
-/// (`malloc_stats_print` default human-readable format, arena detail
-/// included) — the artifact the GCS memory-trace upload ships for offline
-/// analysis. Raw `tikv_jemalloc_sys` because jemalloc-ctl has no
-/// callback-form stats_print.
+/// Full jemalloc statistics dump for threshold snapshots (`malloc_stats_print` default human-readable format, arena detail included).
+/// This is the artifact the GCS memory-trace upload ships for offline analysis.
+/// Raw `tikv_jemalloc_sys` because jemalloc-ctl has no callback-form stats_print.
 #[cfg(all(feature = "jemalloc", unix))]
 fn jemalloc_stats_dump() -> String {
     unsafe extern "C" fn append(opaque: *mut std::ffi::c_void, msg: *const std::ffi::c_char) {
@@ -1591,11 +1990,24 @@ fn install_heap_profile_hooks() {
 fn version_text(channel_label: &str) -> String {
     format!(
         "codel {}\n",
-        codel_version::display_version_with_commit(env!("VERSION_WITH_COMMIT"), channel_label,)
+        codel_version::display_version_with_commit(
+            codel_version::full_version(),
+            channel_label,
+        )
     )
 }
 fn write_version(writer: &mut impl std::io::Write, channel_label: &str) -> std::io::Result<()> {
     writer.write_all(version_text(channel_label).as_bytes())
+}
+/// The leader gets its own crash directory: `install()` opens `last-crash.bin` with `O_TRUNC`, so a pager and a
+/// leader sharing one directory would each wipe the other's pending crash blob on start.
+fn crash_dir_for(args: &PagerArgs) -> std::path::PathBuf {
+    let base = codel_shell::util::codel_home::codel_home().join("crash");
+    let is_leader = matches!(
+        &args.command,
+        Some(Command::Agent(agent)) if matches!(agent.mode, Some(AgentCmd::Leader(_)))
+    );
+    if is_leader { base.join("leader") } else { base }
 }
 fn dispatch_version_if_requested(args: &PagerArgs) -> bool {
     if !args.version {
@@ -1621,17 +2033,24 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
     true
 }
 fn main() {
+    codel_version::set_full_version(env!("VERSION_WITH_COMMIT"));
+    codel_logging::startup::mark_process_start();
     if let Some(code) = codel_pager::app::mermaid_worker::maybe_run_render_subprocess() {
         std::process::exit(code);
     }
     if let Some(code) = codel_pager::voice::maybe_run_capture_subprocess() {
         std::process::exit(code);
     }
+    set_release_channel(ReleaseChannel::from_label(
+        codel_update::channel_name().unwrap_or_default(),
+    ));
     let args = PagerArgs::parse_cli();
     if dispatch_version_if_requested(&args) || dispatch_doctor_if_requested(&args) {
         return;
     }
     codel_pager_minimal::install();
+    #[cfg(all(feature = "test-seams", debug_assertions))]
+    test_seam::install();
     #[cfg(all(feature = "jemalloc", unix))]
     codel_pager::memory_release::install_release_hook(purge_jemalloc_retained_pages);
     #[cfg(all(feature = "jemalloc", unix))]
@@ -1641,9 +2060,14 @@ fn main() {
     }
     #[cfg(all(feature = "jemalloc", unix))]
     install_heap_profile_hooks();
-    codel_pager::memory_trace::start(
-        codel_shell::util::codel_home::codel_home().join("memtrace"),
-    );
+    unsafe {
+        codel_shell::agent::external_otel_pin::strip_conflicting_process_env();
+    }
+    let args = configure_process_env(args).unwrap_or_else(|err| {
+        eprintln!("codel: {err:#}");
+        std::process::exit(1);
+    });
+    codel_pager::memory_trace::start(codel_pager::memory_trace::default_dir());
     raise_fd_limit();
     if let Err(e) = codel_config::validate_requirements() {
         eprintln!("Couldn't start Codel: {e}");
@@ -1654,10 +2078,16 @@ fn main() {
         );
         std::process::exit(2);
     }
+    let _sentry_guard = codel_logging::sentry::init(codel_logging::sentry::Config {
+        client: "codel-pager",
+        client_version: PAGER_CLIENT_VERSION,
+        release: env!("VERSION_WITH_COMMIT"),
+        disabled: codel_shell::agent::config::is_error_reporting_disabled_sync(),
+    });
     codel_pager::docs::extract_user_guide_docs(&codel_shell::util::codel_home::codel_home());
     codel_crash_handler::install_terminal_restore_only();
     if codel_shell::util::config::load_crash_handler_enabled_sync() {
-        let crash_dir = codel_shell::util::codel_home::codel_home().join("crash");
+        let crash_dir = crash_dir_for(&args);
         if let Some(report) = codel_crash_handler::check_previous_crash(&crash_dir) {
             eprintln!("Codel crashed during your last session.");
             eprintln!("  Signal:  {}", report.signal_name);
@@ -1675,56 +2105,32 @@ fn main() {
             );
         }
     }
-    let crashed = codel_shell::active_sessions::collect_crashed().unwrap_or_default();
-    if !crashed.is_empty() {
-        tracing::info!(
-            count = crashed.len(),
-            "Found crashed sessions from a previous run"
-        );
-    }
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap_or_else(|e| panic!("failed to start tokio runtime: {e}"));
+    let workers = cli_worker_threads();
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.worker_threads(workers.get()).enable_all();
+    let runtime =
+        codel_tty_utils::runtime::build_with_blocking_pool(&mut builder).unwrap_or_else(|e| {
+            eprintln!("codel: failed to start tokio runtime: {e}");
+            shutdown_and_flush_telemetry(1);
+        });
     let result = run_and_shutdown(runtime, async_main(args), RUNTIME_SHUTDOWN_GRACE);
+    codel_logging::debug_log::flush();
     if let Err(e) = result {
         codel_tty_utils::restore_native_stderr();
-        eprintln!("Error: {e:#}");
+        finalize_span_profile();
+        let report = match e.downcast_ref::<codel_pager::app::StartupFailure>() {
+            Some(startup) => startup.user_report(),
+            None => format!("Error: {e:#}"),
+        };
+        codel_pager::best_effort_stderr::eprint_line(&report);
+        drop(_sentry_guard);
         std::process::exit(1);
     }
+    finalize_span_profile();
 }
-async fn async_main(args: PagerArgs) -> Result<()> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut args = args.apply_cwd()?;
-    if let Some(ref mode) = args.compaction_mode {
-        unsafe { std::env::set_var("CODEL_COMPACTION_MODE", mode) };
-    }
-    if let Some(ref detail) = args.compaction_detail {
-        unsafe { std::env::set_var("CODEL_COMPACTION_DETAIL", detail) };
-    }
-    if args.chat() {
-        unsafe {
-            std::env::set_var(codel_shell::agent::chat_modes::CODEL_CHAT_MODE_ENV, "1");
-        }
-    }
-    if let Some(ref socket) = args.leader_socket {
-        unsafe { std::env::set_var(codel_shell::leader::LEADER_SOCKET_ENV, socket) };
-    }
-    if let Some(ref path) = args.debug_file {
-        unsafe {
-            std::env::set_var("CODEL_DEBUG_LOG", path);
-            std::env::remove_var("CODEL_LOG_FILE");
-        }
-    }
-    if args.debug || args.debug_file.is_some() {
-        let set_if_unset = |k: &str, v: &str| {
-            if std::env::var_os(k).is_none() {
-                unsafe { std::env::set_var(k, v) };
-            }
-        };
-        set_if_unset("CODEL_DEBUG_LOG", "1");
-        set_if_unset("CODEL_HOOKS_LOG", "1");
-    }
+#[tracing::instrument(level = "debug", skip_all)]
+async fn async_main(mut args: PagerArgs) -> Result<()> {
+    codel_extra_ca::ensure_default_crypto_provider();
     if let Some(Command::Completions { shell }) = &args.command {
         codel_pager::completions_cmd::run(*shell);
         return Ok(());
@@ -1732,6 +2138,16 @@ async fn async_main(args: PagerArgs) -> Result<()> {
     if let Some(Command::Wrap(ref wrap_args)) = args.command {
         return codel_pager::wrap_cmd::run(wrap_args);
     }
+    let is_interactive = args.command.is_none()
+        && args.single.is_none()
+        && args.prompt_json.is_none()
+        && args.prompt_file.is_none();
+    codel_shell::http::set_client_name(if is_interactive {
+        codel_workspace::permission::ClientType::CodelPager
+    } else {
+        codel_workspace::permission::ClientType::Generic
+    });
+    schedule_startup_prewarm();
     args.pin_local_resume_target()?;
     let saved_profile = args.saved_resume_profile();
     let sandbox_profile_arg = match args.startup_sandbox_profile(saved_profile.as_deref()) {
@@ -1745,21 +2161,50 @@ async fn async_main(args: PagerArgs) -> Result<()> {
             std::process::exit(1);
         }
     };
+    if args.trust {
+        use codel_workspace::folder_trust::{grant_folder_trust, report_cli_trust_grant};
+        match std::env::current_dir() {
+            Ok(cwd) => report_cli_trust_grant(&grant_folder_trust(&cwd)),
+            Err(e) => {
+                tracing::warn!(error = %e, "--trust: failed to resolve cwd; folder not trusted");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "error: --trust: failed to resolve cwd; folder not trusted: {e}"
+                );
+            }
+        }
+    }
+    if command_needs_pre_sandbox_policy_heal(args.command.as_ref()) {
+        match codel_shell::config::load_agent_config_disk_only() {
+            Ok(agent_cfg) => {
+                let auth_manager =
+                    std::sync::Arc::new(codel_login::AuthManager::new_with_proxy_base_url(
+                        &codel_shell::util::codel_home::codel_home(),
+                        agent_cfg.codel_com_config.clone(),
+                        agent_cfg.endpoints.proxy_url(),
+                    ));
+                auth_manager.configure_refresher(
+                    agent_cfg.codel_com_config.auth_provider_command.clone(),
+                    None,
+                );
+                codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "managed policy: skipped session-start heal (disk config load failed)"
+                );
+            }
+        }
+    }
     codel_shell::config::apply_sandbox(
         None,
         sandbox_profile_arg.as_deref(),
         args.cwd.as_deref(),
     );
-    flag_dashboard_at_startup_if_requested(&mut args)?;
-    let is_interactive = args.command.is_none()
-        && args.single.is_none()
-        && args.prompt_json.is_none()
-        && args.prompt_file.is_none();
-    codel_shell::http::set_client_name(if is_interactive {
-        codel_workspace::permission::ClientType::CodelPager
-    } else {
-        codel_workspace::permission::ClientType::Generic
-    });
+    if let Some(identity) = process_identity(args.command.as_ref(), is_interactive) {
+        set_identity(identity);
+    }
     let update_config = build_update_config();
     if let Some(command) = args.command.take() {
         match command {
@@ -1811,6 +2256,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
             }
             Command::Setup { json } => {
                 init_tracing_simple("cli");
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 run_setup_command(json).await;
                 return Ok(());
             }
@@ -1820,45 +2266,55 @@ async fn async_main(args: PagerArgs) -> Result<()> {
             }
             Command::Plugin(plugin_args) => {
                 init_tracing_simple("cli");
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 return codel_pager::plugin_cmd::run(plugin_args).await;
             }
             Command::Models => {
                 init_tracing_simple("cli");
-                let config = codel_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
+                let agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return codel_pager::models::list_available_models(&agent_config).await;
             }
             Command::Leader(leader_args) => {
                 init_tracing_simple("cli");
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 return run_leader_mgmt(leader_args).await;
             }
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");
-                let config = codel_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
+                let agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                return codel_pager::worktree_cmd::run(worktree_args, &agent_config).await;
+                let result = codel_pager::worktree_cmd::run(worktree_args, &agent_config).await;
+                return result;
+            }
+            Command::DiskUsage(disk_usage_args) => {
+                init_tracing_simple("cli");
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
+                return codel_pager::disk_usage_cmd::run(disk_usage_args);
             }
             Command::Workspace(workspace_args) => {
                 init_tracing_simple("cli");
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 return run_workspace_mgmt(workspace_args).await;
             }
             Command::Sessions(sessions_args) => {
                 init_tracing_simple("cli");
-                let config = codel_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
+                let agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return codel_pager::sessions_cmd::run(sessions_args, &agent_config).await;
             }
+            Command::Usage(usage_args) => {
+                init_tracing_simple("cli");
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
+                return codel_pager::usage_cmd::run(usage_args);
+            }
             Command::Share(ref share_args) => {
                 init_tracing_simple("cli");
-                let config = codel_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
+                let agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return codel_pager::share_cmd::run(share_args, &agent_config).await;
             }
@@ -1868,14 +2324,30 @@ async fn async_main(args: PagerArgs) -> Result<()> {
             }
             Command::Trace(trace_args) => {
                 init_tracing_simple("cli");
-                let config = codel_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
+                let mut agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                if !trace_args.local {
+                    agent_config.remote_settings =
+                        fetch_remote_settings(&agent_config.codel_com_config).await;
+                }
                 return codel_pager::trace_cmd::run(trace_args, &agent_config).await;
             }
             Command::Memory(memory_args) => {
-                return codel_pager::memory_cmd::run(memory_args);
+                let codel_com_config = load_codel_com_config_for_settings();
+                let remote_settings = fetch_remote_settings(&codel_com_config).await;
+                codel_shell::util::config::set_remote_campaigns_from_settings(
+                    remote_settings.as_ref(),
+                );
+                let config = codel_shell::config::load_effective_config()?;
+                let mode = codel_shell::config::MemoryConfig::resolve(
+                    args.experimental_memory,
+                    args.no_memory,
+                    &config,
+                    remote_settings.as_ref(),
+                )
+                .mode;
+                return codel_pager::memory_cmd::run(memory_args, mode);
             }
             Command::Update {
                 check,
@@ -1885,18 +2357,56 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 alpha,
                 stable,
                 enterprise,
+                trigger,
+                auto,
             } => {
                 init_tracing_simple("cli");
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 let channel_switch = get_channel_switch(alpha, stable, enterprise);
+                let trigger = resolve_update_trigger(trigger.as_deref(), auto);
                 return run_update_command(
                     check,
                     json,
                     force_reinstall,
                     version,
                     channel_switch,
+                    trigger,
                     &update_config,
                 )
                 .await;
+            }
+            Command::Login {
+                legacy: _,
+                oauth,
+                device_auth,
+                devbox,
+            } => {
+                init_tracing_simple("cli");
+                let _otel_guard = codel_logging::otel_layer::otel_guard();
+                let config = codel_shell::config::load_agent_config_disk_only()
+                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                let authenticated = codel_login::run_cli_login(
+                    config.codel_com_config.clone(),
+                    config.login_device_flow,
+                    config.endpoints.proxy_url(),
+                    oauth,
+                    device_auth,
+                    devbox,
+                    |auth_manager| {
+                        codel_shell::agent::init::update_telemetry_config(&config, auth_manager)
+                    },
+                )
+                .await?;
+                codel_shell::agent::init::apply_post_login_config(authenticated).await?;
+                println!();
+                codel_shell::instrumentation::finalize_and_exit(0);
+            }
+            Command::Logout => {
+                init_tracing_simple("cli");
+                let config = codel_shell::config::load_agent_config_disk_only()
+                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                codel_shell::agent::init::run_cli_logout(&config.codel_com_config)?;
+                codel_shell::instrumentation::finalize_and_exit(0);
             }
             Command::Wrap(ref wrap_args) => {
                 return codel_pager::wrap_cmd::run(wrap_args);
@@ -1916,8 +2426,17 @@ async fn async_main(args: PagerArgs) -> Result<()> {
         args.prompt_json.as_deref(),
         args.prompt_file.as_deref(),
     )?;
-    if let Some(prompt) = headless_prompt {
+    if headless_prompt.is_some() || args.memory_flush {
+        if args.memory_flush
+            && headless_prompt.is_none()
+            && args.resume_session.is_none()
+            && args.load_session.is_none()
+            && !args.continue_last_session
+        {
+            anyhow::bail!("--memory-flush without a prompt requires --resume/-r or --continue/-c");
+        }
         init_tracing_simple(HEADLESS_ENTRYPOINT);
+        let _otel_guard = codel_logging::otel_layer::otel_guard();
         enforce_version_policy_or_exit();
         let launch_yolo = codel_shell::util::config::effective_yolo_for_launch(
             args.yolo,
@@ -1937,8 +2456,10 @@ async fn async_main(args: PagerArgs) -> Result<()> {
         {
             args.output_format = codel_pager::headless::OutputFormat::Json;
         }
+        let memory_enabled_override = args.memory_enabled_override();
+        let memory_flush = args.memory_flush;
         return codel_pager::headless::run_single_turn(
-            prompt,
+            headless_prompt,
             args.verbatim,
             codel_pager::headless::HeadlessOptions {
                 session_id: args.session_id.clone(),
@@ -1948,6 +2469,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 yolo: launch_yolo.yolo,
                 trust: args.trust,
                 output_format: args.output_format,
+                include_partial_messages: args.include_partial_messages,
                 json_schema,
                 model: args.model,
                 rules: args.rules,
@@ -1955,6 +2477,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 continue_last_session: args.continue_last_session,
                 fork_session: args.fork_session,
                 worktree: args.worktree,
+                worktree_ref: args.worktree_ref,
                 restore_code: args.restore_code,
                 agent: args.agent.clone(),
                 agents_json: args.agents_json.clone(),
@@ -1970,11 +2493,14 @@ async fn async_main(args: PagerArgs) -> Result<()> {
                 background_wait_timeout: std::time::Duration::from_secs(
                     args.background_wait_timeout_secs,
                 ),
+                memory_flush,
+                memory_enabled_override,
             },
         )
         .await;
     }
     enforce_version_policy_or_exit();
+    let _otel_guard = codel_logging::otel_layer::otel_guard();
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
@@ -1995,6 +2521,7 @@ async fn async_main(args: PagerArgs) -> Result<()> {
             None
         };
     let result = codel_pager::app::run(args, bg_update_rx).await;
+    codel_sandbox::flush();
     match result {
         Ok(true) => {
             let adopted = bg_update_wait.lock().await.take();
@@ -2009,15 +2536,10 @@ async fn async_main(args: PagerArgs) -> Result<()> {
         Err(e) => Err(e),
     }
 }
-/// Complete the update after a quit-for-update (Ctrl+U) exit. Returns `true`
-/// when an update path completed without a reported failure.
-///
-/// Prefers awaiting the parked waiter for the background `codel update` child
-/// spawned at startup — the download is usually already done or in flight.
-/// Only when there is no waiter (spawn failed, or no download was needed
-/// because the target was already on disk) or the child failed does this
-/// fall back to a fresh blocking `codel update`, which itself resolves to
-/// "Already up to date" without downloading when the disk is current.
+/// Returns `true` when an update path completed without a reported failure. It falls back to a fresh blocking `codel
+/// update` only when there is no waiter or the child failed. (No waiter means the spawn failed or no download was
+/// needed because the target was already on disk.).
+#[tracing::instrument(level = "debug", skip_all)]
 async fn finish_update_on_exit(
     adopted: Option<tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>>,
     update_config: &UpdateConfig,
@@ -2029,6 +2551,7 @@ async fn finish_update_on_exit(
         auto_update::run_update_if_available(
             auto_update::UpdateRunMode::Blocking,
             false,
+            auto_update::CliUpdateTrigger::UserCommand,
             update_config,
         )
         .await
@@ -2082,8 +2605,7 @@ fn build_update_config() -> UpdateConfig {
     }
     config
 }
-/// Central gate for auto-update checks; add new suppression rules here,
-/// not at call sites.
+/// Central gate for auto-update checks; add new suppression rules here, not at call sites.
 fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
     if cfg!(debug_assertions) {
         return false;
@@ -2094,8 +2616,8 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
     !std::env::var_os("CODEL_DISABLE_AUTOUPDATER")
         .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
 }
-/// Gate for the stdio agent's background auto-update: only the direct stdio
-/// agent, from the managed install. Other modes update in `run_agent_command`.
+/// Gate for the stdio agent's background auto-update: only the direct stdio agent, from the managed install.
+/// Other modes update in `run_agent_command`.
 fn stdio_auto_update_enabled(
     is_stdio: bool,
     use_leader: bool,
@@ -2104,10 +2626,9 @@ fn stdio_auto_update_enabled(
 ) -> bool {
     is_stdio && !use_leader && updates_enabled && managed_install
 }
-/// True when `exe` is the binary `<codel_home>/bin/codel` resolves to, the
-/// install that adopts a staged update on respawn. Both sides are
-/// canonicalized; any failure reports unmanaged and skips the update. The
-/// npm shim hardcodes `~/.codel`, so a custom `CODEL_HOME` skips here too.
+/// True when `exe` is the binary `<codel_home>/bin/codel` resolves to, the install that adopts a staged update on
+/// respawn. Both sides are canonicalized; any failure reports unmanaged and skips the update. The npm shim
+/// hardcodes `~/.codel`, so a custom `CODEL_HOME` skips here too.
 fn is_managed_install(exe: Option<std::path::PathBuf>, codel_home: &std::path::Path) -> bool {
     if codel_home.as_os_str().is_empty() {
         return false;
@@ -2121,8 +2642,8 @@ fn is_managed_install(exe: Option<std::path::PathBuf>, codel_home: &std::path::P
         _ => false,
     }
 }
-/// Map the mutually-exclusive channel flags to a channel name. clap enforces
-/// that at most one is set, so the order is irrelevant.
+/// Map the mutually-exclusive channel flags to a channel name.
+/// clap enforces that at most one is set, so the order is irrelevant.
 fn get_channel_switch(alpha: bool, stable: bool, enterprise: bool) -> Option<&'static str> {
     if alpha {
         Some("alpha")
@@ -2135,12 +2656,29 @@ fn get_channel_switch(alpha: bool, stable: bool, enterprise: bool) -> Option<&'s
     }
 }
 /// Handle `codel-pager update [--check] [--json] [--force-reinstall] [--version X] [--alpha|--stable|--enterprise]`.
+/// --trigger is the one representation; --auto is the compat alias from older parents.
+/// Unknown values fall back to user_command (a human is the only caller that can produce them).
+fn resolve_update_trigger(flag: Option<&str>, auto: bool) -> auto_update::CliUpdateTrigger {
+    if let Some(flag) = flag {
+        match flag.parse() {
+            Ok(t) => return t,
+            Err(e) => tracing::warn!("{e}; recording user_command"),
+        }
+    }
+    if auto {
+        auto_update::CliUpdateTrigger::AutoBackground
+    } else {
+        auto_update::CliUpdateTrigger::UserCommand
+    }
+}
+#[tracing::instrument(level = "debug", skip_all)]
 async fn run_update_command(
     check: bool,
     json: bool,
     force_reinstall: bool,
     version: Option<String>,
     channel_switch: Option<&str>,
+    trigger: auto_update::CliUpdateTrigger,
     base_update_config: &UpdateConfig,
 ) -> Result<()> {
     if json && !check {
@@ -2164,25 +2702,38 @@ async fn run_update_command(
             v
         );
     }
-    let installed = auto_update::run_update(
+    let telemetry_cfg = codel_shell::config::load_agent_config_disk_only()
+        .map_err(|e| tracing::warn!("codel update: telemetry init skipped (agent config: {e})"))
+        .ok();
+    if let Some(agent_cfg) = telemetry_cfg {
+        let auth_manager =
+            std::sync::Arc::new(codel_login::AuthManager::new_with_proxy_base_url(
+                &codel_shell::util::codel_home::codel_home(),
+                agent_cfg.codel_com_config.clone(),
+                agent_cfg.endpoints.proxy_url(),
+            ));
+        codel_shell::agent::init::update_telemetry_config(&agent_cfg, &auth_manager);
+    }
+    let result = auto_update::run_update(
         force_reinstall,
         version.as_deref(),
         channel_switch,
         &mut update_config,
+        trigger,
     )
-    .await?;
-    if let Some(installed_version) = installed {
-        signal_leaders_to_relaunch(&installed_version).await;
+    .await;
+    if let Ok(Some(installed_version)) = &result {
+        signal_leaders_to_relaunch(installed_version).await;
     }
+    codel_logging::session_ctx::drain_pending(codel_logging::session_ctx::CLI_DRAIN)
+        .await;
+    result?;
     Ok(())
 }
-/// After a successful `codel update`, ask any running leader on this machine that
-/// is older than `installed_version` to relaunch onto the new binary (bounded
-/// grace; running sessions close and reconnect via `session/load`).
-///
-/// Best-effort and non-fatal: discovery/connect/control failures are logged and
-/// skipped. The leader re-checks the directional version guard authoritatively;
-/// the pager-side `live_info` check just avoids connecting to newer leaders.
+/// After a successful `codel update`, ask any running leader on this machine that is older than `installed_version`
+/// to relaunch onto the new binary. Best-effort and non-fatal: discovery/connect/control failures are logged and
+/// skipped.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn signal_leaders_to_relaunch(installed_version: &str) {
     for d in codel_shell::leader::discover_leaders().await {
         if d.classification != codel_shell::leader::LeaderDiscoveryState::Reachable {
@@ -2245,7 +2796,119 @@ async fn signal_leaders_to_relaunch(installed_version: &str) {
 mod tests {
     use super::*;
     #[test]
+    fn embedded_agent_commands_heal_managed_policy_before_sandboxing() {
+        for args in [
+            vec!["codel"],
+            vec!["codel", "agent", "stdio"],
+            vec!["codel", "dashboard"],
+            vec!["codel", "models"],
+            vec!["codel", "worktree", "list"],
+        ] {
+            let args = PagerArgs::try_parse_from(args).unwrap();
+            assert!(
+                command_needs_pre_sandbox_policy_heal(args.command.as_ref()),
+                "{args:?}"
+            );
+        }
+    }
+    #[test]
+    fn utility_commands_skip_managed_policy_heal() {
+        for args in [
+            vec!["codel", "inspect"],
+            vec!["codel", "mcp", "list"],
+            vec!["codel", "sessions", "list"],
+            vec!["codel", "version"],
+        ] {
+            let args = PagerArgs::try_parse_from(args).unwrap();
+            assert!(
+                !command_needs_pre_sandbox_policy_heal(args.command.as_ref()),
+                "{args:?}"
+            );
+        }
+    }
+    #[test]
+    fn default_caps_the_core_count() {
+        let nz = |n| NonZeroUsize::new(n).unwrap();
+        assert_eq!(default_worker_threads(nz(360)), DEFAULT_MAX_WORKER_THREADS);
+        assert_eq!(default_worker_threads(nz(4)), nz(4));
+    }
+    #[test]
+    fn worker_threads_from_selects_default_or_override() {
+        let nz = |n| NonZeroUsize::new(n).unwrap();
+        let cores = nz(360);
+        assert_eq!(
+            worker_threads_from(None, cores),
+            WorkerCount::Accepted(default_worker_threads(cores))
+        );
+        assert_eq!(
+            worker_threads_from(Some("16"), cores),
+            WorkerCount::Accepted(nz(16))
+        );
+    }
+    #[test]
+    fn override_in_range_is_used_without_a_notice() {
+        let nz = |n| NonZeroUsize::new(n).unwrap();
+        let cores = nz(360);
+        assert_eq!(
+            resolve_worker_override("16", cores),
+            WorkerCount::Accepted(nz(16))
+        );
+        assert_eq!(resolve_worker_override("16", cores).notice(), None);
+        assert_eq!(resolve_worker_override(" 8 ", cores).used().get(), 8);
+        assert_eq!(
+            resolve_worker_override("360", cores),
+            WorkerCount::Accepted(cores)
+        );
+    }
+    #[test]
+    fn override_out_of_range_is_clamped_with_a_notice() {
+        let nz = |n| NonZeroUsize::new(n).unwrap();
+        let cores = nz(360);
+        assert_eq!(
+            resolve_worker_override("100000", cores),
+            WorkerCount::Clamped {
+                requested: 100000,
+                used: cores,
+                cores
+            }
+        );
+        assert_eq!(
+            resolve_worker_override("0", cores),
+            WorkerCount::Clamped {
+                requested: 0,
+                used: nz(1),
+                cores
+            }
+        );
+        assert_eq!(
+            resolve_worker_override("-1", cores),
+            WorkerCount::Clamped {
+                requested: -1,
+                used: nz(1),
+                cores
+            }
+        );
+        assert_eq!(
+            resolve_worker_override("100000", cores).notice().unwrap(),
+            "codel: clamped CODEL_WORKER_THREADS=100000 to 360 (valid range is 1..=360)"
+        );
+    }
+    #[test]
+    fn override_unparseable_is_ignored_with_a_notice() {
+        let cores = NonZeroUsize::new(360).unwrap();
+        for value in ["abc", "", "99999999999999999999999999999999999999999"] {
+            let ignored = resolve_worker_override(value, cores);
+            assert!(matches!(ignored, WorkerCount::Ignored { .. }), "{value}");
+            assert_eq!(ignored.used(), default_worker_threads(cores), "{value}");
+        }
+        assert_eq!(
+            resolve_worker_override("abc", cores).notice().unwrap(),
+            "codel: ignoring CODEL_WORKER_THREADS=\"abc\" (not a valid integer)"
+        );
+    }
+    #[test]
     fn version_output_writer_preserves_channel_aware_contract() {
+        codel_version::set_full_version(env!("VERSION_WITH_COMMIT"));
         for (label, expected_suffix) in [
             (" [alpha]", " [alpha]\n"),
             (" [stable]", " [stable]\n"),
@@ -2471,9 +3134,8 @@ mod tests {
         );
     }
     use clap::Parser as _;
-    /// `codel dashboard` flags the startup hook without forcing leader mode —
-    /// the dashboard is independent of leader mode, so the launch keeps
-    /// whatever leader setting the user (or config) chose.
+    /// `codel dashboard` flags the startup hook without forcing leader mode.
+    /// The dashboard is independent of leader mode, so the launch keeps whatever leader setting the user (or config) chose.
     #[serial_test::serial(CODEL_AGENT_DASHBOARD)]
     #[test]
     fn dashboard_subcommand_flags_startup_without_forcing_leader() {
@@ -2492,9 +3154,8 @@ mod tests {
         );
         unsafe { std::env::remove_var("CODEL_OPEN_DASHBOARD_AT_STARTUP") };
     }
-    /// `codel dashboard --no-leader` is allowed — the dashboard does not
-    /// require a leader, so the combination launches into the dashboard in
-    /// non-leader mode.
+    /// `codel dashboard --no-leader` is allowed.
+    /// The dashboard does not require a leader, so the combination launches into the dashboard in non-leader mode.
     #[serial_test::serial(CODEL_AGENT_DASHBOARD)]
     #[test]
     fn dashboard_subcommand_allows_no_leader() {
@@ -2514,8 +3175,7 @@ mod tests {
         );
         unsafe { std::env::remove_var("CODEL_OPEN_DASHBOARD_AT_STARTUP") };
     }
-    /// `CODEL_AGENT_DASHBOARD=0` disables the feature — the subcommand
-    /// must error visibly before the TUI starts.
+    /// `CODEL_AGENT_DASHBOARD=0` disables the feature; the subcommand must error visibly before the TUI starts.
     #[serial_test::serial(CODEL_AGENT_DASHBOARD)]
     #[test]
     fn dashboard_subcommand_errors_when_disabled() {
@@ -2592,7 +3252,9 @@ mod tests {
         let msg = r#"{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"s1","cwd":"/tmp","mcpServers":[]}}"#;
         cache_outgoing_acp_state(msg, &state);
         let s = state.lock().unwrap();
-        let (sid, cached) = &s.sessions[0];
+        let Some((sid, cached)) = s.sessions.first() else {
+            panic!("expected a cached session, got {}", s.sessions.len());
+        };
         assert_eq!(sid, "s1");
         assert_eq!(cached.load_request_json.as_deref(), Some(msg));
         assert_eq!(cached.cwd.as_deref(), Some("/tmp"));
@@ -2609,7 +3271,7 @@ mod tests {
         {
             let s = state.lock().unwrap();
             assert_eq!(s.sessions.len(), 1);
-            assert_eq!(s.sessions[0].0, "s1");
+            assert_eq!(s.sessions.first().map(|(id, _)| id.as_str()), Some("s1"));
             assert!(s.pending_new.is_some());
             assert_eq!(
                 s.pending_new.as_ref().unwrap().cwd.as_deref(),
@@ -2623,8 +3285,11 @@ mod tests {
         let s = state.lock().unwrap();
         assert!(s.pending_new.is_none());
         assert_eq!(s.sessions.len(), 2);
-        assert_eq!(s.sessions[1].0, "s2");
-        assert_eq!(s.sessions[1].1.cwd.as_deref(), Some("/home"));
+        assert_eq!(s.sessions.get(1).map(|(id, _)| id.as_str()), Some("s2"));
+        assert_eq!(
+            s.sessions.get(1).and_then(|(_, c)| c.cwd.as_deref()),
+            Some("/home")
+        );
         assert_eq!(s.last_session_id.as_deref(), Some("s2"));
     }
     #[test]
@@ -2635,16 +3300,72 @@ mod tests {
             &state,
         );
         cache_outgoing_acp_state(
-            r#"{"jsonrpc":"2.0","id":3,"method":"_codel.dev/session/close","params":{"sessionId":"s1"}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"_codel/session/close","params":{"sessionId":"s1"}}"#,
             &state,
         );
         let s = state.lock().unwrap();
         assert!(s.sessions.is_empty(), "closed session must not be replayed");
         assert!(s.last_session_id.is_none());
     }
-    /// An UNCONFIRMED `session/new` (leader died before its response) must not
-    /// be replayed — its id was never assigned — but previously loaded
-    /// sessions still restore.
+    /// The standard close spelling must stop the replay exactly like the `codel/` extension spelling.
+    /// Adopting `session/close` without teaching the cache would resurrect closed sessions on every leader reconnect.
+    #[test]
+    fn cache_standard_session_close_stops_replaying_it() {
+        let state = make_state();
+        cache_outgoing_acp_state(
+            r#"{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"s1","cwd":"/tmp"}}"#,
+            &state,
+        );
+        cache_outgoing_acp_state(
+            r#"{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"s1"}}"#,
+            &state,
+        );
+        let s = state.lock().unwrap();
+        assert!(s.sessions.is_empty(), "closed session must not be replayed");
+        assert!(s.last_session_id.is_none());
+    }
+    /// A session only ever resumed must survive a leader restart: the cache synthesizes a load entry, since a new leader has no turn to reattach to.
+    #[test]
+    fn cache_session_resume_registers_unknown_sessions_for_replay() {
+        let state = make_state();
+        cache_outgoing_acp_state(
+            r#"{"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":"s1","cwd":"/proj"}}"#,
+            &state,
+        );
+        let s = state.lock().unwrap();
+        let Some((sid, cached)) = s.sessions.first() else {
+            panic!("expected a cached session, got {}", s.sessions.len());
+        };
+        assert_eq!(sid, "s1");
+        assert_eq!(
+            cached.load_request_json, None,
+            "a resume must not be replayed verbatim; the replay synthesizes a load"
+        );
+        assert_eq!(cached.cwd.as_deref(), Some("/proj"));
+        assert_eq!(s.last_session_id.as_deref(), Some("s1"));
+    }
+    /// A resume must not displace the original load's entry: that entry carries the client's `_meta`, which a synthesized load cannot reproduce.
+    #[test]
+    fn cache_session_resume_does_not_displace_the_original_load() {
+        let state = make_state();
+        let load = r#"{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"s1","cwd":"/tmp","_meta":{"noReplay":true}}}"#;
+        cache_outgoing_acp_state(load, &state);
+        cache_outgoing_acp_state(
+            r#"{"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":"s1","cwd":"/tmp"}}"#,
+            &state,
+        );
+        let s = state.lock().unwrap();
+        assert_eq!(s.sessions.len(), 1, "one session, one replay entry");
+        assert_eq!(
+            s.sessions
+                .first()
+                .and_then(|(_, c)| c.load_request_json.as_deref()),
+            Some(load),
+            "the original load, with its _meta, must survive the resume"
+        );
+    }
+    /// An UNCONFIRMED `session/new` (leader died before its response) must not be replayed, since its id was never assigned.
+    /// Previously loaded sessions still restore.
     #[tokio::test]
     async fn replay_after_unconfirmed_session_new_restores_prior_sessions() {
         let state = make_state();
@@ -2694,14 +3415,25 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("fallback replay JSON must be valid");
         assert_eq!(
-            parsed["params"]["sessionId"].as_str().unwrap(),
+            parsed
+                .get("params")
+                .and_then(|p| p.get("sessionId"))
+                .and_then(|v| v.as_str())
+                .unwrap(),
             r#"session"with"quotes"#
         );
         assert_eq!(
-            parsed["params"]["cwd"].as_str().unwrap(),
+            parsed
+                .get("params")
+                .and_then(|p| p.get("cwd"))
+                .and_then(|v| v.as_str())
+                .unwrap(),
             r#"C:\Users\test path"#
         );
-        assert_eq!(parsed["id"].as_str(), Some(REPLAY_LOAD_REQUEST_ID));
+        assert_eq!(
+            parsed.get("id").and_then(|v| v.as_str()),
+            Some(REPLAY_LOAD_REQUEST_ID)
+        );
     }
     #[test]
     fn cache_incoming_session_id_from_response() {
@@ -2715,7 +3447,10 @@ mod tests {
         let s = state.lock().unwrap();
         assert_eq!(s.last_session_id.as_deref(), Some("abc123"));
         assert_eq!(s.sessions.len(), 1);
-        assert_eq!(s.sessions[0].0, "abc123");
+        assert_eq!(
+            s.sessions.first().map(|(id, _)| id.as_str()),
+            Some("abc123")
+        );
     }
     /// A multi-session client (IDE driving several sessions over one bridge)
     /// gets EVERY session replayed after a reconnect, in first-seen order.
@@ -2753,7 +3488,10 @@ mod tests {
             let load2 = leader_rx.recv().await.unwrap();
             assert!(load2.contains("sess-2"), "expected sess-2 second: {load2}");
             let load2_json: serde_json::Value = serde_json::from_str(&load2).unwrap();
-            assert_eq!(load2_json["id"].as_str(), Some(REPLAY_LOAD_REQUEST_ID));
+            assert_eq!(
+                load2_json.get("id").and_then(|v| v.as_str()),
+                Some(REPLAY_LOAD_REQUEST_ID)
+            );
             response_tx
                 .send(
                     serde_json::json!({
@@ -2772,8 +3510,7 @@ mod tests {
         assert_eq!(result.as_deref(), Some("sess-2"));
         responder.await.unwrap();
     }
-    /// One broken session must not doom the rest: a rejected load is skipped
-    /// and the remaining sessions still restore.
+    /// One broken session must not doom the rest: a rejected load is skipped and the remaining sessions still restore.
     #[tokio::test]
     async fn replay_skips_rejected_session_and_restores_the_rest() {
         let state = make_state();
@@ -2867,15 +3604,8 @@ mod tests {
         );
         responder.await.unwrap();
     }
-    /// Regression test for the post-leader-crash "unknown session id" bug.
-    ///
-    /// `session/load` streams replay notifications BEFORE its response. The
-    /// old drain logic consumed exactly one message per replayed request and
-    /// returned — declaring the reconnect complete while the new leader was
-    /// still loading the session. The replay must instead:
-    ///   1. wait for the actual `session/load` RESPONSE (matched by id),
-    ///   2. forward interleaved notifications to the client verbatim,
-    ///   3. swallow only the responses to the replayed requests.
+    /// Regression test for the "unknown session id" bug after a leader crash. The replay must instead. swallow only the
+    /// responses to the replayed requests.
     #[tokio::test]
     async fn replay_waits_for_load_response_through_notifications() {
         let (leader_tx, mut leader_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2894,7 +3624,7 @@ mod tests {
             let _init = leader_rx.recv().await.unwrap();
             response_tx
                 .send(
-                    r#"{"jsonrpc":"2.0","method":"codel.dev/leader/version_mismatch","params":{}}"#
+                    r#"{"jsonrpc":"2.0","method":"codel/leader/version_mismatch","params":{}}"#
                         .to_string(),
                 )
                 .unwrap();
@@ -2930,18 +3660,19 @@ mod tests {
             4,
             "expected exactly the 4 notifications, got: {lines:?}"
         );
-        assert!(lines[0].contains("version_mismatch"));
-        assert!(lines[1].contains(r#""n":0"#));
-        assert!(lines[2].contains(r#""n":1"#));
-        assert!(lines[3].contains(r#""n":2"#));
+        let [l0, l1, l2, l3] = lines.as_slice() else {
+            panic!("expected 4 forwarded lines: {lines:?}");
+        };
+        assert!(l0.contains("version_mismatch"));
+        assert!(l1.contains(r#""n":0"#));
+        assert!(l2.contains(r#""n":1"#));
+        assert!(l3.contains(r#""n":2"#));
         assert!(!forwarded.contains(r#""id":7"#), "init response leaked");
         assert!(!forwarded.contains(r#""id":8"#), "load response leaked");
         responder.await.unwrap();
     }
-    /// A `session/load` rejected by the new leader (error response) must
-    /// surface as a failed replay (`None`) so the bridge emits
-    /// `codel.dev/leader_reconnected` with empty params and the external client
-    /// knows to re-establish state itself.
+    /// A `session/load` rejected by the new leader (error response) must surface as a failed replay (`None`).
+    /// The bridge then emits `codel/leader_reconnected` with empty params and the external client knows to re-establish state itself.
     #[tokio::test]
     async fn replay_returns_none_when_load_is_rejected() {
         let (leader_tx, mut leader_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2975,9 +3706,8 @@ mod tests {
         assert!(result.is_none(), "rejected load must not claim success");
         responder.await.unwrap();
     }
-    /// The synthetic fallback `session/load` (client only ever sent
-    /// `session/new`) uses a string request id that cannot collide with the
-    /// external client's numeric ids — and the response matcher honors it.
+    /// The synthetic fallback `session/load` (client only ever sent `session/new`) uses a string request id.
+    /// That id cannot collide with the external client's numeric ids, and the response matcher honors it.
     #[tokio::test]
     async fn replay_fallback_load_uses_reserved_string_id() {
         let (leader_tx, mut leader_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -3004,7 +3734,7 @@ mod tests {
             let load = leader_rx.recv().await.unwrap();
             let load_json: serde_json::Value = serde_json::from_str(&load).unwrap();
             assert_eq!(
-                load_json["id"].as_str(),
+                load_json.get("id").and_then(|v| v.as_str()),
                 Some(REPLAY_LOAD_REQUEST_ID),
                 "fallback load must use the reserved string id"
             );
@@ -3032,32 +3762,6 @@ mod tests {
             .expect("build runtime")
     }
     #[test]
-    fn run_and_shutdown_bounds_teardown_despite_stuck_blocking_task() {
-        use std::time::{Duration, Instant};
-        let grace = Duration::from_millis(200);
-        let ceiling = grace * 8;
-        let stuck_sleep = Duration::from_secs(10);
-        let runtime = multi_thread_runtime();
-        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
-        runtime.spawn_blocking(move || {
-            let _ = started_tx.send(());
-            std::thread::sleep(stuck_sleep);
-        });
-        started_rx.recv().expect("blocking task must start");
-        let start = Instant::now();
-        let out = run_and_shutdown(runtime, async { 7_u32 }, grace);
-        let elapsed = start.elapsed();
-        assert_eq!(out, 7, "must return the future's output");
-        assert!(
-            elapsed >= grace,
-            "returned in {elapsed:?}, before the {grace:?} grace — timeout not exercised",
-        );
-        assert!(
-            elapsed < ceiling,
-            "teardown took {elapsed:?}; stuck task must be abandoned under {ceiling:?}",
-        );
-    }
-    #[test]
     fn run_and_shutdown_is_fast_without_blocking_work() {
         use std::time::{Duration, Instant};
         let runtime = multi_thread_runtime();
@@ -3069,21 +3773,6 @@ mod tests {
         assert!(
             elapsed < grace,
             "clean teardown took {elapsed:?}; grace must be a ceiling, not a floor",
-        );
-    }
-    #[test]
-    fn run_and_shutdown_passes_err_output_through() {
-        use std::time::Duration;
-        let runtime = multi_thread_runtime();
-        let out = run_and_shutdown(
-            runtime,
-            async { Err::<(), String>("boom".to_string()) },
-            Duration::from_secs(5),
-        );
-        assert_eq!(
-            out,
-            Err("boom".to_string()),
-            "Err output must pass through unchanged",
         );
     }
 }

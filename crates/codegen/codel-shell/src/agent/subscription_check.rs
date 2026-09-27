@@ -1,41 +1,39 @@
-//! Subscription check for paywall gate lift.
+//! Checks the live subscription tier so the paywall gate can lift.
 //!
-//! Provides `single_check()` which queries `GET /user?include=subscription`
-//! for the live subscription tier from the backend, independent of the JWT.
-//! If a qualifying tier is detected, does a best-effort JWT refresh and
-//! returns an `UnblockResult` so the agent can re-fetch settings and lift
-//! the gate through its own settings seam.
+//! `single_check()` queries `GET /user?include=subscription` on the backend for the live tier, independent of the JWT.
+//! On a qualifying tier it does a best-effort JWT refresh and returns an `UnblockResult`.
+//! The agent then re-fetches settings and lifts the gate itself.
 //!
-//! The pager drives the polling via `codel/auth/check_subscription`: the 5s
-//! paywall chain, the free-tier watch, the refocus check, and
-//! verify-before-paywall gate deferral (see the pager's `app::subscription`
-//! module).
-use crate::auth::AuthManager;
-use crate::auth::UserInfo;
-use crate::auth::manager::RefreshReason;
-use crate::auth::token_type::TokenType;
+//! The pager drives the polling via `codel/auth/check_subscription`.
+//! The callers are the 5s paywall chain, the free-tier watch, the refocus check, and the gate deferral that verifies before showing the paywall.
+//! See the pager's `app::subscription` module.
 use std::sync::Arc;
 use std::time::Duration;
-/// Subscription tiers that qualify for Codel Build access.
-/// Any active subscription qualifies -- the access gate in remote settings
-/// controls which tiers are actually allowed.
-const QUALIFYING_TIERS: &[&str] = &[
-    "SuperCodelPro",
-    "CodelPro",
-    "SuperCodelLite",
-    "XPremiumPlus",
-    "XPremium",
-    "XBasic",
-];
-/// Successful subscription check result: a confirmed qualifying tier.
+use codel_login::AuthManager;
+use codel_login::UserInfo;
+use codel_login::manager::{BEST_EFFORT_REFRESH_TIMEOUT, BoundedRefresh, RefreshReason};
+use codel_login::token_type::TokenType;
+/// Any active subscription qualifies: the proxy only returns a tier when an active subscription exists (`None` otherwise).
+/// The access gate in remote settings controls which tiers are actually allowed.
+/// The `"Free"` guard is defense-in-depth should the proxy ever start stamping free users explicitly.
+fn is_qualifying_tier(tier: &str) -> bool {
+    !tier.is_empty() && tier != "Free"
+}
+/// Returned only when the check confirmed a qualifying tier.
 pub(crate) struct UnblockResult {
     pub(crate) new_tier: String,
+    /// The `userId` from the `/user` response that confirmed the tier, resolved with the live bearer so it names the account the check started with. The caller's identity guard accepts it alongside the started user_id.
+    /// The mint below spawns a `/user` enrichment that can rewrite a seeded or stale user_id to this canonical value mid-check. That rewrite is not an account switch.
+    pub(crate) canonical_user_id: String,
+    /// True when the best-effort refresh below hit its bounded deadline with the exchange still running (detached, not dropped).
+    /// The caller must not force a second mint then: it would only queue behind the detached exchange for up to another full budget.
+    /// That would hold the gate lift past the single budget while the subscription is already confirmed.
+    pub(crate) refresh_deadline_hit: bool,
 }
-/// Fetch `/user?include=subscription` and return the parsed `UserInfo`.
 async fn fetch_user_info(
     http_client: &reqwest::Client,
     url: &str,
-    auth: &crate::auth::CodelAuth,
+    auth: &codel_login::CodelAuth,
     auth_manager: &AuthManager,
     alpha_test_key: Option<&str>,
 ) -> Result<UserInfo, &'static str> {
@@ -44,10 +42,14 @@ async fn fetch_user_info(
         .timeout(Duration::from_secs(10))
         .header("Authorization", format!("Bearer {}", auth.key))
         .header(
-            "X-Codel-Token-Auth",
+            "X-CODEL-Token-Auth",
             auth_manager.codel_com_config().token_header.as_str(),
         )
-        .header("x-codel-client-version", codel_version::VERSION);
+        .header("x-codel-client-version", codel_version::VERSION)
+        .header(
+            crate::http::CLIENT_MODE_HEADER,
+            crate::http::process_client_mode(),
+        );
     let _ = alpha_test_key;
     match request.send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -58,20 +60,20 @@ async fn fetch_user_info(
         Err(_) => Err("transport"),
     }
 }
-/// Single-shot subscription check. Called by the pager every 5s while
-/// the paywall is shown (`codel/auth/check_subscription`).
-///
-/// Queries `/user?include=subscription` for the live tier. If a qualifying
-/// tier is found, does a best-effort JWT refresh and returns
-/// `Some(UnblockResult)`. Returns `None` if no qualifying subscription
-/// exists or the request fails.
-#[tracing::instrument(name = "paywall_check", skip_all, fields(user_id = %user_id))]
+/// Called by the pager every 5s while the paywall is shown (`codel/auth/check_subscription`).
+/// Queries `/user?include=subscription` for the live tier.
+/// On a qualifying tier it does a best-effort JWT refresh and returns `Some(UnblockResult)`.
+#[tracing::instrument(name = "auth.paywall_check", skip_all, fields(user_id = %user_id))]
 pub(crate) async fn single_check(
     auth_manager: Arc<AuthManager>,
     proxy_base_url: &str,
     alpha_test_key: Option<&str>,
     user_id: &str,
 ) -> Option<UnblockResult> {
+    use codel_login::backend::{ActiveAuthBackend, AuthBackend};
+    if !ActiveAuthBackend::default().is_codel_authority() {
+        return None;
+    }
     let user_url = format!("{}/user?include=subscription", proxy_base_url);
     let http_client = crate::http::shared_client();
     let auth = auth_manager.current()?;
@@ -86,52 +88,103 @@ pub(crate) async fn single_check(
     {
         Ok(ui) => ui,
         Err(kind) => {
+            codel_logging::unified_log::warn(
+                "paywall_check_error",
+                None,
+                Some(serde_json::json!({ "user_id": user_id, "kind": kind })),
+            );
             return None;
         }
     };
+    codel_logging::unified_log::info(
+        "paywall_check_result",
+        None,
+        Some(serde_json::json!({
+            "user_id": user_id,
+            "subscription_tier": user_info.subscription_tier,
+        })),
+    );
     let new_tier = match &user_info.subscription_tier {
         Some(tier) if !tier.is_empty() => tier.clone(),
         _ => return None,
     };
-    if !QUALIFYING_TIERS.contains(&new_tier.as_str()) {
+    if !is_qualifying_tier(&new_tier) {
         return None;
     }
-    // API-key-only: no refresh chain available. Log and continue.
-    Some(UnblockResult { new_tier })
+    codel_logging::unified_log::info(
+        "paywall_check_subscription_detected",
+        None,
+        Some(serde_json::json!({
+            "user_id": user_id,
+            "new_tier": new_tier,
+        })),
+    );
+    let refresh_deadline_hit = match auth_manager
+        .refresh_chain_bounded_outcome(
+            TokenType::OidcSession,
+            RefreshReason::ServerRejected,
+            BEST_EFFORT_REFRESH_TIMEOUT,
+        )
+        .await
+    {
+        BoundedRefresh::Resolved(result) => {
+            if let Err(e) = *result {
+                codel_logging::unified_log::warn(
+                    "paywall_check_error",
+                    None,
+                    Some(serde_json::json!({
+                        "user_id": user_id,
+                        "kind": "refresh_failed",
+                        "detail": e.to_string(),
+                    })),
+                );
+            }
+            false
+        }
+        BoundedRefresh::DeadlineElapsed => {
+            codel_logging::unified_log::warn(
+                "paywall_check_error",
+                None,
+                Some(serde_json::json!({
+                    "user_id": user_id,
+                    "kind": "refresh_deadline",
+                    "detail": "bounded refresh deadline elapsed; mint continues in background",
+                })),
+            );
+            true
+        }
+    };
+    codel_logging::unified_log::info(
+        "paywall_check_unblocked",
+        None,
+        Some(serde_json::json!({ "user_id": user_id, "new_tier": new_tier })),
+    );
+    Some(UnblockResult {
+        new_tier,
+        canonical_user_id: user_info.user_id,
+        refresh_deadline_hit,
+    })
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn qualifying_tiers_includes_all_paid_tiers() {
+    fn all_paid_tiers_qualify() {
         for tier in &[
             "SuperCodelPro",
+            "SuperCodelPlus",
             "CodelPro",
             "SuperCodelLite",
             "XPremiumPlus",
             "XPremium",
             "XBasic",
         ] {
-            assert!(
-                QUALIFYING_TIERS.contains(tier),
-                "{tier} must be in QUALIFYING_TIERS"
-            );
+            assert!(is_qualifying_tier(tier), "{tier} must qualify");
         }
     }
     #[test]
-    fn free_tier_is_not_qualifying() {
-        assert!(!QUALIFYING_TIERS.contains(&"Free"));
-    }
-    #[test]
-    fn empty_tier_is_not_qualifying() {
-        assert!(!QUALIFYING_TIERS.contains(&""));
-    }
-    /// The subscription check only returns `Some` when `/user` reports a
-    /// qualifying tier. Verify the tier matching is exact (no prefix match).
-    #[test]
-    fn partial_tier_name_is_not_qualifying() {
-        assert!(!QUALIFYING_TIERS.contains(&"Super"));
-        assert!(!QUALIFYING_TIERS.contains(&"Codel"));
-        assert!(!QUALIFYING_TIERS.contains(&"XPremium+"));
+    fn free_and_empty_tiers_are_not_qualifying() {
+        assert!(!is_qualifying_tier("Free"));
+        assert!(!is_qualifying_tier(""));
     }
 }

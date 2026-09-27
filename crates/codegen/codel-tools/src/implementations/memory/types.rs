@@ -10,17 +10,13 @@ pub struct MemorySearchInput {
     /// conversational language. Good: "authentication middleware patterns".
     /// Bad: "that thing we discussed about auth".
     pub query: String,
-    /// Maximum number of results to return.
-    ///
-    /// When omitted the backend-configured value is used (typically 6 from
-    /// `[memory.search].max_results`), so leaving this unset is preferred
-    /// for normal queries.
+    /// Maximum number of results to return. When omitted the backend-configured value is used
+    /// (typically 6 from `[memory.search].max_results`), so leaving this unset is preferred for
+    /// normal queries.
     #[serde(default)]
     pub max_results: Option<usize>,
-    /// Minimum relevance score threshold.
-    ///
-    /// When omitted the backend-configured value is used (typically 0.0 from
-    /// `[memory.search].min_score`).
+    /// Minimum relevance score threshold. When omitted the backend-configured value is used
+    /// (typically 0.0 from `[memory.search].min_score`).
     #[serde(default)]
     pub min_score: Option<f64>,
 }
@@ -37,7 +33,8 @@ pub struct MemorySearchOutput {
 pub struct MemoryGetInput {
     /// Path to the memory file to read.
     pub path: String,
-    /// 0-based start line (default: beginning of file).
+    /// 1-based start line, matching the line numbers in the tool's output
+    /// (default: beginning of file). 0 is accepted and treated as 1.
     #[serde(default)]
     pub from: Option<usize>,
     /// Maximum number of lines to return (default: all).

@@ -2,21 +2,16 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use notify::RecursiveMode;
+use notify::{RecursiveMode, Watcher};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer_opt};
 use tokio::sync::mpsc;
 
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(1000);
 
-/// A [`notify::Watcher`] that drops `EventKind::Access` before it reaches the
-/// debouncer, breaking the MCP/skills reload storm.
-///
-/// `notify`'s inotify backend emits an `Access` event on every *read*, and the
-/// leader re-reads the files it watches on each reload — so unfiltered, a
-/// reload's own reads schedule the next reload, a ~1/sec self-sustaining loop.
-/// Dropping `Access` is safe: writes still emit `Modify`/`Create` and chmod
-/// emits `Modify(Metadata)`; only reads are `Access`-only.
-pub struct AccessFilteredWatcher(notify::RecommendedWatcher);
+/// A [`notify::Watcher`] that drops `EventKind::Access` before it reaches the debouncer, breaking the MCP/skills reload storm.
+/// `notify`'s inotify backend emits an `Access` event on every *read*, and the leader re-reads the files it watches on each reload.
+/// Unfiltered, a reload's own reads schedule the next reload, a self-sustaining loop at roughly one per second. Dropping `Access` is safe: writes still emit `Modify`/`Create` and chmod emits `Modify(Metadata)`; only reads are `Access`-only.
+pub(crate) struct AccessFilteredWatcher(notify::RecommendedWatcher);
 
 impl notify::Watcher for AccessFilteredWatcher {
     fn new<F: notify::EventHandler>(
@@ -56,8 +51,7 @@ impl notify::Watcher for AccessFilteredWatcher {
     }
 }
 
-/// `new_debouncer` equivalent that builds the debouncer on top of
-/// [`AccessFilteredWatcher`] instead of the raw `RecommendedWatcher`.
+/// `new_debouncer` equivalent that builds the debouncer on top of [`AccessFilteredWatcher`] instead of the raw `RecommendedWatcher`.
 fn new_filtered_debouncer<F: notify_debouncer_mini::DebounceEventHandler>(
     timeout: Duration,
     event_handler: F,
@@ -70,76 +64,37 @@ fn new_filtered_debouncer<F: notify_debouncer_mini::DebounceEventHandler>(
 pub enum ConfigChangeEvent {
     AuthChanged,
     GlobalConfigChanged,
-    /// `~/.codel/models_cache.json` changed — the on-disk `/v1/models`
-    /// catalog cache was rewritten, possibly by **another** codel process
-    /// sharing the same `~/.codel` (the writer may also be this process;
-    /// the [`ModelsManager`](crate::agent::models::ModelsManager) dedupes
-    /// by content before applying).
+    /// `~/.codel/models_cache.json` changed — the on-disk `/v1/models` catalog cache was rewritten, possibly by **another** codel process sharing the same `~/.codel` (the writer may also be this process; the [`ModelsManager`](crate::agent::remote_config::ModelsManager) dedupes by content before applying).
     ModelsCacheChanged,
     ProjectConfigChanged {
         path: PathBuf,
     },
-    /// A project-scoped MCP config file changed
-    /// (`<cwd>/.mcp.json` or `<cwd>/.claude.json` where `<cwd>` is a
-    /// project root, **not** `$HOME`). Project `<cwd>` is derived
-    /// from `path.parent()` by the reloader.
+    /// A project-scoped MCP config file changed (`<cwd>/.mcp.json` or `<cwd>/.claude.json` where `<cwd>` is a project root, **not** `$HOME`).
+    /// Project `<cwd>` is derived from `path.parent()` by the reloader.
     McpConfigChanged {
         path: PathBuf,
     },
-    /// The user's **home-level** `~/.claude.json` changed. Distinct
-    /// from [`Self::McpConfigChanged`] because `~/.claude.json` is
-    /// loaded for **every** session regardless of cwd (see
-    /// `load_claude_json_mcp_servers_as_configs`), so the reload
-    /// must broadcast through the legacy unit
-    /// [`super::reloader::ConfigUpdate::McpServersChanged`] arm —
-    /// routing it through `ProjectMcpServersChanged { cwd: $HOME }`
-    /// would silently skip sessions whose cwd doesn't sit under
-    /// `$HOME`.
+    /// The user's **home-level** `~/.claude.json` changed. `load_claude_json_mcp_servers_as_configs` loads that file for every session regardless of cwd, unlike [`Self::McpConfigChanged`].
+    /// The reload must broadcast through the legacy unit [`super::reloader::ConfigUpdate::McpServersChanged`] arm.
+    /// Routing it through `ProjectMcpServersChanged { cwd: $HOME }` would silently skip sessions whose cwd doesn't sit under `$HOME`.
     HomeClaudeJsonChanged,
 }
 
-/// Watches `~/.codel/` for `auth.json`, `config.toml`, and `models_cache.json`
-/// changes, plus any extra paths (project `.codel/config.toml`, `.mcp.json`,
-/// etc.) provided at startup.
-///
-/// Uses `notify-debouncer-mini` for built-in debounce that coalesces rapid
-/// editor writes (including write-then-rename patterns).
-///
-/// Self-write suppression is intentionally omitted. When the agent writes
-/// `auth.json` or `config.toml`, the watcher will fire and the
-/// [`ConfigReloader`](super::reloader::ConfigReloader) will re-read the file.
-/// The reloader's own content-based deduplication (auth key hash, toml value
-/// comparison) skips the update when nothing actually changed, so the
-/// redundant read is harmless. This avoids a class of bugs where an
-/// optimistic suppression window accidentally swallows writes from external
-/// processes (e.g. CODEL_API_KEY in another terminal).
-///
-/// Adds two **non-recursive** watches per `cwd` argument:
-/// `<cwd>/` (catches `.mcp.json` and `.claude.json` at the project root) and
-/// `<cwd>/.codel/` (catches `<cwd>/.codel/config.toml`). Recursing on `<cwd>`
-/// would walk `node_modules/`, `target/`, `.git/`, etc. and blow through
-/// `fs.inotify.max_user_watches` on large repos. Use [`Self::watch_path`]
-/// to register additional cwds at runtime when new sessions open in
-/// previously-unwatched directories.
+/// Watches `~/.codel/` for `auth.json`, `config.toml`, and `models_cache.json` changes, plus any extra paths (project `.codel/config.toml`, `.mcp.json`, etc.) provided at startup.
+/// Uses `notify-debouncer-mini` for built-in debounce that coalesces rapid editor writes (including write-then-rename patterns). Self-write suppression is intentionally omitted.
+/// When the agent writes `auth.json` or `config.toml`, the watcher fires and the [`ConfigReloader`](super::reloader::ConfigReloader) re-reads it. The reloader's own content-based deduplication (auth key hash, toml value comparison) skips the update when nothing actually changed.
 pub struct ConfigFileWatcher {
     debouncer: Debouncer<AccessFilteredWatcher>,
-    /// Project cwds currently registered (via [`Self::start`]'s `cwd`
-    /// argument or [`Self::watch_path`]). Tracked so that
-    /// (a) [`Self::watch_path`] is idempotent at our layer instead of
-    /// relying on `notify`'s internal de-dup, and
-    /// (b) [`Self::unwatch_path`] can drop the OS watches for a cwd
-    /// that is no longer needed, bounding inotify-watch accumulation
-    /// as sessions churn across directories.
+    /// Project cwds currently registered (via [`Self::start`]'s `cwd` argument or [`Self::watch_path`]). Tracked so that [`Self::watch_path`] is idempotent at our layer instead of relying on `notify`'s internal de-dup.
+    /// Also lets [`Self::unwatch_path`] drop the OS watches for a cwd no longer needed. That bounds inotify-watch accumulation as sessions churn across directories.
     watched_cwds: HashSet<PathBuf>,
+    _dest_watch: Option<FollowDestWatch>,
 }
 
 impl ConfigFileWatcher {
     /// Start watching. Returns `None` if the OS watcher fails to initialize.
-    ///
-    /// `cwd`, when `Some`, adds two non-recursive watches: `<cwd>/` and
-    /// `<cwd>/.codel/`. Use [`Self::watch_path`] later to register additional
-    /// project cwds for sessions that open in previously-unwatched
-    /// directories.
+    /// `cwd`, when `Some`, adds two non-recursive watches: `<cwd>/` and `<cwd>/.codel/`.
+    /// Use [`Self::watch_path`] later to register additional project cwds for sessions that open in previously-unwatched directories.
     pub fn start(
         codel_home: &Path,
         extra_paths: &[PathBuf],
@@ -149,71 +104,40 @@ impl ConfigFileWatcher {
         let debounce = debounce.unwrap_or(DEFAULT_DEBOUNCE);
         let (tx, rx) = mpsc::unbounded_channel();
         let codel_home_buf = codel_home.to_path_buf();
-        // `~/.claude.json` is consumed by **every**
-        // session (see `load_claude_json_mcp_servers_as_configs`), so
-        // a write to it must broadcast through the unit
-        // `McpServersChanged` arm — NOT through the per-cwd
-        // `ProjectMcpServersChanged { cwd: $HOME }` arm, which
-        // `cwd_matches` would silently filter for sessions outside
-        // `$HOME`. We snapshot `$HOME` here so the closure can
-        // discriminate `<home>/.claude.json` from a project-level
-        // `<cwd>/.claude.json` purely by path.
-        //
-        // Canonicalize `$HOME` ONCE up front. `notify`
-        // backends may deliver canonicalized event paths (e.g. macOS
-        // FSEvents resolves symlinks, returning `/private/var/...`
-        // where `dirs::home_dir()` returned `/var/...`), so a raw byte
-        // compare against an un-canonicalized `$HOME` would mis-route
-        // `~/.claude.json` to the per-cwd path. The per-event side is
-        // canonicalized in `parent_is_dir`.
+        // `~/.claude.json` is consumed by **every** session (see `load_claude_json_mcp_servers_as_configs`)
+        // A write to it must broadcast through the unit `McpServersChanged` arm, NOT the per-cwd `ProjectMcpServersChanged { cwd: $HOME }` arm `cwd_matches` would silently filter the per-cwd arm for sessions outside `$HOME`
+        // We snapshot `$HOME` here so the closure can tell `<home>/.claude.json` apart from a project-level `<cwd>/.claude.json` purely by path Canonicalize `$HOME` ONCE up front. `notify` backends may deliver canonicalized event paths. macOS FSEvents resolves symlinks, returning `/private/var/...` where `codel_dirs::home_dir()` returned `/var/...`
         let user_home_buf: Option<PathBuf> =
-            dirs::home_dir().map(|h| dunce::canonicalize(&h).unwrap_or(h));
+            codel_dirs::home_dir().map(|h| dunce::canonicalize(&h).unwrap_or(h));
+        // Follow dest may live outside `$CODEL_HOME`. Classify against the live
+        // dest (not a startup snapshot) so A→B retargets still match B writes.
+        let dest_watch = FollowDestWatch::start(&codel_home_buf, tx.clone());
 
+        let dest_watch_for_events = dest_watch.clone();
         let mut debouncer = new_filtered_debouncer(debounce, move |res: DebounceEventResult| {
             let Ok(events) = res else { return };
 
+            let mut saw_slot = false;
             let mut batch_events: Vec<ConfigChangeEvent> = Vec::new();
+            let live_dest = resolve_global_config_dest(&codel_home_buf);
             for event in events {
-                let path = &event.path;
-                let name = path.file_name().and_then(|n| n.to_str());
-                let parent = path.parent();
-
-                let change = match name {
-                    Some("auth.json") if parent == Some(codel_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::AuthChanged)
-                    }
-                    Some("config.toml") if parent == Some(codel_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::GlobalConfigChanged)
-                    }
-                    Some("models_cache.json") if parent == Some(codel_home_buf.as_path()) => {
-                        Some(ConfigChangeEvent::ModelsCacheChanged)
-                    }
-                    Some("config.toml") => {
-                        Some(ConfigChangeEvent::ProjectConfigChanged { path: path.clone() })
-                    }
-                    // `~/.claude.json` routes through
-                    // the dedicated home-level variant so the
-                    // reloader can broadcast. Project-level
-                    // `<cwd>/.claude.json` (and any `.mcp.json`)
-                    // continues to be a per-cwd reload.
-                    Some(".claude.json")
-                        if user_home_buf
-                            .as_deref()
-                            .is_some_and(|h| parent_is_dir(parent, h)) =>
-                    {
-                        Some(ConfigChangeEvent::HomeClaudeJsonChanged)
-                    }
-                    Some(".mcp.json") | Some(".claude.json") => {
-                        Some(ConfigChangeEvent::McpConfigChanged { path: path.clone() })
-                    }
-                    _ => None,
-                };
-
-                if let Some(evt) = change
-                    && !batch_events.contains(&evt)
+                if event.path.file_name().and_then(|n| n.to_str()) == Some("config.toml")
+                    && event.path.parent() == Some(codel_home_buf.as_path())
+                {
+                    saw_slot = true;
+                }
+                if let Some(evt) = classify_watched_path(
+                    &event.path,
+                    &codel_home_buf,
+                    live_dest.as_deref(),
+                    user_home_buf.as_deref(),
+                ) && !batch_events.contains(&evt)
                 {
                     batch_events.push(evt);
                 }
+            }
+            if saw_slot && let Some(dest_watch) = &dest_watch_for_events {
+                dest_watch.refresh();
             }
             for evt in batch_events {
                 let _ = tx.send(evt);
@@ -234,6 +158,10 @@ impl ConfigFileWatcher {
             })
             .ok()?;
 
+        if let Some(dest_watch) = &dest_watch {
+            dest_watch.refresh();
+        }
+
         for p in extra_paths {
             if let Some(parent) = p.parent() {
                 let _ = debouncer
@@ -242,20 +170,9 @@ impl ConfigFileWatcher {
             }
         }
 
-        // Add the two narrow non-recursive cwd watches
-        // promoted to first-class watch targets. Both are non-fatal —
-        // a missing directory just means the corresponding files don't
-        // exist yet and will be picked up by `watch_path` on the next
-        // session that opens in this cwd.
-        //
-        // When the leader's own cwd is also covered by
-        // `extra_paths` (e.g. `find_project_configs(cwd)` already
-        // includes `<cwd>/.codel/config.toml` so the loop above
-        // watches `<cwd>/.codel/`), the call below installs a
-        // duplicate watch on the same directory. `notify` dedupes
-        // silently in its `RecommendedWatcher` (last-write-wins for
-        // the recursion mode), so this is cosmetic — both
-        // additions remain non-recursive, no event amplification.
+        // Add the two narrow non-recursive cwd watches. Both are non-fatal. A missing directory just means the corresponding files don't exist yet; `watch_path` picks them up on the next session opening in this cwd
+        // The leader's own cwd may also be covered by `extra_paths` `find_project_configs(cwd)` already includes `<cwd>/.codel/config.toml`, so the loop above watches `<cwd>/.codel/`
+        // The call below then installs a duplicate watch on the same directory `notify` dedupes silently in its `RecommendedWatcher` (last-write-wins for the recursion mode), so this is cosmetic Both additions remain non-recursive, so events are not amplified
         let mut watched_cwds = HashSet::new();
         if let Some(cwd) = cwd {
             watch_cwd_dirs(&mut debouncer, cwd);
@@ -274,34 +191,19 @@ impl ConfigFileWatcher {
             Self {
                 debouncer,
                 watched_cwds,
+                _dest_watch: dest_watch,
             },
             rx,
         ))
     }
 
-    /// Register `<cwd>/` and `<cwd>/.codel/` as **non-recursive** watch
-    /// targets, in addition to whatever was passed to [`Self::start`].
-    ///
-    /// Intended for the session-open path: when a session opens in a cwd
-    /// the leader hasn't seen before, calling this method ensures edits to
-    /// `<cwd>/.mcp.json` and `<cwd>/.codel/config.toml` trigger a
-    /// [`ConfigChangeEvent`] (and downstream [`ConfigUpdate::
-    /// ProjectMcpServersChanged`](super::reloader::ConfigUpdate::
-    /// ProjectMcpServersChanged)) within the debounce window.
-    ///
-    /// **Non-recursive by design.** Watching `<cwd>` recursively would
-    /// walk `node_modules/`, `target/`, `.git/`, etc. and easily exhaust
-    /// the per-user inotify quota (`fs.inotify.max_user_watches`,
-    /// commonly 8192 by default) on a large repo. If `notify` cannot register the watch (e.g.
-    /// the directory doesn't exist yet, or the OS quota is reached) the
-    /// error is logged and swallowed — the leader continues to rely on
-    /// the user-triggered refresh as the fallback.
+    /// Register `<cwd>/` and `<cwd>/.codel/` as **non-recursive** watch targets, in addition to whatever was passed to [`Self::start`].
+    /// Intended for the session-open path, when a session opens in a cwd the leader hasn't seen before.
+    /// It ensures edits to `<cwd>/.mcp.json` and `<cwd>/.codel/config.toml` trigger a [`ConfigChangeEvent`] within the debounce window. Downstream that raises [`ConfigUpdate::ProjectMcpServersChanged`](super::reloader::ConfigUpdate::ProjectMcpServersChanged). If `notify` cannot register the watch (the directory doesn't exist yet, or the OS quota is reached), the error is logged and swallowed.
     pub fn watch_path(&mut self, cwd: &Path) {
-        // Idempotent at our layer: skip the redundant
-        // `notify` watch-add when this cwd is already registered, so
-        // re-opening sessions in the same directory doesn't churn the
-        // OS watcher. `notify` de-dups internally too, but tracking the
-        // set here also enables `unwatch_path`.
+        // Idempotent at our layer: skip the redundant `notify` watch-add when this cwd is already registered
+        // Re-opening sessions in the same directory then doesn't churn the OS watcher
+        // `notify` de-dups internally too, but tracking the set here also enables `unwatch_path`
         if self.watched_cwds.contains(cwd) {
             return;
         }
@@ -309,17 +211,9 @@ impl ConfigFileWatcher {
         self.watched_cwds.insert(cwd.to_path_buf());
     }
 
-    /// Remove the two non-recursive watches (`<cwd>/` and
-    /// `<cwd>/.codel/`) previously registered for `cwd` via
-    /// [`Self::start`] / [`Self::watch_path`].
-    ///
-    /// Best-effort and idempotent: a `cwd` that was never registered
-    /// (or already unwatched) is a no-op. Intended for the
-    /// session-teardown path so a long-lived leader that opens sessions
-    /// across many directories doesn't accumulate inotify watches for
-    /// cwds with no live sessions. **Callers must ref-count**: only
-    /// unwatch once the *last* session sharing this cwd closes —
-    /// `ConfigFileWatcher` tracks distinct cwds, not session counts.
+    /// Remove the two non-recursive watches (`<cwd>/` and `<cwd>/.codel/`) previously registered for `cwd` via [`Self::start`] / [`Self::watch_path`].
+    /// Best-effort and idempotent: a `cwd` that was never registered (or already unwatched) is a no-op. Intended for the session-teardown path.
+    /// A long-lived leader that opens sessions across many directories then doesn't accumulate inotify watches for cwds with no live sessions. **Callers must ref-count**: only unwatch once the *last* session sharing this cwd closes. `ConfigFileWatcher` tracks distinct cwds, not session counts.
     pub fn unwatch_path(&mut self, cwd: &Path) {
         if !self.watched_cwds.remove(cwd) {
             return;
@@ -328,10 +222,123 @@ impl ConfigFileWatcher {
     }
 }
 
-/// Component-aware "is `parent` the directory `dir`?" that tolerates
-/// symlink / canonicalization differences between a `notify`-delivered
-/// event path and a `dirs::home_dir()`-style reference. `dir` is
-/// expected to be already canonicalized (see `ConfigFileWatcher::start`).
+/// Snapshot the follow dest of `$CODEL_HOME/config.toml`. Canonicalize for notify path match.
+fn resolve_global_config_dest(codel_home: &Path) -> Option<PathBuf> {
+    let slot = codel_home.join("config.toml");
+    codel_config::fs_atomic::resolve_atomic_destination(&slot)
+        .ok()
+        .map(|p| dunce::canonicalize(&p).unwrap_or(p))
+}
+
+/// External dest-parent watch that retargets when the slot is rewritten A→B.
+struct FollowDestWatch {
+    inner: std::sync::Arc<std::sync::Mutex<FollowDestWatchInner>>,
+}
+
+struct FollowDestWatchInner {
+    watcher: AccessFilteredWatcher,
+    codel_home: PathBuf,
+    dest_parent: Option<PathBuf>,
+}
+
+impl Clone for FollowDestWatch {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl FollowDestWatch {
+    fn start(codel_home: &Path, tx: mpsc::UnboundedSender<ConfigChangeEvent>) -> Option<Self> {
+        let codel_home_buf = codel_home.to_path_buf();
+        let watcher = AccessFilteredWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                let Ok(event) = res else { return };
+                let dest = resolve_global_config_dest(&codel_home_buf);
+                for path in &event.paths {
+                    if classify_watched_path(path, &codel_home_buf, dest.as_deref(), None)
+                        == Some(ConfigChangeEvent::GlobalConfigChanged)
+                    {
+                        let _ = tx.send(ConfigChangeEvent::GlobalConfigChanged);
+                        break;
+                    }
+                }
+            },
+            notify::Config::default(),
+        )
+        .map_err(|e| tracing::warn!(error = %e, "failed to create config dest watcher"))
+        .ok()?;
+        Some(Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(FollowDestWatchInner {
+                watcher,
+                codel_home: codel_home.to_path_buf(),
+                dest_parent: None,
+            })),
+        })
+    }
+
+    fn refresh(&self) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        let dest = resolve_global_config_dest(&inner.codel_home);
+        let parent = dest
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|p| !paths_equal(p, &inner.codel_home))
+            .map(Path::to_path_buf);
+        if parent == inner.dest_parent {
+            return;
+        }
+        if let Some(old) = inner.dest_parent.take() {
+            let _ = inner.watcher.unwatch(&old);
+        }
+        if let Some(ref parent) = parent
+            && let Err(e) = inner.watcher.watch(parent, RecursiveMode::NonRecursive)
+        {
+            log_watch_error(&e, "failed to watch global config.toml referent parent");
+            return;
+        }
+        inner.dest_parent = parent;
+    }
+}
+
+fn classify_watched_path(
+    path: &Path,
+    codel_home: &Path,
+    global_config_dest: Option<&Path>,
+    user_home: Option<&Path>,
+) -> Option<ConfigChangeEvent> {
+    if global_config_dest.is_some_and(|d| paths_equal(path, d)) {
+        return Some(ConfigChangeEvent::GlobalConfigChanged);
+    }
+    let name = path.file_name().and_then(|n| n.to_str());
+    let parent = path.parent();
+    match name {
+        Some("auth.json") if parent == Some(codel_home) => Some(ConfigChangeEvent::AuthChanged),
+        Some("config.toml") if parent == Some(codel_home) => {
+            Some(ConfigChangeEvent::GlobalConfigChanged)
+        }
+        Some("models_cache.json") if parent == Some(codel_home) => {
+            Some(ConfigChangeEvent::ModelsCacheChanged)
+        }
+        Some("config.toml") => Some(ConfigChangeEvent::ProjectConfigChanged {
+            path: path.to_path_buf(),
+        }),
+        Some(".claude.json") if user_home.is_some_and(|h| parent_is_dir(parent, h)) => {
+            Some(ConfigChangeEvent::HomeClaudeJsonChanged)
+        }
+        Some(".mcp.json") | Some(".claude.json") => Some(ConfigChangeEvent::McpConfigChanged {
+            path: path.to_path_buf(),
+        }),
+        _ => None,
+    }
+}
+
+/// Answers "is `parent` the directory `dir`?" while tolerating symlink and canonicalization differences.
+/// A `notify`-delivered event path may be canonicalized while a `codel_dirs::home_dir()`-style reference is not.
+/// `dir` is expected to be already canonicalized (see `ConfigFileWatcher::start`).
 fn parent_is_dir(parent: Option<&Path>, dir: &Path) -> bool {
     let Some(parent) = parent else {
         return false;
@@ -339,20 +346,9 @@ fn parent_is_dir(parent: Option<&Path>, dir: &Path) -> bool {
     parent == dir || dunce::canonicalize(parent).is_ok_and(|p| p == dir)
 }
 
-/// Add the two non-recursive watches for a project root.
-///
-/// Both watches are best-effort and log-and-continue on failure (missing
-/// directory, quota exhausted, permission denied, etc.) — the caller has
-/// no reasonable recovery path beyond the existing user-triggered refresh.
-///
-/// **Known limitation:** if `<cwd>/.codel/` does not yet
-/// exist at session-open time, the `.codel/` watch fails ENOENT and is
-/// swallowed at `debug!`. A later `mkdir <cwd>/.codel/` followed by a
-/// write to `<cwd>/.codel/config.toml` will NOT be observed — the
-/// `<cwd>/` watch is non-recursive, so subdirectory creation isn't
-/// surfaced as a watch-add trigger. Users hitting this case must hit
-/// the explicit refresh button. A robust fix (re-attempt on parent-
-/// directory create) is out of scope here.
+/// Add the two non-recursive watches for a project root. Both watches are best-effort and log-and-continue on failure (missing directory, quota exhausted, permission denied, etc.).
+/// The caller has no reasonable recovery path beyond the existing user-triggered refresh.
+/// **Known limitation:** if `<cwd>/.codel/` does not yet exist at session-open time, the `.codel/` watch fails ENOENT and is swallowed at `debug!`. A later `mkdir <cwd>/.codel/` followed by a write to `<cwd>/.codel/config.toml` will NOT be observed. The `<cwd>/` watch is non-recursive, so creating a subdirectory doesn't trigger a watch-add.
 fn watch_cwd_dirs(debouncer: &mut Debouncer<AccessFilteredWatcher>, cwd: &Path) {
     if let Err(e) = debouncer.watcher().watch(cwd, RecursiveMode::NonRecursive) {
         log_watch_error(&e, "failed to watch project cwd (non-recursive)");
@@ -370,8 +366,7 @@ fn watch_cwd_dirs(debouncer: &mut Debouncer<AccessFilteredWatcher>, cwd: &Path) 
 }
 
 /// Remove the two non-recursive watches added by [`watch_cwd_dirs`].
-/// Best-effort: a `WatchNotFound` (never watched / already removed) is
-/// expected and logged at `debug!`.
+/// Best-effort: a `WatchNotFound` (never watched / already removed) is expected and logged at `debug!`.
 fn unwatch_cwd_dirs(debouncer: &mut Debouncer<AccessFilteredWatcher>, cwd: &Path) {
     if let Err(e) = debouncer.watcher().unwatch(cwd) {
         tracing::debug!(error = %e, "failed to unwatch project cwd");
@@ -382,13 +377,9 @@ fn unwatch_cwd_dirs(debouncer: &mut Debouncer<AccessFilteredWatcher>, cwd: &Path
     }
 }
 
-/// Log a `notify` watch failure, distinguishing the benign
-/// "directory doesn't exist yet" case (logged at `debug!` — it's
-/// expected for a freshly-opened session whose `<cwd>/.codel/` hasn't
-/// been created) from genuinely actionable failures like
-/// `fs.inotify.max_user_watches` exhaustion or permission denied
-/// (logged at `warn!` — these mean live edits will be silently
-/// missed). Don't swallow every error at the same level.
+/// Log a `notify` watch failure at a level matching its severity.
+/// "Directory doesn't exist yet" is benign and logs at `debug!`; it's expected for a freshly-opened session whose `<cwd>/.codel/` hasn't been created.
+/// Actionable failures like `fs.inotify.max_user_watches` exhaustion or permission denied log at `warn!`, since live edits will be silently missed.
 fn log_watch_error(err: &notify::Error, msg: &str) {
     let not_found = matches!(err.kind, notify::ErrorKind::PathNotFound)
         || matches!(&err.kind, notify::ErrorKind::Io(io) if io.kind() == std::io::ErrorKind::NotFound);
@@ -397,12 +388,6 @@ fn log_watch_error(err: &notify::Error, msg: &str) {
     } else {
         tracing::warn!(error = %err, "{msg}");
     }
-}
-
-pub struct SkillsFileWatcher {
-    debouncer: Debouncer<AccessFilteredWatcher>,
-    refresh_dirs: Vec<(PathBuf, RecursiveMode)>,
-    refreshed_dirs: HashSet<PathBuf>,
 }
 
 const SKILLS_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -414,17 +399,18 @@ pub enum DiscoveryChange {
 }
 
 fn discovery_change_for_path(path: &Path) -> Option<DiscoveryChange> {
-    if path.file_name().is_some_and(|name| name == ".codel") {
+    let file_name = path.file_name().and_then(|name| name.to_str());
+    if file_name.is_some_and(|name| VENDOR_CONFIG_ROOT_NAMES.contains(&name)) {
         return Some(DiscoveryChange::Skills);
     }
-    if path.file_name().is_some_and(|name| name == "workflows")
+    if file_name.is_some_and(|name| name == "workflows")
         || path
             .ancestors()
             .any(|ancestor| ancestor.file_name().is_some_and(|name| name == "workflows"))
     {
         return Some(DiscoveryChange::Workflows);
     }
-    if path.file_name().is_some_and(|name| name == "SKILL.md")
+    if file_name.is_some_and(|name| SKILL_DISCOVERY_BASENAMES.contains(&name))
         || path
             .ancestors()
             .any(|ancestor| ancestor.file_name().is_some_and(|name| name == "skills"))
@@ -438,95 +424,191 @@ fn discovery_change_for_path(path: &Path) -> Option<DiscoveryChange> {
     None
 }
 
-/// True for a global/home-level config dir that must never be watched
-/// recursively: `codel_home` (`~/.codel`, or `$CODEL_HOME`) or a known vendor dir
-/// directly under `$HOME` ([`HOME_VENDOR_DIRS`]).
-///
-/// These hold large non-skill trees — `~/.codel` alone has `worktrees/`,
-/// `sessions/`, `logs/`, `upload_queue/` — so recursing them exhausted the
-/// inotify quota (~780k watches on a devbox) and, since each worktree is a full
-/// checkout, fired skill reloads on ordinary repo activity. They get scoped
-/// watches instead ([`watch_skill_subdirs`]); project/repo dirs — and
-/// user-supplied `[skills].paths` entries, which discovery walks in full — stay
-/// recursive. Matching only these specific names (not "any dir whose parent is
-/// `$HOME`") is what keeps a `[skills].paths = ["~/my-skills"]` fully watched.
-fn is_global_config_dir(dir: &Path, codel_home: &Path) -> bool {
-    #[allow(deprecated)]
-    let home = std::env::home_dir();
-    is_global_config_dir_impl(dir, codel_home, home.as_deref())
-}
+/// Known vendor config root basenames; kept in sync with `collect_skill_config_dirs`.
+const VENDOR_CONFIG_ROOT_NAMES: &[&str] = &[".codel", ".agents", ".claude", ".cursor"];
 
-/// Vendor config dir names that sit directly under `$HOME` and carry large
-/// non-skill trees. Kept in sync with the home-level dirs added by
-/// `collect_skill_config_dirs`.
-const HOME_VENDOR_DIRS: &[&str] = &[".codel", ".agents", ".claude", ".cursor"];
+/// `bundled` is the synced bundle root in codel home, so its appearance means skills changed.
+const SKILL_DISCOVERY_BASENAMES: &[&str] = &["skills", "commands", "SKILL.md", "bundled"];
 
-/// Testable core of [`is_global_config_dir`] with `$HOME` injected.
-fn is_global_config_dir_impl(dir: &Path, codel_home: &Path, home: Option<&Path>) -> bool {
-    let canon = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    if canon(dir) == canon(codel_home) {
+/// Vendor roots (by name or `codel_home`) must use scoped watches; they can contain large non-skill trees (`worktrees/`, etc.).
+fn is_vendor_config_root(dir: &Path, codel_home: &Path) -> bool {
+    if paths_equal(dir, codel_home) {
         return true;
-    }
-    let Some(home) = home else { return false };
-    if dir.parent().map(canon) != Some(canon(home)) {
-        return false;
     }
     dir.file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| HOME_VENDOR_DIRS.contains(&n))
+        .is_some_and(|n| VENDOR_CONFIG_ROOT_NAMES.contains(&n))
 }
 
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    let canon = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(a) == canon(b)
+}
+
+fn dirs_contain(dirs: &[PathBuf], target: &Path) -> bool {
+    dirs.iter().any(|dir| paths_equal(dir, target))
+}
+
+fn path_set_contains(dirs: &HashSet<PathBuf>, target: &Path) -> bool {
+    dirs.iter().any(|dir| paths_equal(dir, target))
+}
+
+fn vendor_skill_refresh_dirs(config_dir: &Path) -> [(PathBuf, RecursiveMode); 3] {
+    [
+        (config_dir.join("skills"), RecursiveMode::Recursive),
+        (config_dir.join("commands"), RecursiveMode::NonRecursive),
+        (config_dir.join("workflows"), RecursiveMode::NonRecursive),
+    ]
+}
+
+fn project_codel_refresh_dirs(project_root: &Path) -> Vec<(PathBuf, RecursiveMode)> {
+    let project_codel = project_root.join(".codel");
+    let mut dirs = vec![(project_codel.clone(), RecursiveMode::NonRecursive)];
+    dirs.extend(vendor_skill_refresh_dirs(&project_codel));
+    dirs
+}
+
+fn attach_new_refresh_dirs(
+    debouncer: &mut Debouncer<AccessFilteredWatcher>,
+    refresh_dirs: &[(PathBuf, RecursiveMode)],
+    refreshed_dirs: &mut HashSet<PathBuf>,
+    err_msg: &str,
+) -> bool {
+    let mut changed = false;
+    for (dir, mode) in refresh_dirs {
+        if path_set_contains(refreshed_dirs, dir) || !dir.is_dir() {
+            continue;
+        }
+        match debouncer.watcher().watch(dir, *mode) {
+            Ok(()) => {
+                refreshed_dirs.insert(dir.clone());
+                changed = true;
+            }
+            Err(error) => log_watch_error(&error, err_msg),
+        }
+    }
+    changed
+}
+
+/// Paths successfully watched under a scoped vendor root (the root and its skill subdirs).
 fn watch_skill_subdirs(
     debouncer: &mut Debouncer<AccessFilteredWatcher>,
     config_dir: &Path,
-) -> usize {
-    let mut watched = 0;
+) -> HashSet<PathBuf> {
+    let mut watched = HashSet::new();
     match debouncer
         .watcher()
         .watch(config_dir, RecursiveMode::NonRecursive)
     {
-        Ok(()) => watched += 1,
+        Ok(()) => {
+            watched.insert(config_dir.to_path_buf());
+        }
         Err(error) => log_watch_error(&error, "failed to watch config dir root"),
     }
-    for (subdir, mode) in [
-        ("skills", RecursiveMode::Recursive),
-        ("commands", RecursiveMode::NonRecursive),
-        ("workflows", RecursiveMode::NonRecursive),
-    ] {
-        let dir = config_dir.join(subdir);
-        if dir.is_dir() {
-            match debouncer.watcher().watch(&dir, mode) {
-                Ok(()) => watched += 1,
-                Err(error) => log_watch_error(&error, "failed to watch discovery subdir"),
+    for (dir, mode) in vendor_skill_refresh_dirs(config_dir) {
+        if !dir.is_dir() {
+            continue;
+        }
+        match debouncer.watcher().watch(&dir, mode) {
+            Ok(()) => {
+                watched.insert(dir);
             }
+            Err(error) => log_watch_error(&error, "failed to watch discovery subdir"),
         }
     }
     watched
 }
 
-pub struct ProjectDiscoveryWatcher {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillsWatchPlan {
+    vendor_roots: Vec<PathBuf>,
+    recursive_roots: Vec<PathBuf>,
+    /// Non-recursive parent watch so the first creation of a missing project vendor root is observed.
+    project_parent_watch: Option<PathBuf>,
+    refresh_dirs: Vec<(PathBuf, RecursiveMode)>,
+}
+
+/// Pure function: classifies discovery roots and seeds mid-session refresh targets.
+fn plan_skills_watch_targets(
+    dirs_to_watch: &[PathBuf],
+    codel_home: &Path,
+    project_root: Option<&Path>,
+) -> SkillsWatchPlan {
+    let mut vendor_roots = Vec::new();
+    let mut recursive_roots = Vec::new();
+    let mut refresh_dirs = Vec::new();
+
+    for dir in dirs_to_watch {
+        if is_vendor_config_root(dir, codel_home) {
+            vendor_roots.push(dir.clone());
+            refresh_dirs.extend(vendor_skill_refresh_dirs(dir));
+        } else {
+            recursive_roots.push(dir.clone());
+        }
+    }
+
+    let mut project_parent_watch = None;
+    if let Some(project_root) = project_root {
+        let mut missing_project_vendor = false;
+        for name in VENDOR_CONFIG_ROOT_NAMES {
+            let vendor_root = project_root.join(name);
+            if !dirs_contain(dirs_to_watch, &vendor_root) {
+                missing_project_vendor = true;
+                refresh_dirs.push((vendor_root.clone(), RecursiveMode::NonRecursive));
+                refresh_dirs.extend(vendor_skill_refresh_dirs(&vendor_root));
+            }
+        }
+        if missing_project_vendor && !dirs_contain(dirs_to_watch, project_root) {
+            project_parent_watch = Some(project_root.to_path_buf());
+        }
+    }
+
+    SkillsWatchPlan {
+        vendor_roots,
+        recursive_roots,
+        project_parent_watch,
+        refresh_dirs,
+    }
+}
+
+/// Watches project `.codel` skills/commands/workflows for mid-session discovery.
+///
+/// After a [`DiscoveryChange`], call [`Self::refresh_new_dirs`] so newly created seed dirs get watches attached.
+pub(crate) struct ProjectDiscoveryWatcher {
     debouncer: Debouncer<AccessFilteredWatcher>,
     refresh_dirs: Vec<(PathBuf, RecursiveMode)>,
     refreshed_dirs: HashSet<PathBuf>,
 }
 
 impl ProjectDiscoveryWatcher {
-    pub fn start(cwd: &Path) -> Option<(Self, mpsc::UnboundedReceiver<DiscoveryChange>)> {
+    pub(crate) fn start(
+        cwd: &Path,
+        codel_home: &Path,
+    ) -> Option<(Self, mpsc::UnboundedReceiver<DiscoveryChange>)> {
         let project_root = crate::session::workflow::registry::project_root(cwd);
         let project_codel = project_root.join(".codel");
-        let workflows = project_codel.join("workflows");
+        // Codel home's root sees constant unrelated writes from every codel process
+        if paths_equal(&project_codel, codel_home) {
+            tracing::debug!(
+                project_codel = %project_codel.display(),
+                "project .codel is codel home; skills watcher owns it"
+            );
+            return None;
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         let project_codel_for_events = project_codel.clone();
         let mut debouncer =
             new_filtered_debouncer(SKILLS_DEBOUNCE, move |res: DebounceEventResult| {
                 let Ok(events) = res else { return };
                 let mut change = None;
-                for event in events
+                for next in events
                     .iter()
                     .filter(|event| event.path.starts_with(&project_codel_for_events))
+                    .filter_map(|event| discovery_change_for_path(&event.path))
                 {
-                    let next = discovery_change_for_path(&event.path)
-                        .unwrap_or(DiscoveryChange::Workflows);
                     if next == DiscoveryChange::Skills {
                         change = Some(next);
                         break;
@@ -552,30 +634,14 @@ impl ProjectDiscoveryWatcher {
             log_watch_error(&error, "failed to watch project workflow parent");
             return None;
         }
-        let refresh_dirs = vec![
-            (project_codel, RecursiveMode::NonRecursive),
-            (
-                project_root.join(".codel").join("skills"),
-                RecursiveMode::Recursive,
-            ),
-            (
-                project_root.join(".codel").join("commands"),
-                RecursiveMode::NonRecursive,
-            ),
-            (workflows, RecursiveMode::NonRecursive),
-        ];
+        let refresh_dirs = project_codel_refresh_dirs(&project_root);
         let mut refreshed_dirs = HashSet::from([initial]);
-        for (dir, mode) in &refresh_dirs {
-            if refreshed_dirs.contains(dir) || !dir.is_dir() {
-                continue;
-            }
-            match debouncer.watcher().watch(dir, *mode) {
-                Ok(()) => {
-                    refreshed_dirs.insert(dir.clone());
-                }
-                Err(error) => log_watch_error(&error, "failed to watch project discovery dir"),
-            }
-        }
+        attach_new_refresh_dirs(
+            &mut debouncer,
+            &refresh_dirs,
+            &mut refreshed_dirs,
+            "failed to watch project discovery dir",
+        );
         Some((
             Self {
                 debouncer,
@@ -586,32 +652,66 @@ impl ProjectDiscoveryWatcher {
         ))
     }
 
-    pub fn refresh_new_dirs(&mut self) {
-        for (dir, mode) in &self.refresh_dirs {
-            if self.refreshed_dirs.contains(dir) || !dir.is_dir() {
-                continue;
-            }
-            match self.debouncer.watcher().watch(dir, *mode) {
-                Ok(()) => {
-                    self.refreshed_dirs.insert(dir.clone());
-                }
-                Err(error) => {
-                    log_watch_error(&error, "failed to watch newly-created project workflow dir")
-                }
-            }
-        }
+    /// Attach watches for seed dirs that now exist (call after a discovery event).
+    pub(crate) fn refresh_new_dirs(&mut self) {
+        attach_new_refresh_dirs(
+            &mut self.debouncer,
+            &self.refresh_dirs,
+            &mut self.refreshed_dirs,
+            "failed to watch newly-created project workflow dir",
+        );
     }
 }
 
+/// Watches skill/command/workflow discovery dirs and classifies disk changes.
+pub struct SkillsFileWatcher {
+    debouncer: Debouncer<AccessFilteredWatcher>,
+    refresh_dirs: Vec<(PathBuf, RecursiveMode)>,
+    refreshed_dirs: HashSet<PathBuf>,
+}
+
 impl SkillsFileWatcher {
+    /// Start watching discovery dirs from [`collect_skill_config_dirs`](codel_agent::prompt::skills::collect_skill_config_dirs).
     ///
-    /// Uses [`collect_skill_config_dirs`](codel_agent::prompt::skills::collect_skill_config_dirs)
-    /// as the canonical directory source so the watcher covers the same
-    /// locations as skill discovery.
+    /// After a [`DiscoveryChange`], call [`Self::refresh_new_discovery_dirs`] so newly created seed dirs get watches attached.
     pub fn start(
         cwd: Option<&Path>,
         monorepo_user_dir: Option<&Path>,
         config_paths: &[String],
+    ) -> Option<(Self, mpsc::UnboundedReceiver<DiscoveryChange>)> {
+        let codel_home = codel_tools::util::codel_home::codel_home();
+        // Watch the full superset of vendor dirs (all-on compat) This watcher is shared by the whole leader; per-session compat isn't resolved here, and the discovery gating happens downstream
+        // Watching a currently-disabled vendor dir is harmless: a change just re-runs the gated discovery It also avoids ever missing a watch if a toggle flips
+        let dirs_to_watch = codel_agent::prompt::skills::collect_skill_config_dirs(
+            cwd,
+            monorepo_user_dir,
+            &codel_home,
+            config_paths,
+            codel_tools::types::compat::CompatConfig::default(),
+        );
+        let project_root = cwd.map(crate::session::workflow::registry::project_root);
+        let (mut watcher, rx) =
+            Self::start_with_dirs(&dirs_to_watch, &codel_home, project_root.as_deref())?;
+        // In-process bundle sync re-advertises itself; this catches a sync by another codel process
+        // The `bundled` basename rule sees the root appear; the root watch sees its subdirs appear
+        let bundled_root = crate::bundle::bundled_root();
+        watcher
+            .refresh_dirs
+            .extend(vendor_skill_refresh_dirs(&bundled_root));
+        watcher
+            .refresh_dirs
+            .push((bundled_root, RecursiveMode::NonRecursive));
+        watcher.refresh_new_discovery_dirs();
+        Some((watcher, rx))
+    }
+
+    /// Start with explicit discovery roots (benches and isolated tests).
+    /// Production code should prefer [`Self::start`], which collects the same dir set discovery uses.
+    /// After a [`DiscoveryChange`], call [`Self::refresh_new_discovery_dirs`].
+    pub fn start_with_dirs(
+        dirs_to_watch: &[PathBuf],
+        codel_home: &Path,
+        project_root: Option<&Path>,
     ) -> Option<(Self, mpsc::UnboundedReceiver<DiscoveryChange>)> {
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -636,30 +736,37 @@ impl SkillsFileWatcher {
             .map_err(|e| tracing::warn!(error = %e, "failed to create skills file watcher"))
             .ok()?;
 
-        let codel_home = codel_tools::util::codel_home::codel_home();
-        // Watch the full superset of vendor dirs (all-on compat). This watcher
-        // is leader-global (no per-session compat resolved here); the actual
-        // per-session discovery gating happens downstream, so watching a
-        // currently-disabled vendor dir is harmless (a change just re-runs the
-        // gated discovery) and avoids ever missing a watch if a toggle flips.
-        let dirs_to_watch = codel_agent::prompt::skills::collect_skill_config_dirs(
-            cwd,
-            monorepo_user_dir,
-            &codel_home,
-            config_paths,
-            codel_tools::types::compat::CompatConfig::default(),
-        );
+        let plan = plan_skills_watch_targets(dirs_to_watch, codel_home, project_root);
+
         let mut watched = 0;
-        for dir in &dirs_to_watch {
-            if is_global_config_dir(dir, &codel_home) {
-                watched += watch_skill_subdirs(&mut debouncer, dir);
-            } else {
-                // Project/repo dir: bounded, so recurse to catch new `skills/`
-                // dirs created mid-session as well as edits to existing files.
-                match debouncer.watcher().watch(dir, RecursiveMode::Recursive) {
-                    Ok(()) => watched += 1,
-                    Err(e) => log_watch_error(&e, "failed to watch directory for skill changes"),
+        let mut refreshed_dirs = HashSet::new();
+        for dir in &plan.vendor_roots {
+            let attached = watch_skill_subdirs(&mut debouncer, dir);
+            watched += attached.len();
+            refreshed_dirs.extend(attached);
+        }
+        for dir in &plan.recursive_roots {
+            match debouncer.watcher().watch(dir, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    watched += 1;
+                    refreshed_dirs.insert(dir.clone());
                 }
+                Err(e) => log_watch_error(&e, "failed to watch directory for skill changes"),
+            }
+        }
+        if let Some(parent_watch) = &plan.project_parent_watch {
+            match debouncer
+                .watcher()
+                .watch(parent_watch, RecursiveMode::NonRecursive)
+            {
+                Ok(()) => {
+                    watched += 1;
+                    refreshed_dirs.insert(parent_watch.clone());
+                }
+                Err(error) => log_watch_error(
+                    &error,
+                    "failed to watch workflow discovery parent directory",
+                ),
             }
         }
 
@@ -670,62 +777,25 @@ impl SkillsFileWatcher {
 
         tracing::info!(dirs = watched, "skills file watcher started");
 
-        let mut refresh_dirs = vec![(codel_home.join("workflows"), RecursiveMode::NonRecursive)];
-        if let Some(cwd) = cwd {
-            let project_root = crate::session::workflow::registry::project_root(cwd);
-            let project_codel = project_root.join(".codel");
-            let parent_watch = if project_codel.is_dir() {
-                project_codel.clone()
-            } else {
-                project_root
-            };
-            if !dirs_to_watch.iter().any(|dir| dir == &parent_watch) {
-                match debouncer
-                    .watcher()
-                    .watch(&parent_watch, RecursiveMode::NonRecursive)
-                {
-                    Ok(()) => {}
-                    Err(error) => log_watch_error(
-                        &error,
-                        "failed to watch workflow discovery parent directory",
-                    ),
-                }
-            }
-            refresh_dirs.push((project_codel.clone(), RecursiveMode::NonRecursive));
-            refresh_dirs.push((project_codel.join("workflows"), RecursiveMode::NonRecursive));
-        }
-        let refreshed_dirs = refresh_dirs
-            .iter()
-            .filter(|(dir, _)| dir.is_dir())
-            .map(|(dir, _)| dir.clone())
-            .collect();
         Some((
             Self {
                 debouncer,
-                refresh_dirs,
+                refresh_dirs: plan.refresh_dirs,
                 refreshed_dirs,
             },
             rx,
         ))
     }
 
+    /// Attach watches for seed dirs that now exist (call after a discovery event).
+    /// Returns true if any new watch was attached.
     pub fn refresh_new_discovery_dirs(&mut self) -> bool {
-        let mut changed = false;
-        for (dir, mode) in &self.refresh_dirs {
-            if self.refreshed_dirs.contains(dir) || !dir.is_dir() {
-                continue;
-            }
-            match self.debouncer.watcher().watch(dir, *mode) {
-                Ok(()) => {
-                    self.refreshed_dirs.insert(dir.clone());
-                    changed = true;
-                }
-                Err(error) => {
-                    log_watch_error(&error, "failed to watch newly-created discovery directory")
-                }
-            }
-        }
-        changed
+        attach_new_refresh_dirs(
+            &mut self.debouncer,
+            &self.refresh_dirs,
+            &mut self.refreshed_dirs,
+            "failed to watch newly-created discovery directory",
+        )
     }
 }
 
@@ -739,41 +809,425 @@ mod tests {
         std::thread::sleep(Duration::from_millis(ms));
     }
 
-    /// `is_global_config_dir` must scope down only codel_home and the known
-    /// vendor dirs under `$HOME` — NOT arbitrary `[skills].paths` entries such
-    /// as `~/my-skills`, whose skills discovery walks in full and so must stay
-    /// recursively watched.
+    fn wait_for_notify(rx: &mut mpsc::UnboundedReceiver<()>, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match rx.try_recv() {
+                Ok(()) => return true,
+                Err(mpsc::error::TryRecvError::Disconnected) => return false,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    fn arm_parent_watch(probe: &Path, rx: &mut mpsc::UnboundedReceiver<()>) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut n = 0u8;
+        loop {
+            n = n.wrapping_add(1);
+            fs::write(probe, [n]).unwrap();
+            if wait_for_notify(rx, Duration::from_millis(200)) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("parent watch never became live: {}", probe.display());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(80));
+        while rx.try_recv().is_ok() {}
+    }
+
     #[test]
-    fn is_global_config_dir_matches_only_codel_home_and_vendor_dirs() {
+    fn is_vendor_config_root_matches_known_names_at_any_tier() {
         let home = TempDir::new().unwrap();
         let home = home.path();
         let codel_home = home.join(".codel");
 
-        let g = |dir: &Path| is_global_config_dir_impl(dir, &codel_home, Some(home));
+        assert!(is_vendor_config_root(&codel_home, &codel_home));
+        assert!(is_vendor_config_root(&home.join(".claude"), &codel_home));
+        assert!(is_vendor_config_root(&home.join(".cursor"), &codel_home));
+        assert!(is_vendor_config_root(&home.join(".agents"), &codel_home));
+        assert!(is_vendor_config_root(
+            &home.join("repo").join(".codel"),
+            &codel_home
+        ));
+        assert!(is_vendor_config_root(
+            &home.join("repo").join(".claude"),
+            &codel_home
+        ));
 
-        // codel_home and vendor dirs directly under $HOME: scoped (global).
-        assert!(g(&codel_home));
-        assert!(g(&home.join(".claude")));
-        assert!(g(&home.join(".cursor")));
-        assert!(g(&home.join(".agents")));
+        assert!(!is_vendor_config_root(&home.join("my-skills"), &codel_home));
+        assert!(!is_vendor_config_root(&home.join(".config"), &codel_home));
+        assert!(!is_vendor_config_root(
+            &home.join("repo").join("my-skills"),
+            &codel_home
+        ));
 
-        // A user [skills].paths entry under $HOME: NOT global (stays recursive).
-        assert!(!g(&home.join("my-skills")));
-        assert!(!g(&home.join(".config")));
-        // A project/repo config dir (parent isn't $HOME): NOT global.
-        assert!(!g(&home.join("repo").join(".codel")));
+        let custom_home = home.join("custom-codel-home");
+        assert!(is_vendor_config_root(&custom_home, &custom_home));
     }
 
-    /// Regression for the ~/.codel inotify-exhaustion / worktree-noise bug: a
-    /// `SKILL.md` under a sibling subtree (e.g. `~/.codel/worktrees/`) must not
-    /// drive a reload, while a real `<dir>/skills/**/SKILL.md` change still does.
+    #[test]
+    fn vendor_skill_refresh_dirs_paths_and_modes() {
+        let root = Path::new("/tmp/project/.claude");
+        assert_eq!(
+            vendor_skill_refresh_dirs(root),
+            [
+                (root.join("skills"), RecursiveMode::Recursive),
+                (root.join("commands"), RecursiveMode::NonRecursive),
+                (root.join("workflows"), RecursiveMode::NonRecursive),
+            ]
+        );
+    }
+
+    #[test]
+    fn project_codel_refresh_dirs_matches_vendor_layout() {
+        let project = Path::new("/tmp/repo");
+        let codel = project.join(".codel");
+        let dirs = project_codel_refresh_dirs(project);
+
+        assert_eq!(dirs.len(), 4);
+        let [first, rest @ ..] = dirs.as_slice() else {
+            panic!("expected four refresh dirs: {dirs:?}");
+        };
+        assert_eq!(first, &(codel.clone(), RecursiveMode::NonRecursive));
+        assert_eq!(
+            rest,
+            [
+                (codel.join("skills"), RecursiveMode::Recursive),
+                (codel.join("commands"), RecursiveMode::NonRecursive),
+                (codel.join("workflows"), RecursiveMode::NonRecursive),
+            ]
+            .as_slice()
+        );
+        assert_eq!(rest, vendor_skill_refresh_dirs(&codel).as_slice());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_set_contains_uses_paths_equal() {
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("real_skills");
+        fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link_skills");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_ne!(real.as_os_str(), link.as_os_str());
+        let mut set = HashSet::new();
+        set.insert(real.clone());
+
+        assert!(path_set_contains(&set, &real));
+        assert!(
+            path_set_contains(&set, &link),
+            "symlink form must match via paths_equal/canonicalize"
+        );
+        assert!(
+            !set.contains(&link),
+            "HashSet::contains must not match symlink form"
+        );
+        assert!(!path_set_contains(&set, &tmp.path().join("other")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn attach_new_refresh_dirs_skips_known_and_missing() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let known_real = root.join("known");
+        let known_link = root.join("known_link");
+        let missing = root.join("missing");
+        let fresh = root.join("fresh");
+        fs::create_dir(&known_real).unwrap();
+        std::os::unix::fs::symlink(&known_real, &known_link).unwrap();
+        fs::create_dir(&fresh).unwrap();
+
+        let mut debouncer = new_filtered_debouncer(Duration::from_millis(50), |_| {}).unwrap();
+        debouncer
+            .watcher()
+            .watch(root, RecursiveMode::NonRecursive)
+            .unwrap();
+
+        // Seed with symlink form; refresh_dirs lists the real path (paths_equal, not byte-equal).
+        let refresh_dirs = vec![
+            (known_real.clone(), RecursiveMode::NonRecursive),
+            (missing.clone(), RecursiveMode::NonRecursive),
+            (fresh.clone(), RecursiveMode::NonRecursive),
+        ];
+        let mut refreshed_dirs = HashSet::from([known_link.clone()]);
+        assert_ne!(known_real.as_os_str(), known_link.as_os_str());
+        assert!(!refreshed_dirs.contains(&known_real));
+
+        assert!(attach_new_refresh_dirs(
+            &mut debouncer,
+            &refresh_dirs,
+            &mut refreshed_dirs,
+            "test attach",
+        ));
+        assert_eq!(
+            refreshed_dirs.len(),
+            2,
+            "skip known (path-equal form) and missing; only fresh attaches"
+        );
+        assert!(path_set_contains(&refreshed_dirs, &known_real));
+        assert!(path_set_contains(&refreshed_dirs, &known_link));
+        assert!(path_set_contains(&refreshed_dirs, &fresh));
+        assert!(!path_set_contains(&refreshed_dirs, &missing));
+        assert!(!attach_new_refresh_dirs(
+            &mut debouncer,
+            &refresh_dirs,
+            &mut refreshed_dirs,
+            "test attach",
+        ));
+        assert_eq!(refreshed_dirs.len(), 2);
+    }
+
+    fn expected_missing_vendor_refresh_seeds(project_root: &Path) -> Vec<(PathBuf, RecursiveMode)> {
+        let mut expected = Vec::new();
+        for name in VENDOR_CONFIG_ROOT_NAMES {
+            let root = project_root.join(name);
+            expected.push((root.clone(), RecursiveMode::NonRecursive));
+            expected.extend(vendor_skill_refresh_dirs(&root));
+        }
+        expected
+    }
+
+    /// A parent-only plan (empty dirs_to_watch) must still start so vendor roots created mid-session under project_root can attach via refresh seeds.
+    #[test]
+    fn start_with_dirs_keeps_parent_only_watch() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        let codel_home = project.join("home-codel");
+        fs::create_dir_all(&codel_home).unwrap();
+
+        let plan = plan_skills_watch_targets(&[], &codel_home, Some(project));
+        assert!(plan.vendor_roots.is_empty());
+        assert!(plan.recursive_roots.is_empty());
+        assert_eq!(plan.project_parent_watch.as_deref(), Some(project));
+
+        let (watcher, _rx) = SkillsFileWatcher::start_with_dirs(&[], &codel_home, Some(project))
+            .expect("parent-only watch must start when no discovery roots exist yet");
+        assert!(
+            path_set_contains(&watcher.refreshed_dirs, project),
+            "successful project parent watch must be retained"
+        );
+        assert_eq!(
+            watcher.refresh_dirs,
+            expected_missing_vendor_refresh_seeds(project)
+        );
+    }
+
+    #[test]
+    fn plan_skills_watch_targets_scopes_vendors_and_seeds_refresh() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        let codel_home = project.join("home-codel");
+        let project_claude = project.join(".claude");
+        let project_codel = project.join(".codel");
+        let custom = project.join("my-skills");
+        fs::create_dir_all(&project_claude).unwrap();
+        fs::create_dir_all(&project_codel).unwrap();
+        fs::create_dir_all(&custom).unwrap();
+
+        let dirs = vec![project_claude.clone(), project_codel.clone(), custom.clone()];
+        let plan = plan_skills_watch_targets(&dirs, &codel_home, Some(project));
+
+        assert_eq!(
+            plan.vendor_roots,
+            vec![project_claude.clone(), project_codel.clone()]
+        );
+        assert_eq!(plan.recursive_roots, vec![custom]);
+        assert_eq!(plan.project_parent_watch.as_deref(), Some(project));
+
+        let mut expected_refresh: Vec<(PathBuf, RecursiveMode)> =
+            vendor_skill_refresh_dirs(&project_claude)
+                .into_iter()
+                .chain(vendor_skill_refresh_dirs(&project_codel))
+                .collect();
+        for name in [".agents", ".cursor"] {
+            let root = project.join(name);
+            expected_refresh.push((root.clone(), RecursiveMode::NonRecursive));
+            expected_refresh.extend(vendor_skill_refresh_dirs(&root));
+        }
+        assert_eq!(plan.refresh_dirs, expected_refresh);
+    }
+
+    #[test]
+    fn plan_skills_watch_targets_multi_vendor_refresh_fanout() {
+        let codel_home = PathBuf::from("/home/u/.codel");
+        let a = PathBuf::from("/repo/.claude");
+        let b = PathBuf::from("/repo/.agents");
+        let plan = plan_skills_watch_targets(&[a.clone(), b.clone()], &codel_home, None);
+
+        assert_eq!(plan.vendor_roots, vec![a.clone(), b.clone()]);
+        assert!(plan.recursive_roots.is_empty());
+        assert_eq!(
+            plan.refresh_dirs,
+            vendor_skill_refresh_dirs(&a)
+                .into_iter()
+                .chain(vendor_skill_refresh_dirs(&b))
+                .collect::<Vec<_>>()
+        );
+        for root in [&a, &b] {
+            for (dir, mode) in vendor_skill_refresh_dirs(root) {
+                assert!(
+                    plan.refresh_dirs.contains(&(dir, mode)),
+                    "missing refresh seed for {}",
+                    root.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plan_skills_watch_targets_seeds_all_missing_project_vendor_roots() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        let codel_home = project.join("elsewhere").join(".codel");
+        let plan = plan_skills_watch_targets(&[], &codel_home, Some(project));
+
+        assert_eq!(plan.project_parent_watch.as_deref(), Some(project));
+        assert!(plan.vendor_roots.is_empty());
+        assert!(plan.recursive_roots.is_empty());
+        assert_eq!(
+            plan.refresh_dirs,
+            expected_missing_vendor_refresh_seeds(project)
+        );
+        for name in VENDOR_CONFIG_ROOT_NAMES {
+            let root = project.join(name);
+            assert!(
+                plan.refresh_dirs
+                    .contains(&(root.clone(), RecursiveMode::NonRecursive)),
+                "missing root seed for {name}"
+            );
+            for (dir, mode) in vendor_skill_refresh_dirs(&root) {
+                assert!(
+                    plan.refresh_dirs.contains(&(dir, mode)),
+                    "missing subdir seed under {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plan_skills_watch_targets_does_not_double_seed_present_vendor_roots() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        let codel_home = project.join("home-codel");
+        let present: Vec<PathBuf> = VENDOR_CONFIG_ROOT_NAMES
+            .iter()
+            .map(|name| project.join(name))
+            .collect();
+        for root in &present {
+            fs::create_dir_all(root).unwrap();
+        }
+
+        let plan = plan_skills_watch_targets(&present, &codel_home, Some(project));
+
+        assert_eq!(plan.vendor_roots, present);
+        assert!(plan.project_parent_watch.is_none());
+
+        let mut expected = Vec::new();
+        for root in &present {
+            expected.extend(vendor_skill_refresh_dirs(root));
+        }
+        assert_eq!(plan.refresh_dirs, expected);
+        for root in &present {
+            assert!(
+                !plan
+                    .refresh_dirs
+                    .contains(&(root.clone(), RecursiveMode::NonRecursive)),
+                "present vendor root {} must not be refresh-seeded",
+                root.display()
+            );
+            assert_eq!(
+                plan.refresh_dirs
+                    .iter()
+                    .filter(|(dir, _)| dir == root || dir.starts_with(root))
+                    .count(),
+                vendor_skill_refresh_dirs(root).len()
+            );
+        }
+    }
+
+    #[test]
+    fn plan_skills_watch_targets_partial_vendors_seed_only_missing() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        let codel_home = project.join("home-codel");
+        let project_claude = project.join(".claude");
+        fs::create_dir_all(&project_claude).unwrap();
+
+        let plan = plan_skills_watch_targets(
+            std::slice::from_ref(&project_claude),
+            &codel_home,
+            Some(project),
+        );
+
+        assert_eq!(plan.vendor_roots, vec![project_claude.clone()]);
+        assert_eq!(plan.project_parent_watch.as_deref(), Some(project));
+
+        let mut expected = vendor_skill_refresh_dirs(&project_claude).to_vec();
+        for name in [".codel", ".agents", ".cursor"] {
+            let root = project.join(name);
+            expected.push((root.clone(), RecursiveMode::NonRecursive));
+            expected.extend(vendor_skill_refresh_dirs(&root));
+        }
+        assert_eq!(plan.refresh_dirs, expected);
+        assert!(
+            !plan
+                .refresh_dirs
+                .contains(&(project_claude.clone(), RecursiveMode::NonRecursive))
+        );
+    }
+
+    #[test]
+    fn plan_skills_watch_targets_parent_watches_project_when_codel_present_siblings_missing() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        let codel_home = project.join("home-codel");
+        let project_codel = project.join(".codel");
+        fs::create_dir_all(&project_codel).unwrap();
+
+        let plan = plan_skills_watch_targets(
+            std::slice::from_ref(&project_codel),
+            &codel_home,
+            Some(project),
+        );
+
+        assert_eq!(plan.vendor_roots, vec![project_codel.clone()]);
+        assert_eq!(plan.project_parent_watch.as_deref(), Some(project));
+        assert!(
+            !plan
+                .refresh_dirs
+                .contains(&(project_codel.clone(), RecursiveMode::NonRecursive))
+        );
+        for name in [".agents", ".claude", ".cursor"] {
+            let root = project.join(name);
+            assert!(
+                plan.refresh_dirs
+                    .contains(&(root.clone(), RecursiveMode::NonRecursive)),
+                "missing root seed for {name}"
+            );
+            for (dir, mode) in vendor_skill_refresh_dirs(&root) {
+                assert!(
+                    plan.refresh_dirs.contains(&(dir, mode)),
+                    "missing subdir seed under {name}"
+                );
+            }
+        }
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
-    fn skills_watcher_scopes_to_subdirs_not_dir_root() {
+    fn watch_skill_subdirs_ignores_worktrees_under_scoped_root() {
         let tmp = TempDir::new().unwrap();
         let global = tmp.path();
 
-        // Real global skill under <dir>/skills/.
         let alpha = global.join("skills").join("alpha");
         fs::create_dir_all(&alpha).unwrap();
         fs::write(alpha.join("SKILL.md"), "# alpha").unwrap();
@@ -803,25 +1257,78 @@ mod tests {
         .expect("debouncer should build");
 
         let watched = watch_skill_subdirs(&mut debouncer, global);
-        assert!(watched >= 1, "should watch the <dir>/skills subdir");
+        assert!(watched.contains(&global.join("skills")));
         wait_ms(150);
-        while rx.try_recv().is_ok() {} // drain startup noise
+        while rx.try_recv().is_ok() {}
 
-        // Editing a SKILL.md under the unwatched worktrees/ subtree must NOT fire.
         fs::write(wt_skill.join("SKILL.md"), "# beta v2").unwrap();
         wait_ms(250);
         assert!(
             rx.try_recv().is_err(),
-            "changes below an unwatched sibling subtree (worktrees/) must not \
-             trigger a skills reload — proves the dir root is non-recursive"
+            "changes under worktrees/ must not fire under scoped watches"
         );
 
-        // Editing the real skill under <dir>/skills must still fire.
+        fs::write(alpha.join("SKILL.md"), "# alpha v2").unwrap();
+        wait_ms(250);
+        assert!(rx.try_recv().is_ok(), "changes under skills/ must fire");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_skill_subdirs_scopes_project_claude_not_worktrees() {
+        let tmp = TempDir::new().unwrap();
+        let project_claude = tmp.path().join(".claude");
+
+        let alpha = project_claude.join("skills").join("alpha");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::write(alpha.join("SKILL.md"), "# alpha").unwrap();
+
+        let wt_skill = project_claude
+            .join("worktrees")
+            .join("wt1")
+            .join("bazel-out")
+            .join("deep")
+            .join("SKILL.md");
+        fs::create_dir_all(wt_skill.parent().unwrap()).unwrap();
+        fs::write(&wt_skill, "# noise").unwrap();
+
+        assert!(is_vendor_config_root(
+            &project_claude,
+            &tmp.path().join(".codel")
+        ));
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut debouncer = new_filtered_debouncer(
+            Duration::from_millis(50),
+            move |res: DebounceEventResult| {
+                let Ok(events) = res else { return };
+                if events
+                    .iter()
+                    .any(|event| discovery_change_for_path(&event.path).is_some())
+                {
+                    let _ = tx.send(());
+                }
+            },
+        )
+        .expect("debouncer should build");
+
+        let watched = watch_skill_subdirs(&mut debouncer, &project_claude);
+        assert!(watched.contains(&project_claude.join("skills")));
+        wait_ms(150);
+        while rx.try_recv().is_ok() {}
+
+        fs::write(&wt_skill, "# noise v2").unwrap();
+        wait_ms(250);
+        assert!(
+            rx.try_recv().is_err(),
+            "changes under project .claude/worktrees must not fire"
+        );
+
         fs::write(alpha.join("SKILL.md"), "# alpha v2").unwrap();
         wait_ms(250);
         assert!(
             rx.try_recv().is_ok(),
-            "changes under <dir>/skills must trigger a skills reload"
+            "changes under project .claude/skills must fire"
         );
     }
 
@@ -830,8 +1337,19 @@ mod tests {
         let codel = Path::new("/tmp/project/.codel");
         assert_eq!(
             discovery_change_for_path(codel),
-            Some(DiscoveryChange::Skills),
-            "first .codel creation must take the broader skills reload path"
+            Some(DiscoveryChange::Skills)
+        );
+        assert_eq!(
+            discovery_change_for_path(Path::new("/tmp/project/.claude")),
+            Some(DiscoveryChange::Skills)
+        );
+        assert_eq!(
+            discovery_change_for_path(&codel.join("skills")),
+            Some(DiscoveryChange::Skills)
+        );
+        assert_eq!(
+            discovery_change_for_path(&codel.join("commands")),
+            Some(DiscoveryChange::Skills)
         );
         assert_eq!(
             discovery_change_for_path(&codel.join("workflows")),
@@ -845,9 +1363,63 @@ mod tests {
             discovery_change_for_path(&codel.join("skills/review/SKILL.md")),
             Some(DiscoveryChange::Skills)
         );
+        assert_eq!(
+            discovery_change_for_path(&codel.join("bundled")),
+            Some(DiscoveryChange::Skills)
+        );
+        assert_eq!(
+            discovery_change_for_path(&codel.join("bundled/manifest.json")),
+            None
+        );
     }
 
     #[test]
+    fn project_discovery_watcher_skips_project_codel_equal_to_codel_home() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        git2::Repository::init(project).unwrap();
+        let project_codel = project.join(".codel");
+        fs::create_dir_all(project_codel.join("workflows")).unwrap();
+        // Nested cwd: the guard must compare the discovered git root's .codel, not cwd's
+        let cwd = project.join("sub");
+        fs::create_dir(&cwd).unwrap();
+
+        assert!(ProjectDiscoveryWatcher::start(&cwd, &project_codel).is_none());
+        assert!(ProjectDiscoveryWatcher::start(&cwd, &project.join("other-home")).is_some());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn project_discovery_watcher_ignores_unclassified_files_under_project_codel() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        git2::Repository::init(project).unwrap();
+        let project_codel = project.join(".codel");
+        fs::create_dir_all(project_codel.join("workflows")).unwrap();
+
+        let (_w, mut rx) = ProjectDiscoveryWatcher::start(project, &project.join("other-home"))
+            .expect("project watcher should start");
+
+        // Batch-mode debounce delivers about SKILLS_DEBOUNCE after the first raw event
+        let settle = SKILLS_DEBOUNCE + Duration::from_millis(500);
+        fs::write(project_codel.join("codel-leader.log"), "leader").unwrap();
+        std::thread::sleep(settle);
+        assert!(
+            rx.try_recv().is_err(),
+            "unclassified files under the project .codel must not fire"
+        );
+
+        fs::write(
+            project_codel.join("workflows").join("a.rhai"),
+            "complete(\"ok\");",
+        )
+        .unwrap();
+        std::thread::sleep(settle);
+        assert_eq!(rx.try_recv().ok(), Some(DiscoveryChange::Workflows));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn refresh_new_discovery_dirs_attaches_first_created_workflows_dir() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -876,10 +1448,10 @@ mod tests {
             refresh_dirs: vec![(workflows.clone(), RecursiveMode::NonRecursive)],
             refreshed_dirs: HashSet::new(),
         };
+        arm_parent_watch(&root.join(".watch-arm"), &mut rx);
         fs::create_dir(&workflows).unwrap();
-        wait_ms(150);
         assert!(
-            rx.try_recv().is_ok(),
+            wait_for_notify(&mut rx, Duration::from_secs(2)),
             "parent watch sees first directory creation"
         );
         assert!(watcher.refresh_new_discovery_dirs());
@@ -887,38 +1459,95 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
-    fn watcher_detects_auth_json_change() {
+    fn refresh_new_discovery_dirs_attaches_existing_after_mkdir() {
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("auth.json"), "{}").unwrap();
-
-        let (_w, mut rx) =
-            ConfigFileWatcher::start(tmp.path(), &[], None, Some(Duration::from_millis(50)))
-                .expect("watcher should start");
-
-        fs::write(tmp.path().join("auth.json"), r#"{"new":"token"}"#).unwrap();
-        wait_ms(300);
-
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if evt == ConfigChangeEvent::AuthChanged {
-                found = true;
-            }
-        }
-        assert!(found, "should detect auth.json change");
+        let root = tmp.path();
+        let workflows = root.join("workflows");
+        let mut debouncer = new_filtered_debouncer(Duration::from_millis(50), |_| {}).unwrap();
+        debouncer
+            .watcher()
+            .watch(root, RecursiveMode::NonRecursive)
+            .unwrap();
+        let mut watcher = SkillsFileWatcher {
+            debouncer,
+            refresh_dirs: vec![(workflows.clone(), RecursiveMode::NonRecursive)],
+            refreshed_dirs: HashSet::new(),
+        };
+        assert!(!watcher.refresh_new_discovery_dirs());
+        fs::create_dir(&workflows).unwrap();
+        assert!(watcher.refresh_new_discovery_dirs());
+        assert!(watcher.refreshed_dirs.contains(&workflows));
+        assert!(!watcher.refresh_new_discovery_dirs());
     }
 
-    /// Regression test for the MCP/skills reload storm (feedback loop):
-    /// merely *reading* a watched config file must NOT produce a
-    /// `ConfigChangeEvent`. Linux inotify delivers `IN_OPEN`/`IN_ACCESS`
-    /// for reads, `notify` subscribes to `OPEN`, and `notify-debouncer-mini`
-    /// forwards every kind — so without [`AccessFilteredWatcher`] each
-    /// leader-initiated reload's own re-reads of `config.toml` would
-    /// schedule the next debounce tick and re-fire forever. A write
-    /// afterwards must still be detected (the filter only drops `Access`).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn refresh_new_discovery_dirs_attaches_skills_and_commands() {
+        let tmp = TempDir::new().unwrap();
+        let vendor = tmp.path().join(".claude");
+        fs::create_dir(&vendor).unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut debouncer = new_filtered_debouncer(
+            Duration::from_millis(50),
+            move |result: DebounceEventResult| {
+                let Ok(events) = result else { return };
+                if events
+                    .iter()
+                    .any(|event| discovery_change_for_path(&event.path).is_some())
+                {
+                    let _ = tx.send(());
+                }
+            },
+        )
+        .unwrap();
+        debouncer
+            .watcher()
+            .watch(&vendor, RecursiveMode::NonRecursive)
+            .unwrap();
+
+        let skills = vendor.join("skills");
+        let commands = vendor.join("commands");
+        let mut watcher = SkillsFileWatcher {
+            debouncer,
+            refresh_dirs: vendor_skill_refresh_dirs(&vendor).to_vec(),
+            refreshed_dirs: HashSet::new(),
+        };
+        arm_parent_watch(&vendor.join("bundled"), &mut rx);
+
+        fs::create_dir_all(skills.join("alpha")).unwrap();
+        assert!(
+            wait_for_notify(&mut rx, Duration::from_secs(2)),
+            "must see skills/ creation"
+        );
+        assert!(watcher.refresh_new_discovery_dirs());
+        assert!(watcher.refreshed_dirs.contains(&skills));
+        while rx.try_recv().is_ok() {}
+
+        fs::write(skills.join("alpha").join("SKILL.md"), "# alpha").unwrap();
+        assert!(
+            wait_for_notify(&mut rx, Duration::from_secs(2)),
+            "SKILL.md under newly created skills/ must fire"
+        );
+        while rx.try_recv().is_ok() {}
+
+        fs::create_dir(&commands).unwrap();
+        assert!(
+            wait_for_notify(&mut rx, Duration::from_secs(2)),
+            "must see commands/ creation"
+        );
+        assert!(watcher.refresh_new_discovery_dirs());
+        assert!(watcher.refreshed_dirs.contains(&commands));
+        while rx.try_recv().is_ok() {}
+
+        fs::write(commands.join("foo.md"), "# foo").unwrap();
+        assert!(
+            wait_for_notify(&mut rx, Duration::from_secs(2)),
+            "command md under newly created commands/ must fire"
+        );
+    }
+
+    /// Regression test for the MCP/skills reload storm (feedback loop): merely *reading* a watched config file must NOT produce a `ConfigChangeEvent`. Linux inotify delivers `IN_OPEN`/`IN_ACCESS` for reads, `notify` subscribes to `OPEN`, and `notify-debouncer-mini` forwards every kind — so without [`AccessFilteredWatcher`] each leader-initiated reload's own re-reads of `config.toml` would schedule the next debounce tick and re-fire forever. A write afterwards must still be detected (the filter only drops `Access`).
     #[test]
     #[cfg(target_os = "linux")]
     fn watcher_ignores_reads_of_watched_files() {
@@ -932,8 +1561,8 @@ mod tests {
         wait_ms(150);
         while rx.try_recv().is_ok() {} // drain any startup noise
 
-        // Simulate what the leader does on every reload: read the watched
-        // files. Repeatedly, to defeat any incidental coalescing.
+        // Simulate what the leader does on every reload: read the watched files
+        // Repeat to defeat any incidental coalescing
         for _ in 0..5 {
             let _ = fs::read(tmp.path().join("config.toml")).unwrap();
             let _ = fs::read(tmp.path().join("auth.json")).unwrap();
@@ -964,94 +1593,17 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
-    fn watcher_detects_config_toml_change() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("config.toml"), "").unwrap();
-
-        let (_w, mut rx) =
-            ConfigFileWatcher::start(tmp.path(), &[], None, Some(Duration::from_millis(50)))
-                .expect("watcher should start");
-
-        fs::write(tmp.path().join("config.toml"), "[ui]\ntheme = \"dark\"").unwrap();
-        wait_ms(300);
-
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if evt == ConfigChangeEvent::GlobalConfigChanged {
-                found = true;
-            }
-        }
-        assert!(found, "should detect config.toml change");
-    }
-
-    /// A write to `<codel_home>/models_cache.json` must surface as
-    /// `ConfigChangeEvent::ModelsCacheChanged` so a long-running leader can
-    /// hot-load a catalog fetched by another codel process.
-    #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
-    fn watcher_detects_models_cache_change() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("models_cache.json"), "{}").unwrap();
-
-        let (_w, mut rx) =
-            ConfigFileWatcher::start(tmp.path(), &[], None, Some(Duration::from_millis(50)))
-                .expect("watcher should start");
-
-        fs::write(
-            tmp.path().join("models_cache.json"),
-            r#"{"fetched_at":"2026-01-01T00:00:00Z","models":{}}"#,
-        )
-        .unwrap();
-        wait_ms(300);
-
-        let mut found = false;
-        while let Ok(evt) = rx.try_recv() {
-            if evt == ConfigChangeEvent::ModelsCacheChanged {
-                found = true;
-            }
-        }
-        assert!(found, "should detect models_cache.json change");
-    }
-
-    #[test]
-    #[ignore = "flaky on CI: OS file watcher may fail to initialize"]
-    fn watcher_ignores_unrelated_files() {
-        let tmp = TempDir::new().unwrap();
-
-        let (_w, mut rx) =
-            ConfigFileWatcher::start(tmp.path(), &[], None, Some(Duration::from_millis(50)))
-                .expect("watcher should start");
-
-        fs::write(tmp.path().join("leader.log"), "log line").unwrap();
-        fs::write(tmp.path().join("leader.lock"), "12345").unwrap();
-        wait_ms(300);
-
-        assert!(
-            rx.try_recv().is_err(),
-            "should not emit events for unrelated files"
-        );
-    }
-
-    #[test]
     fn watcher_debounces_rapid_writes() {
         let tmp = TempDir::new().unwrap();
 
-        // Use a long debounce (500ms) so all rapid writes (50ms total)
-        // land in a single debounce window regardless of platform.
+        // Use a long debounce (500ms) so all rapid writes (50ms total) land in a single debounce window regardless of platform
         let (_w, mut rx) =
             ConfigFileWatcher::start(tmp.path(), &[], None, Some(Duration::from_millis(500)))
                 .expect("watcher should start");
 
         wait_ms(200);
 
-        // 5 rapid writes — total ~50ms, well within the 500ms debounce window
+        // 5 rapid writes, ~50ms total, well within the 500ms debounce window
         for i in 0..5 {
             fs::write(tmp.path().join("config.toml"), format!("version = {i}")).unwrap();
             wait_ms(10);
@@ -1064,205 +1616,12 @@ mod tests {
             count += 1;
         }
         // All writes should coalesce into a small number of events
-        // (1 per debounce tick, or a few if OS delivers events in
-        // separate batches within the window).
+        // That is 1 per debounce tick, or a few if the OS delivers events in separate batches within the window
         assert!(count >= 1, "expected at least 1 event, got {count}");
         assert!(count <= 3, "expected coalesced events (<=3), got {count}");
     }
 
-    /// A write to `<cwd>/.codel/config.toml` must surface as
-    /// a `ConfigChangeEvent::ProjectConfigChanged` so the reloader emits
-    /// `ConfigUpdate::ProjectMcpServersChanged { cwd }`. Uses a longer
-    /// debounce and explicit poll loop so it survives the slower-than-
-    /// usual FSEvents delivery on macOS CI.
-    #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
-    fn project_cwd_toml_triggers_reload() {
-        let codel_home = TempDir::new().unwrap();
-        let cwd = TempDir::new().unwrap();
-        let project_codel = cwd.path().join(".codel");
-        fs::create_dir_all(&project_codel).unwrap();
-        // Seed the file before the watcher starts so we observe the
-        // modification rather than the creation event.
-        fs::write(project_codel.join("config.toml"), "").unwrap();
-
-        let (_w, mut rx) = ConfigFileWatcher::start(
-            codel_home.path(),
-            &[],
-            Some(cwd.path()),
-            Some(Duration::from_millis(100)),
-        )
-        .expect("watcher should start");
-
-        fs::write(
-            project_codel.join("config.toml"),
-            "[mcp_servers.x]\ncommand = \"/bin/true\"",
-        )
-        .unwrap();
-
-        // Poll up to 2s for the event.
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let mut found = false;
-        while std::time::Instant::now() < deadline {
-            if let Ok(evt) = rx.try_recv()
-                && matches!(evt, ConfigChangeEvent::ProjectConfigChanged { .. })
-            {
-                found = true;
-                break;
-            }
-            wait_ms(50);
-        }
-        assert!(
-            found,
-            "expected ProjectConfigChanged for <cwd>/.codel/config.toml within 2s"
-        );
-    }
-
-    /// A write to `<cwd>/.mcp.json` must surface as a
-    /// `ConfigChangeEvent::McpConfigChanged` so the reloader can fan out
-    /// a `ProjectMcpServersChanged { cwd }`. Same FSEvents caveat as
-    /// [`project_cwd_toml_triggers_reload`].
-    #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
-    fn project_mcp_json_triggers_reload() {
-        let codel_home = TempDir::new().unwrap();
-        let cwd = TempDir::new().unwrap();
-        fs::write(cwd.path().join(".mcp.json"), "{}").unwrap();
-
-        let (_w, mut rx) = ConfigFileWatcher::start(
-            codel_home.path(),
-            &[],
-            Some(cwd.path()),
-            Some(Duration::from_millis(100)),
-        )
-        .expect("watcher should start");
-
-        fs::write(
-            cwd.path().join(".mcp.json"),
-            r#"{"mcpServers": {"x": {"command": "/bin/true"}}}"#,
-        )
-        .unwrap();
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let mut found = false;
-        while std::time::Instant::now() < deadline {
-            if let Ok(evt) = rx.try_recv()
-                && matches!(evt, ConfigChangeEvent::McpConfigChanged { .. })
-            {
-                found = true;
-                break;
-            }
-            wait_ms(50);
-        }
-        assert!(
-            found,
-            "expected McpConfigChanged for <cwd>/.mcp.json within 2s"
-        );
-    }
-
-    /// The cwd watch is **non-recursive** by design. This writes a
-    /// file that the watcher's name filter **would** route
-    /// (`.mcp.json`) into a deeply nested subdir. If a future
-    /// regression flips `RecursiveMode::NonRecursive` → `Recursive`,
-    /// recursive notify would surface the write, the name filter would
-    /// map it to `McpConfigChanged`, and the test would fail. The file
-    /// name must match the filter (`.mcp.json`, not e.g. `file.txt`)
-    /// or the filter drops it regardless of recursion mode, so this is
-    /// the test that actually guards the constraint.
-    #[test]
-    #[ignore = "flaky on CI: OS file watcher may fail to initialize"]
-    fn nested_subdir_change_does_not_trigger() {
-        let codel_home = TempDir::new().unwrap();
-        let cwd = TempDir::new().unwrap();
-        let nested = cwd.path().join("some").join("deep").join("nested");
-        fs::create_dir_all(&nested).unwrap();
-
-        let (_w, mut rx) = ConfigFileWatcher::start(
-            codel_home.path(),
-            &[],
-            Some(cwd.path()),
-            Some(Duration::from_millis(100)),
-        )
-        .expect("watcher should start");
-
-        // Write a file whose name DOES match the watcher filter —
-        // under recursive mode this would surface
-        // as a `ConfigChangeEvent`; under non-recursive mode no
-        // event must reach `rx`.
-        fs::write(
-            nested.join(".mcp.json"),
-            r#"{"mcpServers": {"x": {"command": "/bin/true"}}}"#,
-        )
-        .unwrap();
-        wait_ms(500);
-
-        assert!(
-            rx.try_recv().is_err(),
-            "non-recursive watch must not surface .mcp.json events from <cwd>/some/deep/nested/"
-        );
-    }
-
-    /// [`ConfigFileWatcher::watch_path`] registered after
-    /// `start` must light up `<new_cwd>/.codel/config.toml` writes
-    /// identically to a cwd passed in at `start`. Exercises the
-    /// session-open registration path where the leader learns about a
-    /// new project root after the watcher is already running.
-    #[test]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "flaky on macOS: FSEvents does not reliably deliver events in test harness"
-    )]
-    fn watch_path_dynamic_registration() {
-        let codel_home = TempDir::new().unwrap();
-        let new_cwd = TempDir::new().unwrap();
-        let project_codel = new_cwd.path().join(".codel");
-        fs::create_dir_all(&project_codel).unwrap();
-        fs::write(project_codel.join("config.toml"), "").unwrap();
-
-        let (mut watcher, mut rx) = ConfigFileWatcher::start(
-            codel_home.path(),
-            &[],
-            None,
-            Some(Duration::from_millis(100)),
-        )
-        .expect("watcher should start");
-
-        watcher.watch_path(new_cwd.path());
-
-        fs::write(
-            project_codel.join("config.toml"),
-            "[mcp_servers.y]\ncommand = \"/bin/true\"",
-        )
-        .unwrap();
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let mut found = false;
-        while std::time::Instant::now() < deadline {
-            if let Ok(evt) = rx.try_recv()
-                && matches!(evt, ConfigChangeEvent::ProjectConfigChanged { .. })
-            {
-                found = true;
-                break;
-            }
-            wait_ms(50);
-        }
-        assert!(
-            found,
-            "watch_path-registered cwd must surface ProjectConfigChanged within 2s"
-        );
-    }
-
-    /// Bookkeeping-only (no OS event delivery, so deterministic on
-    /// every platform): `watch_path` records the cwd in `watched_cwds`
-    /// and is idempotent; `unwatch_path` removes it and is a no-op for
-    /// an unknown cwd. Guards the set that backs `unwatch_path` and the
-    /// `watch_path` de-dup.
+    /// Bookkeeping-only (no OS event delivery, so deterministic on every platform): `watch_path` records the cwd in `watched_cwds` and is idempotent; `unwatch_path` removes it and is a no-op for an unknown cwd. Guards the set that backs `unwatch_path` and the `watch_path` de-dup.
     #[test]
     fn watch_and_unwatch_path_bookkeeping() {
         let codel_home = TempDir::new().unwrap();
@@ -1298,5 +1657,95 @@ mod tests {
         assert!(!watcher.watched_cwds.contains(p));
         watcher.unwatch_path(p);
         assert!(!watcher.watched_cwds.contains(p));
+    }
+
+    /// An external `config.toml` referent must classify as global, not project.
+    #[test]
+    fn classify_external_config_toml_referent_as_global() {
+        let codel_home = Path::new("/home/u/.codel");
+        let dest = Path::new("/home/u/dotfiles/config.toml");
+        assert_eq!(
+            classify_watched_path(dest, codel_home, Some(dest), None),
+            Some(ConfigChangeEvent::GlobalConfigChanged)
+        );
+        assert_eq!(
+            classify_watched_path(dest, codel_home, None, None),
+            Some(ConfigChangeEvent::ProjectConfigChanged {
+                path: dest.to_path_buf()
+            })
+        );
+        let slot = codel_home.join("config.toml");
+        assert_eq!(
+            classify_watched_path(&slot, codel_home, Some(dest), None),
+            Some(ConfigChangeEvent::GlobalConfigChanged)
+        );
+    }
+
+    /// Writes to an external referent must be observed as GlobalConfigChanged.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watcher_emits_global_change_for_external_config_toml_referent() {
+        let codel = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        let dest = repo.path().join("config.toml");
+        fs::write(&dest, "a = 1").unwrap();
+        std::os::unix::fs::symlink(&dest, codel.path().join("config.toml")).unwrap();
+
+        let (_w, mut rx) =
+            ConfigFileWatcher::start(codel.path(), &[], None, Some(Duration::from_millis(50)))
+                .expect("watcher should start");
+        wait_ms(150);
+        while rx.try_recv().is_ok() {}
+
+        fs::write(&dest, "a = 2").unwrap();
+        wait_ms(300);
+        let mut found = false;
+        while let Ok(evt) = rx.try_recv() {
+            if evt == ConfigChangeEvent::GlobalConfigChanged {
+                found = true;
+            }
+        }
+        assert!(
+            found,
+            "write to the external config.toml referent must emit GlobalConfigChanged"
+        );
+    }
+
+    /// Retarget A→B, then edit B: the watcher must follow the live dest.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watcher_emits_global_change_after_referent_retarget() {
+        let codel = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        let a = repo.path().join("a.toml");
+        let b = repo.path().join("b.toml");
+        fs::write(&a, "a = 1").unwrap();
+        fs::write(&b, "b = 1").unwrap();
+        let slot = codel.path().join("config.toml");
+        std::os::unix::fs::symlink(&a, &slot).unwrap();
+
+        let (_w, mut rx) =
+            ConfigFileWatcher::start(codel.path(), &[], None, Some(Duration::from_millis(50)))
+                .expect("watcher should start");
+        wait_ms(150);
+        while rx.try_recv().is_ok() {}
+
+        std::fs::remove_file(&slot).unwrap();
+        std::os::unix::fs::symlink(&b, &slot).unwrap();
+        wait_ms(300);
+        while rx.try_recv().is_ok() {}
+
+        fs::write(&b, "b = 2").unwrap();
+        wait_ms(300);
+        let mut found = false;
+        while let Ok(evt) = rx.try_recv() {
+            if evt == ConfigChangeEvent::GlobalConfigChanged {
+                found = true;
+            }
+        }
+        assert!(
+            found,
+            "write to the retargeted config.toml referent must emit GlobalConfigChanged"
+        );
     }
 }

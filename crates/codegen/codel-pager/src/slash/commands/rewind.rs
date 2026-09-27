@@ -1,23 +1,15 @@
 use crate::app::actions::Action;
-use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 
 pub struct RewindCommand;
 
 impl SlashCommand for RewindCommand {
-    fn name(&self) -> &str {
-        "rewind"
-    }
-
-    fn description(&self) -> &str {
-        "Rewind to a previous turn"
-    }
-
-    fn session_scoped(&self) -> bool {
-        true
-    }
-
-    fn usage(&self) -> &str {
-        "/rewind"
+    slash_meta! {
+        name: "rewind",
+        aliases: ["undo"],
+        description: "Rewind to a previous turn",
+        usage: "/rewind",
+        session_scoped: true,
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {

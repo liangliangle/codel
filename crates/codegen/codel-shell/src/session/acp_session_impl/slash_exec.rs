@@ -6,6 +6,12 @@ impl SessionActor {
         self: &Arc<Self>,
         action: BuiltinAction,
     ) -> PromptTurnResult {
+        // Builtin turns carry no user message, so a send-now may cancel from the start.
+        self.mark_front_message_committed().await;
+        codel_logging::session_ctx::log_event(codel_logging::events::SlashCommandUsed {
+            command: action.command_name().to_string(),
+            args_provided: action.args_provided(),
+        });
         match action {
             BuiltinAction::Compact { user_context } => {
                 self.run_compact(user_context).await?;
@@ -14,18 +20,33 @@ impl SessionActor {
             BuiltinAction::SetYolo { enabled } => {
                 let was = self.permissions.is_yolo_mode();
                 self.permissions.set_yolo_mode(enabled);
-                // Report the ACTUAL state, not the request: the manager clamps a
-                // requested ON to OFF under the always-approve pin, so `enabled`
-                // would mis-report a turn-on (event, diagnostics, and the log line)
-                // that never happened.
+                // Report the ACTUAL state: the manager clamps a requested ON to OFF under the always-approve pin
+                // Echoing `enabled` would report a turn-on (event, telemetry, and the log line) that never happened
                 let actual = self.permissions.is_yolo_mode();
                 if let Some(actual) = yolo_toggle_report(was, actual) {
-                    tracing::info_span!(
+                    self.emit_event(crate::session::events::Event::YoloToggled { enabled: actual });
+                    let from_mode = if self.plan_mode.lock().is_active() {
+                        "plan"
+                    } else if was {
+                        "bypass_permissions"
+                    } else {
+                        "default"
+                    };
+                    codel_logging::session_ctx::log_event(
+                        codel_logging::events::YoloToggled {
+                            enabled: actual,
+                            previous_state: was,
+                            trigger: codel_logging::events::YoloTrigger::SlashCommand,
+                            from_mode: Some(from_mode.to_owned()),
+                        },
+                    );
+                    codel_logging::event_span!(
                         "session.permission_mode_changed",
+                        from_mode = crate::session::telemetry::permission_mode_label(was),
+                        to_mode = crate::session::telemetry::permission_mode_label(actual),
                         trigger = "slash_command",
                         enabled = actual,
-                    )
-                    .in_scope(|| {});
+                    );
                 }
                 let status = if actual { "enabled" } else { "disabled" };
                 tracing::info!(
@@ -36,42 +57,33 @@ impl SessionActor {
                 );
                 ok_end_turn(0, None)
             }
+            // Prompt-turn path for clients without the pager-local `/flush` and `/dream`;
+            // the pager calls `codel/memory/flush` and `codel/memory/dream` instead.
             BuiltinAction::FlushMemory => {
-                if self.memory.is_enabled() {
-                    let did_flush = self.run_memory_flush("slash_command", None).await;
-                    if !did_flush {
-                        tracing::info!(
-                            session_id = %self.session_info.id.0,
-                            "memory flush skipped via /flush: another flush already in progress",
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        session_id = %self.session_info.id.0,
-                        "memory flush skipped via /flush: memory not enabled for this session",
-                    );
-                }
+                let response = self.memory_flush_command().await;
+                self.send_host_turn_slash_command_output(&response.summary())
+                    .await;
                 ok_end_turn(0, None)
             }
             BuiltinAction::Dream => {
-                // No user-visible output — intentional, matches /flush behaviour.
-                if self.memory.is_enabled() {
-                    self.run_dream_slash_command().await;
-                } else {
-                    tracing::warn!(
-                        session_id = %self.session_info.id.0,
-                        "dream skipped via /dream: memory not enabled for this session",
-                    );
-                }
+                let response = self.memory_dream_command().await;
+                self.send_host_turn_slash_command_output(&response.summary())
+                    .await;
                 ok_end_turn(0, None)
             }
             BuiltinAction::ContextInfo => ok_end_turn(0, None),
             BuiltinAction::HooksTrust => {
                 let msg = match Self::do_hooks_trust_project(&self.session_info.cwd) {
                     Ok(root) => {
+                        codel_logging::session_ctx::log_event(
+                            codel_logging::events::HookTrusted { success: true },
+                        );
                         format!("Trusted: {}.", root.display())
                     }
                     Err(e) => {
+                        codel_logging::session_ctx::log_event(
+                            codel_logging::events::HookTrusted { success: false },
+                        );
                         e
                     }
                 };
@@ -126,6 +138,9 @@ impl SessionActor {
                     // paths are under ~/.codel/ to prevent hook path injection.
                     match crate::config::add_hooks_path(&path) {
                         Ok(()) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::HookAdded { success: true },
+                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Added hook path: {path}\n\
                                  Restart session to load hooks from this path."
@@ -133,6 +148,9 @@ impl SessionActor {
                             .await;
                         }
                         Err(e) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::HookAdded { success: false },
+                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to add hook path: {e}"
                             ))
@@ -150,13 +168,29 @@ impl SessionActor {
                     .await;
                 } else {
                     match crate::config::remove_hooks_path(&path) {
-                        Ok(()) => {
+                        Ok(true) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::HookRemoved { success: true },
+                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Removed hook path: {path}\nRestart session to stop loading hooks from this path."
                             ))
                             .await;
                         }
+                        Ok(false) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::HookRemoved { success: false },
+                            );
+                            self.send_host_turn_slash_command_output(&format!(
+                                "{path} is not a user-registered hook directory; \
+                                 config-defined hook sources cannot be removed from here."
+                            ))
+                            .await;
+                        }
                         Err(e) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::HookRemoved { success: false },
+                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to remove hook path: {e}"
                             ))
@@ -245,11 +279,17 @@ impl SessionActor {
             BuiltinAction::PluginsReload => {
                 match &self.plugin_registry_handle {
                     Some(handle) => {
-                        // Explicit user reload: force a full local-install re-copy.
+                        // An explicit user reload forces a full re-copy of locally installed plugins
                         let msg = self.reload_plugins_impl(handle, true).await;
+                        codel_logging::session_ctx::log_event(
+                            codel_logging::events::PluginReloaded { success: true },
+                        );
                         self.send_host_turn_slash_command_output(&msg).await;
                     }
                     None => {
+                        codel_logging::session_ctx::log_event(
+                            codel_logging::events::PluginReloaded { success: false },
+                        );
                         self.send_host_turn_slash_command_output(
                             "No plugin registry handle available. Start a new session to discover plugins.",
                         )
@@ -278,10 +318,7 @@ impl SessionActor {
                 } else {
                     format!("**Model:** {}", model)
                 };
-                let model_hash_line = if crate::session::acp_types::should_show_model_fingerprint(
-                    info.show_model_fingerprint,
-                    &model,
-                ) {
+                let model_hash_line = if info.show_model_fingerprint {
                     info.model_fingerprint
                         .as_deref()
                         .map(|fp| format!("\n\n**Model Hash:** {fp}"))
@@ -349,8 +386,14 @@ impl SessionActor {
                         }
                     };
                     let path_str = resolved.to_string_lossy().to_string();
-                    match crate::config::add_plugin_path(&path_str) {
+                    match crate::config::run_add_plugin_path(path_str.clone()).await {
                         Ok(()) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::PluginAdded {
+                                    source: codel_logging::events::PluginSource::LocalPath,
+                                    success: true,
+                                },
+                            );
                             let msg = format!("Added plugin path: {path_str}");
                             self.send_host_turn_slash_command_output(&msg).await;
                             if let Some(ref handle) = self.plugin_registry_handle {
@@ -359,6 +402,12 @@ impl SessionActor {
                             }
                         }
                         Err(e) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::PluginAdded {
+                                    source: codel_logging::events::PluginSource::LocalPath,
+                                    success: false,
+                                },
+                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to add plugin path: {e}"
                             ))
@@ -385,8 +434,11 @@ impl SessionActor {
                         }
                     };
                     let path_str = resolved.to_string_lossy().to_string();
-                    match crate::config::remove_plugin_path(&path_str) {
+                    match crate::config::run_remove_plugin_path(path_str.clone()).await {
                         Ok(()) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::PluginRemoved { success: true },
+                            );
                             let msg = format!("Removed plugin path: {path_str}");
                             self.send_host_turn_slash_command_output(&msg).await;
                             if let Some(ref handle) = self.plugin_registry_handle {
@@ -395,6 +447,9 @@ impl SessionActor {
                             }
                         }
                         Err(e) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::PluginRemoved { success: false },
+                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to remove plugin path: {e}"
                             ))
@@ -450,20 +505,48 @@ impl SessionActor {
                         ))
                         .await;
                     } else {
-                        match crate::plugin::install_plugin(&source, cwd) {
+                        // Registry flock (bounded 30s poll) + clone — never on the LocalSet (invariant: plugin/acquire.rs).
+                        let installed = match tokio::task::spawn_blocking({
+                            let source = source.clone();
+                            let cwd = cwd.to_path_buf();
+                            move || crate::plugin::install_plugin(&source, &cwd)
+                        })
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(e) => {
+                                self.send_host_turn_slash_command_output(&format!(
+                                    "Install task failed: {e}"
+                                ))
+                                .await;
+                                return ok_end_turn(0, None);
+                            }
+                        };
+                        match installed {
                             Ok(outcome) => {
                                 for w in &outcome.warnings {
                                     tracing::warn!("{w}");
                                 }
-                                let kind = if outcome.is_local { "local" } else { "git" };
-                                tracing::info_span!(
+                                let kind = if outcome.is_local {
+                                    codel_logging::events::InstallKind::Local
+                                } else {
+                                    codel_logging::events::InstallKind::Git
+                                };
+                                codel_logging::session_ctx::log_event(
+                                    codel_logging::events::PluginInstalled {
+                                        install_kind: kind,
+                                        success: true,
+                                        trust: true,
+                                        error_category: None,
+                                    },
+                                );
+                                codel_logging::event_span!(
                                     "plugin.installed",
                                     success = true,
-                                    install_kind = kind,
+                                    install_kind = kind.as_ref(),
                                     plugin_count = outcome.plugin_names.len() as i64,
                                     plugin_name = %outcome.plugin_names.join(","),
-                                )
-                                .in_scope(|| {});
+                                );
                                 self.send_host_turn_slash_command_output(&format!(
                                     "Installed {} plugin(s) from {source}: {}\n\
                                      Run /plugins reload to activate.",
@@ -473,20 +556,26 @@ impl SessionActor {
                                 .await;
                             }
                             Err(e) => {
-                                let error_category = Self::classify_install_error(&e);
-                                let kind =
-                                    if crate::plugin::install_source_is_local(&source, cwd) {
-                                        "local"
-                                    } else {
-                                        "git"
-                                    };
-                                tracing::info_span!(
+                                let error_category = e.category();
+                                let kind = if crate::plugin::install_source_is_local(&source, cwd) {
+                                    codel_logging::events::InstallKind::Local
+                                } else {
+                                    codel_logging::events::InstallKind::Git
+                                };
+                                codel_logging::event_span!(
                                     "plugin.installed",
                                     success = false,
-                                    install_kind = kind,
+                                    install_kind = kind.as_ref(),
                                     error_category = %error_category,
-                                )
-                                .in_scope(|| {});
+                                );
+                                codel_logging::session_ctx::log_event(
+                                    codel_logging::events::PluginInstalled {
+                                        install_kind: kind,
+                                        success: false,
+                                        trust: true,
+                                        error_category: Some(error_category),
+                                    },
+                                );
                                 self.send_host_turn_slash_command_output(&format!(
                                     "Failed to install plugin: {e}"
                                 ))
@@ -506,8 +595,31 @@ impl SessionActor {
                     .await;
                 } else {
                     use crate::plugin::UninstallError;
-                    match crate::plugin::uninstall_plugin(&name, confirm, false) {
+                    // Takes the registry flock + removes directories — never
+                    // on the LocalSet (invariant: plugin/acquire.rs).
+                    let uninstalled = match tokio::task::spawn_blocking({
+                        let name = name.clone();
+                        move || crate::plugin::uninstall_plugin(&name, confirm, false)
+                    })
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(e) => {
+                            self.send_host_turn_slash_command_output(&format!(
+                                "Uninstall task failed: {e}"
+                            ))
+                            .await;
+                            return ok_end_turn(0, None);
+                        }
+                    };
+                    match uninstalled {
                         Ok(outcome) => {
+                            codel_logging::session_ctx::log_event(
+                                codel_logging::events::PluginUninstalled {
+                                    confirmed: true,
+                                    success: true,
+                                },
+                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Uninstalled repo \"{}\" ({} plugin(s): {})",
                                 outcome.repo_key,
@@ -543,6 +655,16 @@ impl SessionActor {
                             ))
                             .await;
                         }
+                        Err(UninstallError::RegistryLock { detail }) => {
+                            self.send_host_turn_slash_command_output(&format!(
+                                "Another plugin operation is in progress: {detail}"
+                            ))
+                            .await;
+                        }
+                        Err(e @ UninstallError::RegistrySave { .. }) => {
+                            self.send_host_turn_slash_command_output(&e.to_string())
+                                .await;
+                        }
                     }
                 }
                 ok_end_turn(0, None)
@@ -550,14 +672,30 @@ impl SessionActor {
             BuiltinAction::PluginsUpdate { name } => {
                 use crate::plugin::RepoUpdateOutcome;
 
-                match crate::plugin::update_plugins(name.as_deref()) {
+                // Sync git fetches never run on the session actor's LocalSet
+                // (invariant: plugin/acquire.rs).
+                let update_result = match tokio::task::spawn_blocking(move || {
+                    crate::plugin::update_plugins(name.as_deref())
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(e) => {
+                        self.send_host_turn_slash_command_output(&format!(
+                            "Plugin update task failed: {e}"
+                        ))
+                        .await;
+                        return ok_end_turn(0, None);
+                    }
+                };
+                match update_result {
                     Ok(outcomes) if outcomes.is_empty() => {
                         self.send_host_turn_slash_command_output("No installed plugins to update.")
                             .await;
                     }
                     Ok(outcomes) => {
                         fn short(c: Option<&str>) -> &str {
-                            c.map(|s| &s[..7.min(s.len())]).unwrap_or("?")
+                            c.and_then(|s| s.get(..7.min(s.len()))).unwrap_or("?")
                         }
                         let messages: Vec<String> = outcomes
                             .iter()
@@ -593,124 +731,26 @@ impl SessionActor {
                 }
                 ok_end_turn(0, None)
             }
+            BuiltinAction::Feedback { text } => self.execute_feedback_command(text).await,
             BuiltinAction::MemoryBrowse => {
-                let file_infos = if let Some(ref storage) = *self.memory.storage.borrow() {
-                    match storage.list_memory_files() {
-                        Ok(files) => files
-                            .into_iter()
-                            .map(|path| {
-                                let meta = match std::fs::metadata(&path) {
-                                    Ok(m) => Some(m),
-                                    Err(e) => {
-                                        tracing::debug!(
-                                            path = %path.display(),
-                                            error = %e,
-                                            "skipping memory file with unreadable metadata",
-                                        );
-                                        None
-                                    }
-                                };
-                                crate::extensions::notification::MemoryFileInfo {
-                                    source: storage.classify_source(&path).to_string(),
-                                    path: path.display().to_string(),
-                                    size_bytes: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                                    modified_epoch_secs: meta
-                                        .and_then(|m| m.modified().ok())
-                                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                        .map(|d| d.as_secs()),
-                                }
-                            })
-                            .collect(),
-                        Err(e) => {
-                            tracing::warn!(
-                                session_id = %self.session_info.id.0,
-                                error = %e,
-                                "failed to list memory files",
-                            );
-                            self.send_host_turn_slash_command_output(&format!(
-                                "Failed to list memory files: {e}"
-                            ))
-                            .await;
-                            vec![]
-                        }
+                match self.memory_listing() {
+                    Ok(listing) => {
+                        self.send_codel_notification(CodelSessionUpdate::MemoryFiles {
+                            files: listing.files,
+                            enabled: listing.enabled,
+                            disabled_reason: listing.disabled_reason,
+                            capture_enabled: listing.capture_enabled,
+                            dream_enabled: listing.dream_enabled,
+                        })
+                        .await;
                     }
-                } else {
-                    self.send_host_turn_slash_command_output(
-                        "Memory is not enabled for this session.",
-                    )
-                    .await;
-                    vec![]
-                };
-                tracing::info!(
-                    session_id = %self.session_info.id.0,
-                    file_count = file_infos.len(),
-                    "memory browse: listing files",
-                );
-                self.send_codel_notification(CodelSessionUpdate::MemoryFiles { files: file_infos })
-                    .await;
+                    // No modal: an empty list would render as a fresh store.
+                    Err(e) => self.send_host_turn_slash_command_output(&e).await,
+                }
                 ok_end_turn(0, None)
             }
-            BuiltinAction::MemoryToggle { enabled } => {
-                tracing::info!(
-                    session_id = %self.session_info.id.0,
-                    enabled,
-                    "memory toggle via /memory slash command",
-                );
-                let msg = if enabled && !self.memory.is_enabled() {
-                    if let Some(ref params) = self.memory.backend_params {
-                        let storage = crate::session::memory::MemoryStorage::new(
-                            std::path::Path::new(&self.session_info.cwd),
-                            None,
-                        );
-                        if let Err(e) = storage.ensure_initialized() {
-                            tracing::warn!(error = %e, "failed to initialize memory storage on re-enable");
-                            format!("Memory could not be enabled: {e}")
-                        } else {
-                            let backend =
-                                crate::session::memory::MemoryBackendImpl::from_session_params(
-                                    storage.clone(),
-                                    params,
-                                );
-                            let backend: std::sync::Arc<
-                                dyn codel_tools::types::memory_backend::MemoryBackend,
-                            > = std::sync::Arc::new(backend);
-                            let bridge = self.agent.borrow().tool_bridge().clone();
-                            bridge.update_resource(backend.clone()).await;
-                            if let Err(e) = self.register_memory_tools(&bridge).await {
-                                tracing::warn!(error = %e, "memory tool registration failed during toggle");
-                            }
-                            *self.memory.storage.borrow_mut() = Some(storage);
-                            "Memory enabled for this session.".to_owned()
-                        }
-                    } else {
-                        "Memory cannot be enabled (not configured for this session).".to_owned()
-                    }
-                } else if !enabled && self.memory.is_enabled() {
-                    let bridge = self.agent.borrow().tool_bridge().clone();
-                    if !bridge.unregister_tool_by_name(
-                        codel_tools::implementations::memory::MEMORY_SEARCH_TOOL_NAME,
-                    ) {
-                        tracing::debug!("memory_search tool was not registered during unregister");
-                    }
-                    if !bridge.unregister_tool_by_name(
-                        codel_tools::implementations::memory::MEMORY_GET_TOOL_NAME,
-                    ) {
-                        tracing::debug!("memory_get tool was not registered during unregister");
-                    }
-                    *self.memory.storage.borrow_mut() = None;
-                    *self.memory.search_counter.borrow_mut() = None;
-                    "Memory disabled for this session.".to_owned()
-                } else {
-                    let state = if enabled { "enabled" } else { "disabled" };
-                    format!("Memory is already {state}.")
-                };
-                self.send_host_turn_slash_command_output(&msg).await;
-                self.refresh_goal_harness_enabled().await;
-                ok_end_turn(0, None)
-            }
-            // GoalSet is handled directly in handle_prompt (before this
-            // function is called) so the turn flows through to model inference
-            // instead of ending immediately.
+            // GoalSet is handled directly in handle_prompt, before this function is called
+            // The turn then flows through to model inference instead of ending immediately
             BuiltinAction::GoalSet { .. } => {
                 unreachable!("GoalSet is intercepted in handle_prompt")
             }
@@ -740,6 +780,7 @@ impl SessionActor {
                     objective: query.clone(),
                     args: serde_json::json!({ "query": query }),
                     agent_budget: None,
+                    effort: None,
                     resume_run_id: None,
                 };
                 let launched = self.workflow_manager.lock().await.launch(resolved, spec);
@@ -762,7 +803,7 @@ impl SessionActor {
                         self.send_host_turn_slash_command_output(&format!(
                             "Deep research '{display}' started in the background. It will \
                              cross-check candidate claims and return a concise cited report here. \
-                             Use /workflows to follow progress."
+                             Use /workflow runs to follow progress."
                         ))
                         .await;
                         tokio::spawn(async move {
@@ -842,8 +883,7 @@ impl SessionActor {
                 self.send_host_turn_slash_command_output(msg).await;
                 ok_end_turn(0, None)
             }
-            // GoalResume is intercepted in handle_prompt (like GoalSet) so a
-            // successful resume flows through to inference — see `resume_goal`.
+            // GoalResume is intercepted in handle_prompt (like GoalSet) so a successful resume flows through to inference; see `resume_goal`
             BuiltinAction::GoalResume => {
                 unreachable!("GoalResume is intercepted in handle_prompt")
             }
@@ -878,4 +918,82 @@ impl SessionActor {
             }
         }
     }
+
+    async fn execute_feedback_command(self: &Arc<Self>, text: String) -> PromptTurnResult {
+        if text.is_empty() {
+            self.send_host_turn_slash_command_output("Usage: /feedback <text>")
+                .await;
+            return ok_end_turn(0, None);
+        }
+
+        let (sampling_config, model_metadata, credentials, conv) = tokio::join!(
+            self.chat_state_handle.get_sampling_config(),
+            self.chat_state_handle.get_last_model_metadata(),
+            self.chat_state_handle.get_credentials(),
+            self.chat_state_handle.get_conversation(),
+        );
+        let live_model_id = sampling_config.map(|c| c.model);
+        let rated = slash_feedback_rated_turn(&conv);
+        let reasoning_effort = rated.reasoning_effort.map(|e| e.to_string());
+        let (model_id, resolved_model_id) = match rated.model_id {
+            Some(rated_id) => {
+                if model_metadata.resolved_model_id.as_ref() == Some(&rated_id) {
+                    (live_model_id, model_metadata.resolved_model_id)
+                } else if live_model_id.as_ref() != Some(&rated_id) {
+                    (Some(rated_id), None)
+                } else {
+                    (live_model_id, model_metadata.resolved_model_id)
+                }
+            }
+            None => (live_model_id, model_metadata.resolved_model_id),
+        };
+        let client_version = credentials.client_version;
+
+        use crate::session::feedback_manager::{SessionFeedbackData, SubmitOutcome};
+        let outcome = self
+            .feedback_manager
+            .submit_text_feedback(
+                text,
+                SessionFeedbackData {
+                    model_id,
+                    resolved_model_id,
+                    reasoning_effort,
+                    client_version,
+                    session_cwd: self.session_info.cwd.clone(),
+                },
+                Some(&self.notifications.persistence_tx),
+                self.telemetry_enabled,
+            )
+            .await;
+
+        match outcome {
+            SubmitOutcome::Submitted => {
+                self.send_host_turn_slash_command_output("Feedback submitted. Thank you!")
+                    .await;
+            }
+            SubmitOutcome::LocalOnly => {
+                self.send_host_turn_slash_command_output(
+                    "Feedback saved locally; no feedback server is configured for this session.",
+                )
+                .await;
+            }
+            SubmitOutcome::Failed(err) => {
+                tracing::warn!(error = %err, "feedback submission failed");
+                self.send_host_turn_slash_command_output(
+                    "Feedback saved locally; submitting to the server failed (see logs).",
+                )
+                .await;
+            }
+        }
+
+        ok_end_turn(0, None)
+    }
+}
+
+pub(super) fn slash_feedback_rated_turn(
+    conversation: &[codel_sampling_types::ConversationItem],
+) -> super::FeedbackTurnLookup {
+    super::slash_feedback_last_turn(conversation)
+        .map(|n| super::turn_texts_for_feedback(conversation, n))
+        .unwrap_or_default()
 }

@@ -7,6 +7,7 @@ description = "Headless markdown analysis sharing Codel's exact pulldown-cmark c
 
 [dependencies]
 pulldown-cmark = { workspace = true }
+strum = { workspace = true }
 
 [lints]
 workspace = true

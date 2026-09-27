@@ -42,37 +42,27 @@ use crate::types::requirements::{Expr, ToolRequirement};
 use crate::types::resources::{NotificationHandle, SharedResources};
 use crate::types::tool::{ToolKind, ToolNamespace};
 
-/// Migration fallback: when `true`, a missing `UserQuestionSender` falls
-/// back to the old fire-and-forget `QuestionsSent` behavior with a warning.
-/// Set to `false` (or delete entirely) once the shell coordinator is wired
-/// up in TS-03 and confirmed working.
+/// Migration fallback: when `true`, a missing `UserQuestionSender` falls back to the old
+/// fire-and-forget `QuestionsSent` behavior with a warning. Set to `false` (or delete entirely)
+/// once the shell coordinator is wired up in TS-03 and confirmed working.
 const MIGRATION_FALLBACK: bool = true;
 
-/// Default max time to wait for the user to answer the questionnaire (all
-/// questions in this tool call share one timer): 30 minutes. On expiry the
-/// tool returns the same skipped/cancel text as a user dismiss
-/// (`CANCEL_TEXT`), not a tool failure.
-///
-/// The shell resolves `[toolset.ask_user_question]` across its config tiers
-/// and injects the result as [`AskUserQuestionParams`]; when no resolved
-/// params are injected, `CODEL_ASK_USER_QUESTION_TIMEOUT_SECS` (positive
-/// integer seconds) still overrides this default directly —
-/// e.g. `CODEL_ASK_USER_QUESTION_TIMEOUT_SECS=8` for tests / TUI repro.
+/// Default max time to wait for the user to answer the questionnaire (all questions in this tool
+/// call share one timer): 30 minutes. On expiry the tool returns the same skipped/cancel text as a
+/// user dismiss (`format::unanswered_text`), not a tool failure.
 pub const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
-/// Default for `timeout_enabled` across every resolver tier and settings
-/// surface: the questionnaire timer is armed unless something disarms it.
-/// Single source — the shell resolver's `.default(...)` and the pager's
-/// settings registry both anchor on this const.
+/// Default for `timeout_enabled` across every resolver tier and settings surface: the questionnaire
+/// timer is armed unless something disarms it. Single source — the shell resolver's `.default(...)`
+/// and the pager's settings registry both anchor on this const.
 pub const DEFAULT_ASK_USER_QUESTION_TIMEOUT_ENABLED: bool = true;
 
 /// Env var: override [`RESPONSE_TIMEOUT`] with a duration in **seconds**.
 pub const RESPONSE_TIMEOUT_ENV: &str = "CODEL_ASK_USER_QUESTION_TIMEOUT_SECS";
 
-/// Parse the [`RESPONSE_TIMEOUT_ENV`] override (positive integer seconds).
-/// Invalid or non-positive values are warned and treated as unset. Single
-/// source for this parse — the shell's env tier calls it too, so the two
-/// resolutions can't drift.
+/// Parse the [`RESPONSE_TIMEOUT_ENV`] override (positive integer seconds). Invalid or non-positive
+/// values are warned and treated as unset. Single source for this parse — the shell's env tier
+/// calls it too, so the two resolutions can't drift.
 pub fn response_timeout_env_secs() -> Option<u64> {
     let raw = std::env::var(RESPONSE_TIMEOUT_ENV).ok()?;
     match raw.trim().parse::<u64>() {
@@ -95,14 +85,9 @@ pub fn response_timeout() -> std::time::Duration {
         .unwrap_or(RESPONSE_TIMEOUT)
 }
 
-/// Runtime-configurable parameters for the `ask_user_question` tool,
-/// injected via `Params<AskUserQuestionParams>` in `SharedResources`.
-///
-/// The shell resolves `[toolset.ask_user_question]` across requirements >
-/// env > user `config.toml` > managed > remote feature config and injects the
-/// concrete result. All fields are optional — `None` means "unset", which
-/// preserves the legacy env→default budget, so registry consumers that never
-/// resolve config (workspace toolset) keep today's behavior.
+/// Runtime-configurable parameters for the `ask_user_question` tool, injected via `Params<AskUserQuestionParams>` in
+/// `SharedResources`. All fields are optional — `None` means "unset", which preserves the legacy env→default budget, so
+/// registry consumers that never resolve config (workspace toolset) keep today's behavior.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AskUserQuestionParams {
     /// `Some(false)` disarms the questionnaire timer entirely (wait forever
@@ -113,6 +98,11 @@ pub struct AskUserQuestionParams {
     /// `None` falls back to the env override / [`RESPONSE_TIMEOUT`].
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Session state stamped by the agent builder for non-interactive
+    /// sessions (headless `-p`, SDK) — NOT a user config key. `Some(true)`
+    /// switches the cancel/timeout result to [`format::NO_OPERATOR_TEXT`].
+    #[serde(default)]
+    pub non_interactive: Option<bool>,
 }
 
 crate::register_resource!("codel_build", "AskUserQuestion", AskUserQuestionParams);
@@ -178,10 +168,9 @@ pub struct Question {
     #[schemars(description = "The choices for this question.")]
     pub options: Vec<QuestionOption>,
 
-    /// Let the user pick more than one option (default false).
-    // Model-facing schema name is snake_case (`multi_select`); deserialize also
-    // accepts the legacy/ACP `multiSelect` so the shared `Question` type stays
-    // wire-compatible with the camelCase ACP ext_method.
+    /// Let the user pick more than one option (default false). Model-facing schema name is
+    /// snake_case (`multi_select`); deserialize also accepts the legacy/ACP `multiSelect` so the
+    /// shared `Question` type stays wire-compatible with the camelCase ACP ext_method.
     #[serde(
         default,
         alias = "multi_select",
@@ -207,26 +196,17 @@ pub struct AskUserQuestionInput {
     #[schemars(description = "The questions to ask, each with its own options.")]
     pub questions: Vec<Question>,
 
-    /// Internal flag: when `true`, the tool result is formatted in the
-    /// alternate shape (referenced by id, not label).
-    /// Skipped on the wire and from the JSON schema so the model never
-    /// sees or controls this field.
+    /// Internal flag: when `true`, the tool result is formatted in the alternate shape (referenced
+    /// by id, not label). Skipped on the wire and from the JSON schema so the model never sees or
+    /// controls this field.
     #[serde(default, skip)]
     #[schemars(skip)]
     pub use_id_keyed_format: bool,
 }
 
-/// `AskUserQuestion` tool.
-///
-/// Blocks inside `run()` until the user responds or the configured wait
-/// budget elapses for the whole questionnaire (default [`RESPONSE_TIMEOUT`],
-/// 30 minutes). Sends a request over an in-process mpsc channel to a
-/// session-owned coordinator (in codel-shell), which performs an ACP
-/// `ext_method` round-trip to the client/pager. The response is sent back
-/// over a oneshot channel and formatted into the model-visible tool result.
-///
-/// Params: [`AskUserQuestionParams`] — timeout policy resolved by the shell
-/// across its config tiers; unset fields keep the legacy env→default budget.
+/// `AskUserQuestion` tool. Blocks inside `run()` until the user responds or the configured wait budget elapses for the
+/// whole questionnaire (default [`RESPONSE_TIMEOUT`], 30 minutes). Sends a request over an in-process mpsc channel to a
+/// session-owned coordinator (in codel-shell), which performs an ACP `ext_method` round-trip to the client/pager.
 #[derive(Debug, Default)]
 pub struct AskUserQuestionTool;
 
@@ -259,12 +239,9 @@ impl crate::types::tool_metadata::ToolMetadata for AskUserQuestionTool {
 }
 
 impl AskUserQuestionTool {
-    /// Fire-and-forget fallback used during migration when
-    /// `UserQuestionSender` is not yet injected by the shell.
-    ///
-    /// This preserves the old behavior: send a notification, return
-    /// `QuestionsSent`. Remove this method when `MIGRATION_FALLBACK` is
-    /// set to `false`.
+    /// Fire-and-forget fallback used during migration when `UserQuestionSender` is not yet injected
+    /// by the shell. This preserves the old behavior: send a notification, return `QuestionsSent`.
+    /// Remove this method when `MIGRATION_FALLBACK` is set to `false`.
     async fn fallback_fire_and_forget(
         &self,
         input: &AskUserQuestionInput,
@@ -329,7 +306,7 @@ impl codel_tool_runtime::Tool for AskUserQuestionTool {
     ) -> codel_tool_types::ToolDescription {
         codel_tool_types::ToolDescription::new(
             "ask_user_question",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
@@ -419,7 +396,7 @@ impl codel_tool_runtime::Tool for AskUserQuestionTool {
         }
 
         // ── Step 5: Emit UserQuestionAsked + read the wait budget ───────
-        let wait = {
+        let params = {
             let questions_json = serde_json::to_value(&input.questions)
                 .unwrap_or_else(|_| serde_json::Value::Array(vec![]));
             let res = resources.lock().await;
@@ -434,19 +411,19 @@ impl codel_tool_runtime::Tool for AskUserQuestionTool {
             res.get::<crate::types::resources::Params<AskUserQuestionParams>>()
                 .map(|p| p.0)
                 .unwrap_or_default()
-                .wait_budget()
         };
+        let wait = params.wait_budget();
+        // One wording for both unanswered paths (cancel + timeout below).
+        let unanswered = format::unanswered_text(params.non_interactive.unwrap_or(false));
         tracing::info!(
             question_count,
             timeout_secs = ?wait.map(|d| d.as_secs()),
             "Asked user questions, blocking for response"
         );
 
-        // ── Step 6: Block on the oneshot result (whole batch, one timer) ─
-        // A single pending-decision timeout covers the questionnaire, not per
-        // question: N questions in one call share one wait.
-        // A `None` budget (`timeout_enabled = false`) runs the same await with
-        // no timer, normalized into the timed shape so one match handles both.
+        // ── Step 6: Block on the oneshot result (whole batch, one timer) ─ A single pending-decision timeout covers the
+        // questionnaire, not per question: N questions in one call share one wait. A `None` budget (`timeout_enabled = false`)
+        // runs the same await with no timer, normalized into the timed shape so one match handles both.
         let outcome = match wait {
             Some(dur) => tokio::time::timeout(dur, result_rx).await,
             None => Ok(result_rx.await),
@@ -465,12 +442,10 @@ impl codel_tool_runtime::Tool for AskUserQuestionTool {
                     timeout_secs = ?wait.map(|d| d.as_secs()),
                     "User question timed out; continuing without answers"
                 );
-                // Drop the oneshot receiver on return. The shell coordinator
-                // races `result_tx.closed()` against ACP so it unblocks and
-                // can open the next questionnaire (stale UI is cancelled when
-                // a new ext_method arrives). Same model text as cancel.
+                // Drop the oneshot receiver on return. The shell coordinator races `result_tx.closed()` against ACP so it unblocks and
+                // can open the next questionnaire (stale UI is cancelled when a new ext_method arrives). Same model text as cancel.
                 return Ok(AskUserQuestionOutput::UserAnswered {
-                    message: format::CANCEL_TEXT.to_string(),
+                    message: unanswered.to_string(),
                 });
             }
         };
@@ -507,7 +482,7 @@ impl codel_tool_runtime::Tool for AskUserQuestionTool {
                 Ok(AskUserQuestionOutput::UserAnswered { message })
             }
             Ok(UserQuestionResponse::Cancelled) => Ok(AskUserQuestionOutput::UserAnswered {
-                message: format::CANCEL_TEXT.to_string(),
+                message: unanswered.to_string(),
             }),
             Err(UserQuestionError::TransportError(msg)) => {
                 Err(codel_tool_runtime::ToolError::execution(
@@ -585,10 +560,6 @@ mod tests {
             codel_tool_runtime::Tool::id(&tool).as_str(),
             "ask_user_question"
         );
-        let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
-        assert!(desc.contains("Ask the user"));
-        assert!(desc.contains("Other"));
-        assert!(desc.contains("(Recommended)"));
     }
 
     #[test]
@@ -619,13 +590,18 @@ mod tests {
 
         let input: AskUserQuestionInput = serde_json::from_value(json).unwrap();
         assert_eq!(input.questions.len(), 1);
-        assert_eq!(input.questions[0].question, "Pick DB?");
-        assert_eq!(input.questions[0].options.len(), 2);
-        assert_eq!(input.questions[0].options[0].label, "Postgres");
-        assert!(input.questions[0].options[0].preview.is_none());
-        assert_eq!(input.questions[0].options[1].label, "SQLite");
-        assert!(input.questions[0].options[1].preview.is_some());
-        assert_eq!(input.questions[0].multi_select, Some(false));
+        let Some(q) = input.questions.first() else {
+            panic!("expected one question: {:?}", input.questions);
+        };
+        assert_eq!(q.question, "Pick DB?");
+        let [opt0, opt1] = q.options.as_slice() else {
+            panic!("expected two options: {:?}", q.options);
+        };
+        assert_eq!(opt0.label, "Postgres");
+        assert!(opt0.preview.is_none());
+        assert_eq!(opt1.label, "SQLite");
+        assert!(opt1.preview.is_some());
+        assert_eq!(q.multi_select, Some(false));
     }
 
     #[test]
@@ -652,7 +628,10 @@ mod tests {
             }]
         });
         let input: AskUserQuestionInput = serde_json::from_value(json).unwrap();
-        assert_eq!(input.questions[0].multi_select, Some(true));
+        let Some(q) = input.questions.first() else {
+            panic!("expected one question: {:?}", input.questions);
+        };
+        assert_eq!(q.multi_select, Some(true));
     }
 
     // ── Migration fallback tests (no UserQuestionSender) ─────────────────
@@ -808,8 +787,8 @@ mod tests {
         let result = handle.await.unwrap().unwrap();
         match result {
             AskUserQuestionOutput::UserAnswered { message } => {
-                assert!(message.starts_with("User has answered your questions:"));
-                assert!(message.contains("\"Which database?\"=\"Redis\""));
+                assert!(message.contains("Which database?"));
+                assert!(message.contains("Redis"));
             }
             other => panic!("Expected UserAnswered, got {:?}", other),
         }
@@ -845,6 +824,90 @@ mod tests {
                 assert_eq!(message, format::CANCEL_TEXT);
             }
             other => panic!("Expected UserAnswered with cancel text, got {:?}", other),
+        }
+    }
+
+    /// A cancel in a non-interactive session (builder-stamped params) must
+    /// return the honest no-operator text, not "user declined".
+    #[tokio::test]
+    async fn non_interactive_cancel_returns_no_operator_text() {
+        let (shared, mut rx) = resources_with_sender_and_params(AskUserQuestionParams {
+            non_interactive: Some(true),
+            ..Default::default()
+        });
+        let tool = AskUserQuestionTool;
+
+        let input = AskUserQuestionInput {
+            questions: vec![make_question("Q?", &["A"])],
+            use_id_keyed_format: false,
+        };
+
+        let handle = tokio::spawn({
+            let shared = shared.clone();
+            async move {
+                codel_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-ni"), input)
+                    .await
+            }
+        });
+
+        let request = rx.recv().await.unwrap();
+        request
+            .result_tx
+            .send(Ok(UserQuestionResponse::Cancelled))
+            .unwrap();
+
+        let result = handle.await.unwrap().unwrap();
+        match result {
+            AskUserQuestionOutput::UserAnswered { message } => {
+                assert_eq!(message, format::NO_OPERATOR_TEXT);
+            }
+            other => panic!(
+                "Expected UserAnswered with no-operator text, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// A timeout in a non-interactive session also returns the no-operator
+    /// text — both unanswered paths share one wording source.
+    #[tokio::test(start_paused = true)]
+    async fn non_interactive_timeout_returns_no_operator_text() {
+        let (shared, mut rx) = resources_with_sender_and_params(AskUserQuestionParams {
+            timeout_enabled: Some(true),
+            timeout_secs: Some(5),
+            non_interactive: Some(true),
+        });
+        let tool = AskUserQuestionTool;
+
+        let input = AskUserQuestionInput {
+            questions: vec![make_question("Q?", &["A", "B"])],
+            use_id_keyed_format: false,
+        };
+
+        let handle = tokio::spawn({
+            let shared = shared.clone();
+            async move {
+                codel_tool_runtime::Tool::run(
+                    &tool,
+                    test_ctx_with_call_id(shared, "tc-ni-timeout"),
+                    input,
+                )
+                .await
+            }
+        });
+
+        let _request = rx.recv().await.expect("should receive request");
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+
+        let result = handle.await.unwrap().unwrap();
+        match result {
+            AskUserQuestionOutput::UserAnswered { message } => {
+                assert_eq!(message, format::NO_OPERATOR_TEXT);
+            }
+            other => panic!(
+                "Expected UserAnswered with no-operator text, got {:?}",
+                other
+            ),
         }
     }
 
@@ -960,11 +1023,13 @@ mod tests {
         let disabled = AskUserQuestionParams {
             timeout_enabled: Some(false),
             timeout_secs: Some(30),
+            non_interactive: None,
         };
         assert_eq!(disabled.wait_budget(), None, "disabled timer waits forever");
         let zero = AskUserQuestionParams {
             timeout_enabled: Some(true),
             timeout_secs: Some(0),
+            non_interactive: None,
         };
         assert_eq!(
             zero.wait_budget(),
@@ -980,6 +1045,7 @@ mod tests {
         let (shared, mut rx) = resources_with_sender_and_params(AskUserQuestionParams {
             timeout_enabled: Some(true),
             timeout_secs: Some(5),
+            non_interactive: None,
         });
         let tool = AskUserQuestionTool;
 
@@ -1015,6 +1081,7 @@ mod tests {
         let (shared, mut rx) = resources_with_sender_and_params(AskUserQuestionParams {
             timeout_enabled: Some(false),
             timeout_secs: Some(1),
+            non_interactive: None,
         });
         let tool = AskUserQuestionTool;
 

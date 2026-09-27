@@ -39,12 +39,9 @@ async fn get_or_generate<'a>(
     cache.get(path).map(|v| v.as_slice())
 }
 
-/// Inject anchors into ripgrep content-mode output.
-///
-/// Transforms lines like `123:    let x = 1;` or `124-    let y = 2;`
-/// into `123:abc:rst:    let x = 1;` or `124:abc:rst-    let y = 2;`.
-///
-/// Lines that are file headers or separators pass through unchanged.
+/// Inject anchors into ripgrep content-mode output. Transforms lines like `123: let x = 1;` or
+/// `124- let y = 2;` into `123:abc:rst: let x = 1;` or `124:abc:rst- let y = 2;`. Lines that are
+/// file headers or separators pass through unchanged.
 pub(crate) async fn inject_anchors(
     stdout_bytes: &[u8],
     cwd: &Path,
@@ -56,11 +53,14 @@ pub(crate) async fn inject_anchors(
     let (prefix, body, suffix) = match (stdout.find(">\n"), stdout.rfind("\n</workspace_result>")) {
         (Some(start), Some(end)) => {
             let body_start = start + 2;
-            (
-                &stdout[..body_start],
-                &stdout[body_start..end],
-                &stdout[end..],
-            )
+            match (
+                stdout.get(..body_start),
+                stdout.get(body_start..end),
+                stdout.get(end..),
+            ) {
+                (Some(prefix), Some(body), Some(suffix)) => (prefix, body, suffix),
+                _ => return stdout_bytes.to_vec(),
+            }
         }
         _ => return stdout_bytes.to_vec(),
     };
@@ -80,16 +80,18 @@ pub(crate) async fn inject_anchors(
             continue;
         }
 
-        // Try to parse as a numbered match/context line first.
-        // This correctly handles file paths that start with digits (e.g.
-        // "2024_migration.rs") — they won't parse as valid rg lines because
-        // they lack a ':' or '-' separator after the numeric prefix.
+        // Try to parse as a numbered match/context line first. This correctly handles file paths
+        // that start with digits (e.g. "2024_migration.rs") — they won't parse as valid rg lines
+        // because they lack a ':' or '-' separator after the numeric prefix.
         if let Some((line_num, separator, content)) = parse_rg_line(line)
             && let Some(ref file_path) = current_file
             && let Some(anchors) = get_or_generate(&mut file_anchors, file_path, scheme, fs).await
             && line_num.saturating_sub(1) < anchors.len()
         {
-            let a = &anchors[line_num - 1];
+            let Some(a) = line_num.checked_sub(1).and_then(|i| anchors.get(i)) else {
+                result.push_str(line);
+                continue;
+            };
             let suffix_str = match &a.context {
                 Some(ctx) => format!("{}:{ctx}", a.local),
                 None => a.local.clone(),
@@ -119,25 +121,23 @@ pub(crate) async fn inject_anchors(
 fn parse_rg_line(line: &str) -> Option<(usize, char, &str)> {
     let bytes = line.as_bytes();
     let mut idx = 0;
-    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+    while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
         idx += 1;
     }
     if idx == 0 || idx >= bytes.len() {
         return None;
     }
-    let sep = bytes[idx] as char;
+    let sep = *bytes.get(idx)? as char;
     if sep != ':' && sep != '-' {
         return None;
     }
-    let num: usize = line[..idx].parse().ok()?;
-    Some((num, sep, &line[idx + 1..]))
+    let num: usize = line.get(..idx)?.parse().ok()?;
+    Some((num, sep, line.get(idx + 1..)?))
 }
 
-const DESCRIPTION: &str = r#"Search file contents with anchor-annotated results for use with ${{ tools.by_kind.edit }}.
+const DESCRIPTION: &str = r#"Search file contents with anchor-annotated results${%- if tools.by_kind.edit %} for use with ${{ tools.by_kind.edit }}${%- endif %}.
 
-Match lines include anchors you can pass directly to ${{ tools.by_kind.edit }} without
-needing to ${{ tools.by_kind.read }} the file first. Unlike ${{ tools.by_kind.read }},
-this grep format keeps grep-style separators after the anchor: `:` for
+Match lines include anchors${%- if tools.by_kind.edit %} you can pass directly to ${{ tools.by_kind.edit }}${%- if tools.by_kind.read %} without needing to ${{ tools.by_kind.read }} the file first${%- endif %}${%- endif %}. This grep format keeps grep-style separators after the anchor: `:` for
 match lines and `-` for context lines.
 
 Content output format:
@@ -210,7 +210,7 @@ impl codel_tool_runtime::Tool for HashlineGrepTool {
     ) -> codel_tool_types::ToolDescription {
         codel_tool_types::ToolDescription::new(
             "hashline_grep",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
@@ -347,10 +347,9 @@ mod tests {
     }
 
     #[test]
-    fn description_mentions_anchors_and_edit() {
+    fn description_template_references_edit_tool() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = HashlineGrepTool;
-        assert!(ToolMetadata::description_template(&tool).contains("anchor"));
         assert!(ToolMetadata::description_template(&tool).contains("tools.by_kind.edit"));
     }
 

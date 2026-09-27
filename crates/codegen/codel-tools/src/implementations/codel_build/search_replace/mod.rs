@@ -50,17 +50,21 @@ impl SearchReplaceVersion {
         self == Self::Legacy0_4_10
     }
 }
-/// Full description with read-before-edit guidance (for non-concise toolset).
-///
-/// Uses MiniJinja template placeholders with ToolKind-based keys:
-/// - `${{ tools.by_kind.read }}` — client-facing name for the Read tool
-/// - `${{ params.edit.old_string }}` — client-facing param name
-/// - `${{ params.edit.replace_all }}` — client-facing param name
+/// Full description (for the non-concise toolset). `${{ tools.by_kind.read }}` — client-facing name
+/// for the Read tool `${{ params.edit.old_string }}` — client-facing param name `${{
+/// params.edit.replace_all }}` — client-facing param name
 pub(crate) const DESCRIPTION_FULL: &str = r#"Replace an exact string in a file.
 
-- Read the file with `${{ tools.by_kind.read }}` before editing it.
+${% if tools.by_kind.read -%}
 - `${{ tools.by_kind.read }}` prefixes each line with "LINE_NUMBER→". That prefix is not part of the file: match only what comes after the →, with its exact indentation.
-- `${{ params.edit.old_string }}` must match exactly one place in the file. If it appears more than once, add surrounding lines to make it unique, or set `${{ params.edit.replace_all }}` to change every occurrence (handy for renaming an identifier)."#;
+${% endif -%}
+- `${{ params.edit.old_string }}` must match exactly one place in the file. If it appears more than once, add surrounding lines to make it unique, or set `${{ params.edit.replace_all }}` to change every occurrence (handy for renaming an identifier).
+- To create a new file, set `${{ params.edit.old_string }}` to an empty string. An empty `${{ params.edit.old_string }}` cannot overwrite an existing non-empty file."#;
+/// The overwrite-guard sentence in [`DESCRIPTION_FULL`]. Only accurate while
+/// `empty_old_string_does_not_override` is enabled (opt-in; the default is the legacy overwrite
+/// behavior); `versioned_definition` strips it unless a config enables the guard.
+pub(crate) const EMPTY_OLD_STRING_GUARD_SENTENCE: &str =
+    " An empty `${{ params.edit.old_string }}` cannot overwrite an existing non-empty file.";
 /// Input for the search_replace tool.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchReplaceInput {
@@ -89,32 +93,38 @@ fn default_true() -> bool {
 /// Configuration for the search_replace tool, stored as `Params<SearchReplaceParams>` in Resources.
 ///
 /// Replaces the old `SearchReplaceOptions` that was stored via `tool_options_as()`.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchReplaceParams {
     /// Deprecated runtime no-op, kept so configs still sending it deserialize under
     /// `deny_unknown_fields`. Still gates the config-time Read-tool requirement (`requires_expr`).
     #[serde(default)]
     pub skip_read_before_edit: bool,
-    /// Empty old string DOES not override the file unless its empty, by default we allow
-    /// empty old string to override the file content completely``
+    /// When true (opt-in), an empty `old_string` may only create a new file or fill an empty one — it never silently overwrites an existing
+    /// non-empty file. Defaults to false (the legacy behavior): an empty `old_string` replaces the file's entire contents. The served description
+    /// includes the guard sentence only when this is enabled (see `versioned_definition`).
     #[serde(default)]
     pub empty_old_string_does_not_override: bool,
-    /// When true, enable normalized-fallback matching for Unicode confusable
-    /// characters (smart quotes, em-dashes, etc.).  When exact byte matching
-    /// fails, the tool will retry with confusable-normalized comparison and
-    /// perform the replacement if an unambiguous match is found.
-    ///
-    /// Default: `false` — disabled until Stage 1 diagnostics are stable.
+    /// When true, enable normalized-fallback matching for Unicode confusable characters (smart quotes, em-dashes, etc.).
+    /// When exact byte matching fails, the tool will retry with confusable-normalized comparison and perform the
+    /// replacement if an unambiguous match is found. Default: `false` — disabled until Stage 1 diagnostics are stable.
     #[serde(default)]
     pub unicode_normalized_fallback: bool,
-    /// When true, append a hint that the user may have changed the file
-    /// to `NoMatchesFound` error messages. This nudges the model to re-read
-    /// instead of blindly retrying with the same stale content.
-    ///
-    /// Default: `true`.
+    /// When true, append a hint that the user may have changed the file to `NoMatchesFound` error
+    /// messages. This nudges the model to re-read instead of blindly retrying with the same stale
+    /// content. Default: `true`.
     #[serde(default = "default_true")]
     pub include_user_edit_hint: bool,
+}
+impl Default for SearchReplaceParams {
+    fn default() -> Self {
+        Self {
+            skip_read_before_edit: false,
+            empty_old_string_does_not_override: false,
+            unicode_normalized_fallback: false,
+            include_user_edit_hint: true,
+        }
+    }
 }
 register_resource!("codel_build", "SearchReplace", SearchReplaceParams);
 /// SearchReplace tool — new architecture.
@@ -152,6 +162,7 @@ pub(crate) async fn run_search_replace(
         hints_enabled = res.get::<PathNotFoundHints>().is_some_and(|h| h.0);
     }
     let resolved = resolve_model_path(&cwd, display_cwd.as_deref(), &input.file_path);
+    let policy_path = resolved.clone();
     let path = match crate::util::fs::try_canonicalize(&resolved).await {
         Ok(p) => p,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -208,6 +219,7 @@ pub(crate) async fn run_search_replace(
             &notification_handle,
             &tool_call_id,
             &path,
+            &policy_path,
             &cwd,
             display_cwd.as_deref(),
             hints_enabled,
@@ -222,6 +234,7 @@ pub(crate) async fn run_search_replace(
             &notification_handle,
             &tool_call_id,
             &path,
+            &policy_path,
             &cwd,
             display_cwd.as_deref(),
             hints_enabled,
@@ -250,10 +263,9 @@ pub(crate) async fn run_search_replace(
 /// Maximum length for a single path component (file or directory name).
 /// POSIX `NAME_MAX` is 255 on both macOS and Linux.
 const NAME_MAX: usize = 255;
-/// Validate that no path component exceeds `NAME_MAX`.
-///
-/// Returns `Some(SearchReplaceOutput::FilenameTooLong(..))` if any component is
-/// too long, `None` if the path is valid.
+/// Validate that no path component exceeds `NAME_MAX`. Returns
+/// `Some(SearchReplaceOutput::FilenameTooLong(..))` if any component is too long, `None` if the
+/// path is valid.
 fn validate_path_length(file_path: &str) -> Option<SearchReplaceOutput> {
     for component in std::path::Path::new(file_path).components() {
         if let std::path::Component::Normal(name) = component {
@@ -277,6 +289,7 @@ async fn handle_new_file_creation(
     notification_handle: &ToolNotificationHandle,
     tool_call_id: &str,
     path: &std::path::Path,
+    policy_path: &std::path::Path,
     cwd: &std::path::Path,
     display_cwd: Option<&std::path::Path>,
     hints_enabled: bool,
@@ -304,7 +317,18 @@ async fn handle_new_file_creation(
             old_string_name
         )));
     }
-    if let Err(e) = fs.write_file(path, input.new_string.as_bytes()).await {
+    let is_memory_write = match crate::types::memory_v2::write_memory_v2_file(
+        &resources,
+        policy_path,
+        input.new_string.as_bytes(),
+    )
+    .await
+    {
+        Ok(crate::types::memory_v2::MemoryV2Write::Written { .. }) => true,
+        Ok(crate::types::memory_v2::MemoryV2Write::Outside) => false,
+        Err(error) => return Ok(SearchReplaceOutput::InvalidInput(error)),
+    };
+    if !is_memory_write && let Err(e) = fs.write_file(path, input.new_string.as_bytes()).await {
         return Ok(match e.io_error_kind() {
             Some(std::io::ErrorKind::NotFound) => {
                 let display_dcwd = display_cwd_or_cwd(cwd, display_cwd);
@@ -337,7 +361,7 @@ async fn handle_new_file_creation(
     }
     if let Some(old_text) = old_text
         && file_exists
-        && empty_old_string_does_not_override
+        && !empty_old_string_does_not_override
     {
         notification_handle.send_file_written(FileWritten {
             tool_call_id: tool_call_id.to_string(),
@@ -382,11 +406,9 @@ async fn handle_new_file_creation(
         },
     ))
 }
-/// Return a short nearest-match hint for a `NoMatchesFound` error message.
-///
-/// Finds the first file line containing the longest token from `old_string`'s
-/// first line. Returns `"\n\nNearest match: line N: <content>"` (≤200 chars),
-/// or an empty string if no match is found.
+/// Return a short nearest-match hint for a `NoMatchesFound` error message. Finds the first file
+/// line containing the longest token from `old_string`'s first line. Returns `"\n\nNearest match:
+/// line N: <content>"` (≤200 chars), or an empty string if no match is found.
 fn build_nearest_match_hint(file: &str, old_string: &str) -> String {
     let keyword = old_string
         .lines()
@@ -407,19 +429,9 @@ fn build_nearest_match_hint(file: &str, old_string: &str) -> String {
         })
         .unwrap_or_default()
 }
-/// Build a Unicode-confusable diagnostic message when an exact match fails
-/// but the file contains typography characters that may have caused the miss.
-///
-/// Performs a normalized comparison: if `normalize_confusables(file)` contains
-/// `normalize_confusables(old_string)`, the miss was almost certainly caused by
-/// invisible Unicode characters.  In that case, returns a targeted diagnostic
-/// listing only the confusable-bearing lines that overlap the matched region
-/// (not every confusable line in the file).
-///
-/// Returns `None` when:
-/// - The file contains no confusables at all, or
-/// - The normalized comparison also fails (confusables are present but unrelated
-///   to the missed match — no false guidance).
+/// Unicode-confusable diagnostic when an exact match fails but typography may have caused the miss.
+/// Returns confusable-bearing lines overlapping the matched region, or `None` if the file has no
+/// confusables or the normalized comparison also fails (no false guidance).
 fn build_confusable_hint(
     file: &str,
     old_string: &str,
@@ -437,10 +449,10 @@ fn build_confusable_hint(
     let (norm_file, offset_map) = build_offset_map(file);
     let norm_old = normalize_confusables(old_string);
     let norm_start = norm_file.find(&norm_old)?;
-    let orig_start = offset_map[norm_start];
-    let orig_end = offset_map[norm_start + norm_old.len()];
-    let match_start_line = file[..orig_start].matches('\n').count() + 1;
-    let match_end_line = file[..orig_end].matches('\n').count() + 1;
+    let orig_start = *offset_map.get(norm_start)?;
+    let orig_end = *offset_map.get(norm_start + norm_old.len())?;
+    let match_start_line = file.get(..orig_start)?.matches('\n').count() + 1;
+    let match_end_line = file.get(..orig_end)?.matches('\n').count() + 1;
     let hits = detect_confusables(file);
     let mut affected_lines: Vec<usize> = hits
         .iter()
@@ -459,7 +471,9 @@ fn build_confusable_hint(
             .collect::<Vec<_>>()
             .join(", ")
     } else {
-        let shown: Vec<String> = affected_lines[..MAX_LISTED_LINES]
+        let shown: Vec<String> = affected_lines
+            .get(..MAX_LISTED_LINES)
+            .unwrap_or(affected_lines.as_slice())
             .iter()
             .map(|n| n.to_string())
             .collect();
@@ -505,6 +519,7 @@ async fn handle_replacement(
     notification_handle: &ToolNotificationHandle,
     tool_call_id: &str,
     path: &std::path::Path,
+    policy_path: &std::path::Path,
     cwd: &std::path::Path,
     display_cwd: Option<&std::path::Path>,
     hints_enabled: bool,
@@ -690,7 +705,18 @@ async fn handle_replacement(
     } else {
         new_text.clone()
     };
-    if let Err(e) = fs.write_file(path, write_text.as_bytes()).await {
+    let is_memory_write = match crate::types::memory_v2::write_memory_v2_file(
+        &resources,
+        policy_path,
+        write_text.as_bytes(),
+    )
+    .await
+    {
+        Ok(crate::types::memory_v2::MemoryV2Write::Written { .. }) => true,
+        Ok(crate::types::memory_v2::MemoryV2Write::Outside) => false,
+        Err(error) => return Ok(SearchReplaceOutput::InvalidInput(error)),
+    };
+    if !is_memory_write && let Err(e) = fs.write_file(path, write_text.as_bytes()).await {
         return Ok(match e.io_error_kind() {
             Some(std::io::ErrorKind::AlreadyExists) => SearchReplaceOutput::InvalidInput(format!(
                 "Error: cannot write {}. A component of the path already exists as a file where a directory is expected.",
@@ -762,6 +788,44 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceTool {
     fn description_template(&self) -> &str {
         DESCRIPTION_FULL
     }
+    /// Params-aware description: the "cannot overwrite" sentence in [`DESCRIPTION_FULL`] only holds
+    /// while `empty_old_string_does_not_override` is enabled, so it is served only for configs that
+    /// opt into the guard and stripped by default (legacy overwrite behavior).
+    fn versioned_definition(
+        &self,
+        _contract_version: Option<&str>,
+        client_name: &str,
+        description_override: Option<&str>,
+        renderer: &TemplateRenderer,
+        param_map: &std::collections::HashMap<String, String>,
+        input_schema: &serde_json::Value,
+        effective_params: &serde_json::Value,
+    ) -> crate::types::definition::ToolDefinition {
+        let params: SearchReplaceParams =
+            serde_json::from_value(effective_params.clone()).unwrap_or_default();
+        let raw_desc = match description_override {
+            Some(d) => d.to_string(),
+            None if params.empty_old_string_does_not_override => {
+                self.description_template().to_string()
+            }
+            None => self
+                .description_template()
+                .replace(EMPTY_OLD_STRING_GUARD_SENTENCE, ""),
+        };
+        let description = renderer.render(&raw_desc).unwrap_or_else(|e| {
+            crate::types::template_renderer::strip_markers_on_render_failure(&raw_desc, &e)
+        });
+        let remapped_schema = if param_map.is_empty() {
+            input_schema.clone()
+        } else {
+            crate::util::remap::remap_schema_properties(input_schema, param_map)
+        };
+        crate::types::definition::ToolDefinition::function(
+            client_name,
+            Some(&description),
+            remapped_schema,
+        )
+    }
     fn emitted_notifications(&self) -> &'static [&'static str] {
         &["FileWritten"]
     }
@@ -776,12 +840,9 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceTool {
                 )))),
                 ToolRequirement::tool_kind(ToolKind::Read),
             )),
-            // Description template references these input params via
-            // ${{ params.edit.old_string }}, ${{ params.edit.new_string }},
-            // ${{ params.edit.replace_all }}. They must remain visible.
-            // TODO: We can generate the schemas and requirement by enforcing
-            // it during the registry phase, since these are parts of the params which are
-            // tied to the tool
+            // Description template references these input params via ${{ params.edit.old_string }}, ${{ params.edit.new_string }},
+            // ${{ params.edit.replace_all }}. They must remain visible. TODO: We can generate the schemas and requirement by
+            // enforcing it during the registry phase, since these are parts of the params which are tied to the tool
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "old_string")),
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "new_string")),
             Expr::Value(ToolRequirement::input_param(ToolKind::Edit, "replace_all")),
@@ -800,7 +861,7 @@ impl codel_tool_runtime::Tool for SearchReplaceTool {
     ) -> codel_tool_types::ToolDescription {
         codel_tool_types::ToolDescription::new(
             "search_replace",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
     fn capabilities(&self) -> codel_tool_protocol::ToolCapabilities {
@@ -868,6 +929,78 @@ mod tests {
             new_string: new_string.to_string(),
             replace_all: false,
         }
+    }
+    fn description_renderer() -> TemplateRenderer {
+        let edit_params = std::collections::HashMap::from([
+            ("old_string".to_string(), "old_string".to_string()),
+            ("new_string".to_string(), "new_string".to_string()),
+            ("replace_all".to_string(), "replace_all".to_string()),
+        ]);
+        TemplateRenderer::new(
+            std::collections::HashMap::from([(ToolKind::Read, "read_file".to_string())]),
+            std::collections::HashMap::from([(ToolKind::Edit, edit_params)]),
+        )
+    }
+    #[test]
+    fn overwrite_guard_sentence_is_conditional_on_param() {
+        use crate::types::tool_metadata::ToolMetadata;
+        let renderer = description_renderer();
+        let schema = serde_json::json!({"type": "object", "properties": {}});
+        let param_map = std::collections::HashMap::new();
+        let default_def = ToolMetadata::versioned_definition(
+            &SearchReplaceTool,
+            None,
+            "search_replace",
+            None,
+            &renderer,
+            &param_map,
+            &schema,
+            &serde_json::json!({}),
+        );
+        let default_desc = default_def.function.description.unwrap();
+        let opt_in_def = ToolMetadata::versioned_definition(
+            &SearchReplaceTool,
+            None,
+            "search_replace",
+            None,
+            &renderer,
+            &param_map,
+            &schema,
+            &serde_json::json!({"empty_old_string_does_not_override": true}),
+        );
+        let opt_in_desc = opt_in_def.function.description.unwrap();
+        assert_ne!(default_desc, opt_in_desc);
+        assert!(
+            !default_desc.contains("${") && !opt_in_desc.contains("${"),
+            "must not leak template markers:\n{default_desc}\n{opt_in_desc}"
+        );
+    }
+    #[test]
+    fn description_read_bullet_guarded_on_read_tool() {
+        use crate::types::tool_metadata::ToolMetadata;
+        let rendered = description_renderer()
+            .render(ToolMetadata::description_template(&SearchReplaceTool))
+            .unwrap();
+        assert!(
+            rendered.contains("read_file") && !rendered.contains("${%"),
+            "read bullet must render with the resolved name:\n{rendered}"
+        );
+        let edit_params = std::collections::HashMap::from([
+            ("old_string".to_string(), "old_string".to_string()),
+            ("new_string".to_string(), "new_string".to_string()),
+            ("replace_all".to_string(), "replace_all".to_string()),
+        ]);
+        let no_read = TemplateRenderer::new(
+            std::collections::HashMap::new(),
+            std::collections::HashMap::from([(ToolKind::Edit, edit_params)]),
+        )
+        .render(ToolMetadata::description_template(&SearchReplaceTool))
+        .unwrap();
+        assert_ne!(rendered, no_read);
+        assert!(
+            !no_read.contains("read_file") && !no_read.contains("- \n"),
+            "read bullet must vanish cleanly without a Read tool:\n{no_read}"
+        );
     }
     #[tokio::test]
     async fn basic_replacement() {
@@ -1270,11 +1403,34 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn empty_old_string_overrides_existing_file_by_default() {
+    async fn empty_old_string_overwrites_existing_file_by_default() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("existing.txt"), "existing content\n").unwrap();
         let tool = SearchReplaceTool;
         let resources = test_resources(tmp.path());
+        let input = make_input("existing.txt", "", "completely new content\n");
+        let result = codel_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+            .await
+            .unwrap();
+        match result {
+            SearchReplaceOutput::EditsApplied(applied) => {
+                assert!(applied.tool_output_for_prompt.contains("has been created"));
+                let content = std::fs::read_to_string(tmp.path().join("existing.txt")).unwrap();
+                assert_eq!(content, "completely new content\n");
+            }
+            other => panic!("Expected EditsApplied, got {:?}", other),
+        }
+    }
+    #[tokio::test]
+    async fn empty_old_string_overrides_with_explicit_false() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("existing.txt"), "existing content\n").unwrap();
+        let tool = SearchReplaceTool;
+        let mut resources = test_resources(tmp.path());
+        resources.insert(Params(SearchReplaceParams {
+            empty_old_string_does_not_override: false,
+            ..Default::default()
+        }));
         let input = make_input("existing.txt", "", "completely new content\n");
         let result = codel_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
             .await
@@ -2459,10 +2615,9 @@ neutTest_set);
             other => panic!("Expected EditsApplied, got {:?}", other),
         }
     }
-    /// Mixed line endings (\r\n and \n in the same file): CRLF normalization
-    /// kicks in because the file contains at least one \r\n, so all \n in the
-    /// result are converted to \r\n. This normalizes the file to consistent
-    /// CRLF endings, which is the expected behavior.
+    /// Mixed line endings (\r\n and \n in the same file): CRLF normalization kicks in because the
+    /// file contains at least one \r\n, so all \n in the result are converted to \r\n. This
+    /// normalizes the file to consistent CRLF endings, which is the expected behavior.
     #[tokio::test]
     async fn crlf_mixed_line_endings() {
         let tmp = TempDir::new().unwrap();

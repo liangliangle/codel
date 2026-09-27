@@ -9,6 +9,8 @@ pub struct AgentOpts {
     pub label: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default)]
     pub max_output_tokens: Option<u64>,
     #[serde(default)]
@@ -81,6 +83,11 @@ pub enum WorkflowHostRequest {
         message: String,
         replayed: bool,
     },
+    Telemetry {
+        name: String,
+        fields: serde_json::Value,
+        replayed: bool,
+    },
     BudgetQuery {
         reply: oneshot::Sender<Result<BudgetState, HostError>>,
     },
@@ -112,6 +119,7 @@ impl WorkflowHostRequest {
             Self::SpawnAgent { .. } => "spawn_agent",
             Self::Phase { .. } => "phase",
             Self::Log { .. } => "log",
+            Self::Telemetry { .. } => "telemetry",
             Self::BudgetQuery { .. } => "budget",
             Self::RenderTemplate { .. } => "render_template",
             Self::WriteScratchFile { .. } => "write_scratch_file",

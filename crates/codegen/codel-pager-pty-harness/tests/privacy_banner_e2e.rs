@@ -1,14 +1,13 @@
-//! E2E: the coding-data privacy upsell banner — shown on the welcome screen
-//! for an opted-out OAuth user under the `privacy_notice_rollout` flag,
-//! persisting into the agent view, and acked (never re-shown) via both
-//! buttons: `[Customize in settings]` opens the settings chooser and stamps
-//! `[privacy].privacy_banner_acked`; `[Accept]` opts the user in through the
-//! shell's `PUT /privacy/coding-data-retention` round trip before acking.
+//! E2E: the coding-data privacy upsell banner.
+//! It shows on the welcome screen for an opted-out OAuth user under the `privacy_notice_rollout` flag and persists into the agent view.
+//! Both buttons write the choice through the shell's `PUT /privacy/coding-data-retention` round trip and stamp
+//! `[privacy].privacy_banner_acked` only once that succeeds. The banner hides as soon as the write is pending, so
+//! hiding and acknowledging are separate steps.
+//! `[Opt out]` runs as a personal account, whose capability `/user` never resolves; `[Opt in]` as a member the server says
+//! can administer the team.
 //!
-//! Drives the real pager binary through a PTY against the shared mock
-//! inference server (isolated `$HOME`), with a seeded opted-out OAuth entry
-//! as the active auth (`CODEL_API_KEY` removed) and the rollout forced on via
-//! `CODEL_PRIVACY_NOTICE_ROLLOUT=1`.
+//! Drives the real pager binary through a PTY against the shared mock inference server (isolated `$HOME`).
+//! A seeded opted-out OAuth entry is the active auth (`CODEL_API_KEY` removed) and the rollout is forced on via `CODEL_PRIVACY_NOTICE_ROLLOUT=1`.
 //!
 //! ```bash
 //! cargo test -p codel-pager-pty-harness --test privacy_banner_e2e \
@@ -20,40 +19,53 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use codel_pager_pty_harness::{
-    ContentController, EnvOp, PtyExitPoll, PtyHarness, keys, pager_binary,
-    seed_fake_oauth_coding_data_opted_out,
+    ContentController, EnvOp, MockCanAdministerTeam, PtyExitPoll, PtyHarness, keys, pager_binary,
+    seed_fake_oauth_coding_data_opted_out, seed_fake_oauth_team_member_can_administer,
 };
 
 const ROWS: u16 = 50;
 const COLS: u16 = 120;
 const BANNER_TITLE: &str = "Help improve Codel";
-const CUSTOMIZE: &str = "[Customize in settings]";
-const ACCEPT: &str = "[Accept]";
+const OPT_OUT: &str = "[Opt out]";
+const OPT_IN: &str = "[Opt in]";
 const ACK: &str = "BANNERACK";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // opt-in: spawns the real pager binary in a PTY (CI runs with --ignored)
-async fn privacy_banner_welcome_customize_ack_persists() {
-    run_customize().await.expect("privacy banner customize e2e");
+async fn privacy_banner_welcome_opt_out_ack_persists() {
+    run_opt_out().await.expect("privacy banner opt-out e2e");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // opt-in: spawns the real pager binary in a PTY (CI runs with --ignored)
-async fn privacy_banner_persists_into_agent_view_and_accept_opts_in() {
-    run_accept().await.expect("privacy banner accept e2e");
+async fn privacy_banner_persists_into_agent_view_and_opt_in_shares() {
+    run_opt_in().await.expect("privacy banner opt-in e2e");
 }
 
-/// Rollout flag forced on (env override beats remote settings) and the
-/// sandbox's fake `CODEL_API_KEY` removed so the seeded opted-out OAuth entry
-/// is the active auth — the banner's two preconditions.
-fn banner_env_ops() -> [EnvOp<'static>; 2] {
+/// The banner's env preconditions: force the rollout flag on (the env override beats remote settings) and remove the sandbox's fake `CODEL_API_KEY`.
+/// Removing the key makes the seeded opted-out OAuth entry the active auth.
+/// The `[Opt in]` team principal would otherwise start a managed-config fetch the mock does not serve.
+fn banner_env_ops() -> [EnvOp<'static>; 3] {
     [
         EnvOp::set("CODEL_PRIVACY_NOTICE_ROLLOUT", "1"),
+        EnvOp::set("CODEL_MANAGED_CONFIG", "0"),
         EnvOp::remove("CODEL_API_KEY"),
     ]
 }
 
-async fn run_customize() -> Result<()> {
+/// Disk and mock agree so a `/user` refresh cannot flip the capability.
+fn seed_team_admin_user(content: &ContentController) {
+    content
+        .server()
+        .set_user_can_administer_team(MockCanAdministerTeam::Allowed);
+    seed_fake_oauth_team_member_can_administer(
+        content,
+        "pty-privacy-user",
+        MockCanAdministerTeam::Allowed,
+    );
+}
+
+async fn run_opt_out() -> Result<()> {
     let content = ContentController::start()
         .await
         .context("start mock server")?;
@@ -66,36 +78,32 @@ async fn run_customize() -> Result<()> {
     let mut pager = spawn_pager(&binary, &content, project.path()).context("spawn pager")?;
     wait_for_banner(&mut pager)?;
     assert!(
-        pager.contains_text(ACCEPT),
-        "welcome banner is missing {ACCEPT}:\n{}",
+        pager.contains_text(OPT_IN),
+        "welcome banner is missing {OPT_IN}:\n{}",
         pager.screen_contents()
     );
 
-    click_text(&mut pager, CUSTOMIZE).context("click Customize")?;
+    click_text(&mut pager, OPT_OUT).context("click Opt out")?;
+
+    // The banner hides while the write is pending, and must not detour into settings; the ack below waits on the reply
     pager
-        .wait_for_text("Coding data sharing", Duration::from_secs(20))
-        .context("settings chooser opened on Coding data sharing")?;
+        .wait_for_text_absent(BANNER_TITLE, Duration::from_secs(10))
+        .context("banner dismissed by [Opt out]")?;
     assert!(
-        pager.contains_text("Opt in") && pager.contains_text("Opt out"),
-        "chooser is missing the Opt in / Opt out choices:\n{}",
+        !pager.contains_text("Coding data,"),
+        "[Opt out] must answer the question, not open settings:\n{}",
         pager.screen_contents()
     );
 
-    // Customize acks immediately; the config write is async — poll for it.
+    // The config write is async, so poll for it
     wait_for_ack_on_disk(&mut pager, content.home(), Duration::from_secs(10))?;
 
-    // Close the chooser, then the settings list, then quit gracefully.
-    pager.inject_keys(keys::ESC).context("close chooser")?;
-    pager.update(Duration::from_millis(300));
-    pager.inject_keys(keys::ESC).context("close settings")?;
-    pager.update(Duration::from_millis(300));
     quit_via_double_ctrl_c(&mut pager)?;
     drop(pager);
 
     // Relaunch with the same sandbox: the acked banner must not re-show.
-    // Sync on "New worktree" — rendered only on the authenticated welcome
-    // menu ("Quit" also appears while auth is still pending, where the
-    // banner is gated off regardless of the ack).
+    // Sync on "New worktree", which renders only on the authenticated welcome menu
+    // "Quit" also appears while auth is still pending, where the banner is gated off regardless of the ack
     let mut relaunched =
         spawn_pager(&binary, &content, project.path()).context("relaunch pager")?;
     relaunched
@@ -110,12 +118,12 @@ async fn run_customize() -> Result<()> {
     Ok(())
 }
 
-async fn run_accept() -> Result<()> {
+async fn run_opt_in() -> Result<()> {
     let content = ContentController::start()
         .await
         .context("start mock server")?;
     content.set_response(format!("{ACK} done."));
-    seed_fake_oauth_coding_data_opted_out(&content, "pty-privacy-user");
+    seed_team_admin_user(&content);
 
     let project = tempfile::tempdir().context("project dir")?;
     std::fs::create_dir_all(project.path().join(".git")).context("create .git")?;
@@ -136,12 +144,12 @@ async fn run_accept() -> Result<()> {
         pager.screen_contents()
     );
 
-    click_text(&mut pager, ACCEPT).context("click Accept")?;
+    click_text(&mut pager, OPT_IN).context("click Opt in")?;
 
     // Ack only lands after the shell's PUT round trip confirms 2xx.
     pager
         .wait_for_text_absent(BANNER_TITLE, Duration::from_secs(20))
-        .context("banner disappeared after Accept")?;
+        .context("banner disappeared after [Opt in]")?;
     wait_for_ack_on_disk(&mut pager, content.home(), Duration::from_secs(10))?;
 
     let put_bodies: Vec<_> = content
@@ -171,8 +179,7 @@ fn spawn_pager(binary: &Path, content: &ContentController, project: &Path) -> Re
     )
 }
 
-/// Wait for the welcome menu first (auth resolved) so a missing banner is a
-/// real failure rather than an early frame, then for the banner itself.
+/// Wait for the welcome menu first (auth resolved) so a missing banner is a real failure rather than an early frame, then for the banner itself.
 fn wait_for_banner(pager: &mut PtyHarness) -> Result<()> {
     pager
         .wait_for_text("Quit", Duration::from_secs(20))
@@ -182,10 +189,9 @@ fn wait_for_banner(pager: &mut PtyHarness) -> Result<()> {
         .context("privacy banner on screen")
 }
 
-/// Click `needle` by injecting an SGR (DECSET 1006) press + release at its
-/// first character. The wire encoding is 1-based `col;row`
-/// (`screen_contents` line 0 = row 1); the banner region is ASCII-only, so
-/// the byte offset within the line is the column.
+/// Click `needle` by injecting an SGR (DECSET 1006) press and release at its first character.
+/// The wire encoding is 1-based `col;row` (`screen_contents` line 0 is row 1).
+/// The banner region is ASCII-only, so the byte offset within the line is the column.
 fn click_text(pager: &mut PtyHarness, needle: &str) -> Result<()> {
     let screen = pager.screen_contents();
     let (row0, col0) = screen
@@ -201,9 +207,8 @@ fn click_text(pager: &mut PtyHarness, needle: &str) -> Result<()> {
     Ok(())
 }
 
-/// Poll `<home>/.codel/config.toml` for the async `privacy_banner_acked`
-/// write, pumping PTY output between polls so the pager never blocks on a
-/// full output buffer.
+/// Poll `<home>/.codel/config.toml` for the async `privacy_banner_acked` write.
+/// Pumps PTY output between polls so the pager never blocks on a full output buffer.
 fn wait_for_ack_on_disk(pager: &mut PtyHarness, home: &Path, timeout: Duration) -> Result<()> {
     let path = home.join(".codel").join("config.toml");
     let deadline = Instant::now() + timeout;
@@ -224,8 +229,8 @@ fn wait_for_ack_on_disk(pager: &mut PtyHarness, home: &Path, timeout: Duration) 
     }
 }
 
-/// First Ctrl+C arms the quit confirmation on the empty prompt, the second
-/// confirms; retry the pair in case an overlay swallowed the first one.
+/// The first Ctrl+C opens the quit confirmation on the empty prompt, the second confirms.
+/// Retry the pair in case an overlay swallowed the first one.
 fn quit_via_double_ctrl_c(pager: &mut PtyHarness) -> Result<()> {
     for _ in 0..3 {
         pager.inject_keys(keys::CTRL_C).context("ctrl-c arm")?;

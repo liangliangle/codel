@@ -19,8 +19,8 @@ pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
 supports-color = { workspace = true }
 syntect = { workspace = true }
-two-face = { workspace = true }
 textwrap = { workspace = true }
+unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
 codel-markdown-core = { workspace = true }
@@ -33,6 +33,10 @@ optional = true
 [dependencies.codel-ratatui-textarea]
 workspace = true
 optional = true
+
+[build-dependencies]
+syntect = { workspace = true }
+two-face = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

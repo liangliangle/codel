@@ -1,17 +1,22 @@
----
-
 <div align="center">
 
 <h1>
-  Codel (<code>codel</code>)
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://media.codel/v1/website/spacecodel-symbol-white-transparent-0c31957f.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://media.codel/v1/website/spacecodel-symbol-black-transparent-6435cf42.png">
+    <img alt="SpaceCODEL logo" src="https://media.codel/v1/website/spacecodel-symbol-black-transparent-6435cf42.png" width="96">
+  </picture>
+  <br>
+  Codel Build (<code>codel</code>)
 </h1>
 
-**Codel** is a terminal-based AI coding agent. It runs as a
+**Codel Build** is SpaceCODEL's terminal-based AI coding agent. It runs as a
 full-screen TUI that understands your codebase, edits files, executes shell
 commands, searches the web, and manages long-running tasks — interactively,
 headlessly for scripting/CI, or embedded in editors via the Agent Client
 Protocol (ACP).
 
+[Installing the released binary](#installing-the-released-binary) ·
 [Building from source](#building-from-source) ·
 [Documentation](#documentation) ·
 [Repository layout](#repository-layout) ·
@@ -19,8 +24,12 @@ Protocol (ACP).
 [Contributing](#contributing) ·
 [License](#license)
 
+![Codel Build TUI](https://media.codel/v1/website/universe-tui-screenshot-6f7a0837.png)
+
+**Learn more about Codel Build at [codel/cli](https://codel/cli)**
+
 This repository contains the Rust source for the `codel` CLI/TUI and its agent
-runtime.
+runtime. It is synced periodically from the SpaceCODEL monorepo.
 
 A small `SOURCE_REV` file at the root records the full monorepo commit SHA
 for the version of the code present in this tree.
@@ -28,6 +37,19 @@ for the version of the code present in this tree.
 </div>
 
 ---
+
+## Installing the released binary
+
+Prebuilt binaries are published for macOS, Linux, and Windows:
+
+```sh
+curl -fsSL https://codel/cli/install.sh | bash   # macOS / Linux / Git Bash
+irm https://codel/cli/install.ps1 | iex          # Windows PowerShell
+codel --version
+```
+
+See the [changelog](https://codel/build/changelog) for the latest fixes,
+features, and improvements in each release.
 
 ## Building from source
 
@@ -57,106 +79,13 @@ cargo check -p codel-pager-bin            # fast validation
 ```
 
 The binary artifact is named `codel-pager`; official installs ship it as
-`codel`.
-
-## Authentication
-
-Codel uses API key authentication. Set the `CODEL_API_KEY` environment variable:
-
-```sh
-export CODEL_API_KEY="your-api-key"
-```
-
-## ACP Integration
-
-Codel implements the [Agent Client Protocol (ACP)](https://agentclientprotocol.com) v1,
-allowing it to be embedded in any ACP-compatible editor or client (Zed, JetBrains, etc.).
-
-### Starting the ACP server
-
-```sh
-# stdio mode (recommended — standard ACP transport)
-codel agent stdio
-
-# WebSocket server mode
-codel agent serve --bind 127.0.0.1:2419 --secret <token>
-```
-
-### Client configuration
-
-**Zed IDE** (`~/.config/zed/settings.json`):
-
-```json
-{
-  "agent_servers": {
-    "Codel": {
-      "type": "custom",
-      "command": "codel",
-      "args": ["agent", "stdio"],
-      "env": {
-        "CODEL_API_KEY": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-**Generic ACP client** — spawn `codel agent stdio` as a subprocess and
-communicate over stdin/stdout using JSON-RPC 2.0.
-
-### Connection flow
-
-1. `initialize` → negotiate protocol version, receive capabilities and auth methods
-2. `authenticate` → authenticate with API key or session token
-3. `session/new` → create a new session (or `session/load` / `session/resume`)
-4. `session/prompt` → send a prompt, receive streaming `session/update` notifications
-5. `session/cancel` → cancel an in-flight prompt
-
-### Supported ACP capabilities
-
-| Capability | Status | Notes |
-|------------|--------|-------|
-| `initialize` | ✅ | Returns protocol version, capabilities, auth methods |
-| `authenticate` | ✅ | API key and session-based auth |
-| `session/new` | ✅ | Create session with cwd + MCP servers |
-| `session/load` | ✅ | Load session with full history replay |
-| `session/resume` | ✅ | Resume session without history replay |
-| `session/list` | ✅ | List sessions with cwd filter and cursor pagination |
-| `session/close` | ✅ | Close an active session |
-| `session/prompt` | ✅ | Streaming prompt with content blocks |
-| `session/cancel` | ✅ | Cancel in-flight prompt |
-| `session/set_mode` | ✅ | Switch session mode |
-| `session/set_model` | ✅ | Switch model mid-session |
-| `session/update` | ✅ | Streaming notifications (text, tool calls, diffs, plans) |
-| `session/request_permission` | ✅ | Tool permission prompts |
-| `read_text_file` / `write_text_file` | ✅ | Client filesystem access |
-| `terminal/*` | ✅ | Create, output, release, wait, kill terminals |
-| Slash commands | ✅ | Advertised via `available_commands_update` |
-| MCP servers | ✅ | HTTP, SSE, and stdio transports |
-| Agent plan | ✅ | Plan content blocks in session updates |
-| Tool calls | ✅ | Tool call lifecycle in session updates |
-| `session/delete` | ⚠️ | Via ext_method (`codel/session/delete`) |
-| `session/config_options` | 🔜 | Planned (model, mode, reasoning effort selectors) |
-| `elicitation` | 🔜 | Planned (structured user input) |
-| `agentInfo` | 🔜 | Planned |
-
-### Extension methods
-
-Codel exposes additional functionality via ACP `ext_method`:
-
-| Method | Description |
-|--------|-------------|
-| `codel/mcp/list` | List MCP servers and their status |
-| `codel/mcp/auth_trigger` | Trigger MCP OAuth authentication |
-| `codel/mcp/toggle` | Enable/disable an MCP server |
-| `codel/session/list` | List sessions (extended format with facets) |
-| `codel/session/close` | Close a session |
-| `codel/session/delete` | Delete a session from history |
-| `codel/session/info` | Get session details |
-| `codel/hooks/*` | Hook management |
-| `codel/plugins/*` | Plugin management |
+`codel`. On first launch it opens your browser to authenticate — see the
+[authentication guide](crates/codegen/codel-pager/docs/user-guide/02-authentication.md).
 
 ## Documentation
+
+Full online documentation is available at
+[docs.codel/build/overview](https://docs.codel/build/overview).
 
 The user guide ships with the pager crate:
 [`crates/codegen/codel-pager/docs/user-guide/`](crates/codegen/codel-pager/docs/user-guide/)
@@ -174,6 +103,7 @@ MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
 | `crates/codegen/codel-workspace` | Host filesystem, VCS, execution, checkpoints |
 | `crates/codegen/...` | The rest of the CLI crate closure (config, MCP, markdown, sandbox, ...) |
 | `crates/common/`, `crates/build/`, `prod/mc/` | Small shared leaf crates pulled in by the closure |
+| `third_party/` | Vendored upstream source (Mermaid diagram stack) — see below |
 
 > [!IMPORTANT]
 > The root `Cargo.toml` (workspace members, dependency versions, lints,
@@ -184,7 +114,7 @@ MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
 
 ```sh
 cargo check -p <crate>        # always target specific crates; full-workspace builds are slow
-cargo test -p codel-config    # per-crate tests
+cargo test -p codel-config # per-crate tests
 cargo clippy -p <crate>       # lint config: clippy.toml at the repo root
 cargo fmt --all               # rustfmt.toml at the repo root
 ```
@@ -207,3 +137,4 @@ Third-party and vendored code remains under its original licenses. See:
 - [`crates/codegen/codel-tools/THIRD_PARTY_NOTICES.md`](crates/codegen/codel-tools/THIRD_PARTY_NOTICES.md)
   — crate-local notice for the codex and opencode ports (license texts +
   Apache §4(b) change notice)
+- [`third_party/NOTICE`](third_party/NOTICE) — vendored Mermaid-stack index

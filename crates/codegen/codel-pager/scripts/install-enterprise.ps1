@@ -1,5 +1,5 @@
 #
-# Codel CLI installer (enterprise channel) for PowerShell — https://codel.dev/cli/enterprise-install.ps1
+# Codel CLI installer (enterprise channel) for PowerShell - https://codel/cli/enterprise-install.ps1
 #
 # Standalone installer for the enterprise channel. Intentionally a full copy of
 # the install logic so changes to the stable installer cannot break enterprise.
@@ -8,10 +8,10 @@
 # Env: CODEL_BIN_DIR, CODEL_PROXY_URL
 #
 # Usage:
-#   irm https://codel.dev/cli/enterprise-install.ps1 | iex                                       # latest enterprise
-#   & ([scriptblock]::Create((irm https://codel.dev/cli/enterprise-install.ps1))) -Version 0.1.42 # specific version
-#   $env:CODEL_VERSION="0.1.42"; irm https://codel.dev/cli/enterprise-install.ps1 | iex           # specific version (alt)
-#   $env:CODEL_DEPLOYMENT_KEY="<key>"; irm https://codel.dev/cli/enterprise-install.ps1 | iex
+#   irm https://codel/cli/enterprise-install.ps1 | iex                                       # latest enterprise
+#   & ([scriptblock]::Create((irm https://codel/cli/enterprise-install.ps1))) -Version 0.1.42 # specific version
+#   $env:CODEL_VERSION="0.1.42"; irm https://codel/cli/enterprise-install.ps1 | iex           # specific version (alt)
+#   $env:CODEL_DEPLOYMENT_KEY="<key>"; irm https://codel/cli/enterprise-install.ps1 | iex
 #
 
 param(
@@ -34,7 +34,7 @@ if (-not $Version -and $env:CODEL_VERSION) {
 
 # This script is Windows-only. PS 5.1 has no Platform property and only runs on Windows.
 if ($PSVersionTable.Platform -and $PSVersionTable.Platform -ne 'Win32NT') {
-    Write-Error "This installer is for Windows. On macOS/Linux, use: curl -fsSL https://codel.dev/cli/enterprise-install.sh | bash"
+    Write-Error "This installer is for Windows. On macOS/Linux, use: curl -fsSL https://codel/cli/enterprise-install.sh | bash"
     exit 1
 }
 
@@ -45,9 +45,29 @@ $CodelDir = Join-Path $env:USERPROFILE '.codel'
 function Download-String([string]$Url) {
     try {
         $response = Invoke-WebRequest -Uri $Url -UseBasicParsing
-        return $response.Content
+        $content = $response.Content
+        # Non-text Content-Type yields byte[] on PS 5.1.
+        if ($content -is [byte[]]) { $content = [System.Text.Encoding]::UTF8.GetString($content) }
+        return $content
     } catch {
         return $null
+    }
+}
+
+function Install-Exe([string]$SourcePath, [string]$Dest) {
+    # Locked-file safe: a running exe cannot be overwritten but can be renamed aside.
+    $old = "$Dest.old"
+    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
+    try {
+        Copy-Item -Path $SourcePath -Destination $Dest -Force
+    } catch {
+        if (Test-Path $Dest) { Rename-Item $Dest $old -Force -ErrorAction SilentlyContinue }
+        try {
+            Copy-Item -Path $SourcePath -Destination $Dest -Force
+        } catch {
+            if (Test-Path $old) { Rename-Item $old $Dest -Force -ErrorAction SilentlyContinue }
+            throw
+        }
     }
 }
 
@@ -55,7 +75,7 @@ function Download-File([string]$Url, [string]$OutFile) {
     # TODO: parallel byte-range download (matches install-enterprise.sh download_file_parallel).
     # Skipped for now: requires Start-ThreadJob / RunspacePool for true parallelism on PS 5.1
     # and HEAD + Range request orchestration. Single-connection HttpWebRequest below remains.
-    # Stream via HttpWebRequest — faster than Invoke-WebRequest on PS 5.1 and supports progress.
+    # Stream via HttpWebRequest - faster than Invoke-WebRequest on PS 5.1 and supports progress.
     $request = [System.Net.HttpWebRequest]::Create($Url)
     $request.Timeout = 300000  # 5 min
     $request.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
@@ -93,6 +113,141 @@ function Download-File([string]$Url, [string]$OutFile) {
     }
 }
 
+function Test-MinGitUsable([string]$VersionDir) {
+    # Same predicate as codel_tty_utils::bundled_git's is_usable(): the launcher plus the
+    # first platform tree holding git-upload-pack.exe and the bin\ with its DLLs.
+    if (-not (Test-Path (Join-Path (Join-Path $VersionDir 'cmd') 'git.exe'))) { return $false }
+    foreach ($tree in @('mingw64', 'clangarm64', 'clang64', 'mingw32')) {
+        $treeDir = Join-Path $VersionDir $tree
+        foreach ($helperDir in @((Join-Path (Join-Path $treeDir 'libexec') 'git-core'), (Join-Path $treeDir 'bin'))) {
+            if (Test-Path (Join-Path $helperDir 'git-upload-pack.exe')) {
+                return (Test-Path (Join-Path $treeDir 'bin') -PathType Container)
+            }
+        }
+    }
+    return $false
+}
+
+function Install-WindowsPayload([string]$BaseUrl, [string]$Version, [string]$Platform, [string]$BinDir, [string]$DownloadDir) {
+    # Windows git hooks expect grove.exe, grove-fsmonitor.exe and grove-credential.exe as
+    # siblings of codel.exe; codel resolves the bundled git from
+    # %LOCALAPPDATA%\codel\git\<mingit-version>\ (newest usable version wins, so older
+    # version dirs are left alone here). Releases before the payload shipped have none
+    # of these objects: a miss is a note, not a failure.
+    # Same shape as codel-update's windows_payload (which cannot run before codel.exe
+    # exists): download all three hook exes or none, install them with capture/restore.
+
+    $groveExes = @('grove', 'grove-fsmonitor', 'grove-credential')
+    $groveDownloads = @{}
+    $groveMissing = $null
+    foreach ($exe in $groveExes) {
+        $tmp = Join-Path $DownloadDir "$exe-$Platform.exe"
+        try {
+            Download-File "$BaseUrl/$exe-$Version-$Platform.exe" $tmp
+            $groveDownloads[$exe] = $tmp
+        } catch {
+            if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+            $groveMissing = $exe
+            break
+        }
+    }
+    if ($groveMissing) {
+        # All three or none: a partial set would leave git hooks pointing at nothing.
+        Write-Host "  Note: $groveMissing-$Version-$Platform.exe not available; grove hook exes not installed." -ForegroundColor DarkGray
+    } else {
+        # Copy every existing dest aside first, install in order, and on any failure put
+        # the previous exes back (or remove a dest that did not exist) so the set is
+        # never mixed. A running exe can be copied, and Install-Exe handles a locked dest.
+        $asides = @{}
+        $installed = @()
+        $groveFailed = $null
+        try {
+            foreach ($exe in $groveExes) {
+                $dest = Join-Path $BinDir "$exe.exe"
+                if (Test-Path $dest) {
+                    $aside = "$dest.bak-$PID"
+                    if (Test-Path $aside) { Remove-Item $aside -Force }
+                    Copy-Item -Path $dest -Destination $aside -Force
+                    $asides[$dest] = $aside
+                }
+            }
+            foreach ($exe in $groveExes) {
+                $dest = Join-Path $BinDir "$exe.exe"
+                Install-Exe $groveDownloads[$exe] $dest
+                $installed += $dest
+            }
+        } catch {
+            $groveFailed = $_.Exception.Message
+            [array]::Reverse($installed)
+            foreach ($dest in $installed) {
+                try {
+                    if ($asides.ContainsKey($dest)) {
+                        Install-Exe $asides[$dest] $dest
+                    } else {
+                        Remove-Item $dest -Force
+                    }
+                } catch {
+                    if ($asides.ContainsKey($dest)) {
+                        Write-Host "  Note: could not restore $dest; previous copy kept at $($asides[$dest])." -ForegroundColor Yellow
+                        $asides.Remove($dest)
+                    }
+                }
+            }
+        }
+        foreach ($aside in $asides.Values) {
+            if (Test-Path $aside) { Remove-Item $aside -Force -ErrorAction SilentlyContinue }
+        }
+        if ($groveFailed) {
+            Write-Host "  Note: grove hook exes not installed ($groveFailed); the previous ones were kept." -ForegroundColor Yellow
+        } else {
+            Write-Host "  Installed grove.exe, grove-fsmonitor.exe and grove-credential.exe to $BinDir." -ForegroundColor DarkGray
+        }
+    }
+    foreach ($tmp in $groveDownloads.Values) {
+        if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    }
+
+    if (-not $env:LOCALAPPDATA) { return }
+    $gitRoot = Join-Path (Join-Path $env:LOCALAPPDATA 'codel') 'git'
+    $mingitBase = "$BaseUrl/codel-$Version-$Platform-mingit"
+    $mingitVersion = Download-String "$mingitBase.version"
+    if ($mingitVersion) { $mingitVersion = $mingitVersion.Trim() }
+    # The version names a directory; refuse anything that is not a plain name.
+    if (-not $mingitVersion -or $mingitVersion -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]*$') {
+        Write-Host "  Note: no bundled git payload for $Version; grove uses git from PATH." -ForegroundColor DarkGray
+        return
+    }
+    $versionDir = Join-Path $gitRoot $mingitVersion
+    if (Test-MinGitUsable $versionDir) {
+        Write-Host "  Bundled git $mingitVersion already installed." -ForegroundColor DarkGray
+        return
+    }
+    $zipPath = Join-Path $DownloadDir "codel-$Platform-mingit.zip"
+    $staging = Join-Path $gitRoot ".staging-$Version"
+    try {
+        Write-Host "  Downloading bundled git $mingitVersion..." -ForegroundColor DarkGray
+        Download-File "$mingitBase.zip" $zipPath
+        $expected = Download-String "$mingitBase.zip.sha256"
+        if (-not $expected) { throw "sha256 sidecar missing" }
+        $expected = ($expected.Trim() -split '\s+')[0].ToLowerInvariant()
+        $actual = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) { throw "sha256 mismatch (expected $expected, got $actual)" }
+        if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
+        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        Expand-Archive -Path $zipPath -DestinationPath $staging -Force
+        if (-not (Test-MinGitUsable $staging)) { throw "archive is not a usable MinGit tree (cmd\git.exe, helpers, bin)" }
+        # Only an unusable leftover of this same version can exist here.
+        if (Test-Path $versionDir) { Remove-Item $versionDir -Recurse -Force }
+        Move-Item -Path $staging -Destination $versionDir
+        Write-Host "  Installed bundled git $mingitVersion to $versionDir." -ForegroundColor DarkGray
+    } catch {
+        Write-Host "  Note: bundled git not installed ($($_.Exception.Message)); grove uses git from PATH." -ForegroundColor Yellow
+        if (Test-Path $staging) { Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue }
+    } finally {
+        if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Read-CodelToken([string]$Scope) {
     $authFile = Join-Path $CodelDir 'auth.json'
     if (-not (Test-Path $authFile)) { return $null }
@@ -114,7 +269,7 @@ if ($Version -and $Version -notmatch '^\d+\.\d+\.\d+(-\S+)?$') {
 # --- Resolve auth ---
 
 $OidcScope = 'https://auth.codel.dev::b1a00492-073a-47ea-816f-4c329264a828'
-$LegacyScope = 'https://accounts.codel.dev/sign-in'
+$LegacyScope = 'https://accounts.codel/sign-in'
 $AuthSource = ''
 
 if ($env:CODEL_DEPLOYMENT_KEY) {
@@ -150,7 +305,7 @@ $platform = "windows-$arch"
 
 # --- Resolve version ---
 
-$BaseUrlPrimary = 'https://codel.dev/cli'
+$BaseUrlPrimary = 'https://codel/cli'
 $BaseUrlFallback = 'https://storage.googleapis.com/codel-build-public-artifacts/cli'
 $DownloadDir = Join-Path $CodelDir 'downloads'
 $BinDir = if ($env:CODEL_BIN_DIR) { $env:CODEL_BIN_DIR } else { Join-Path $CodelDir 'bin' }
@@ -213,26 +368,19 @@ if (-not $downloaded) {
 # --- Install binary (locked-file safe) ---
 
 foreach ($binName in @('codel.exe', 'agent.exe')) {
-    $dest = Join-Path $BinDir $binName
-    $old = "$dest.old"
-
-    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
-
     try {
-        Copy-Item -Path $binaryPath -Destination $dest -Force
+        Install-Exe $binaryPath (Join-Path $BinDir $binName)
     } catch {
-        try {
-            if (Test-Path $dest) { Rename-Item $dest $old -Force -ErrorAction SilentlyContinue }
-            Copy-Item -Path $binaryPath -Destination $dest -Force
-        } catch {
-            if (Test-Path $old) { Rename-Item $old $dest -Force -ErrorAction SilentlyContinue }
-            Write-Error "Failed to install $binName"
-            exit 1
-        }
+        Write-Error "Failed to install $binName"
+        exit 1
     }
 }
 
 Write-Host "  Installed to $BinDir\codel.exe and $BinDir\agent.exe." -ForegroundColor DarkGray
+
+# --- Windows payload (best-effort): grove hook exes beside codel.exe + bundled MinGit ---
+
+Install-WindowsPayload $BaseUrl $resolvedVersion $platform $BinDir $DownloadDir
 
 # --- Generate completions (best-effort) ---
 
@@ -281,11 +429,23 @@ if (-not (Test-Path $ConfigFile)) {
 # --- Fetch deployment config (deployment key only) ---
 
 if ($env:CODEL_DEPLOYMENT_KEY) {
-    $ProxyUrl = if ($env:CODEL_PROXY_URL) { $env:CODEL_PROXY_URL } else { 'https://cli-chat-proxy.codel.com/v1' }
+    $ProxyUrl = if ($env:CODEL_PROXY_URL) { $env:CODEL_PROXY_URL } else { 'https://cli-chat-proxy.codel.dev/v1' }
+    # Refuse cleartext / userinfo / empty-host proxies before attaching the key.
+    try {
+        $proxyUri = [Uri]$ProxyUrl
+    } catch {
+        Write-Error "CODEL_PROXY_URL must be an https:// URL."
+        exit 1
+    }
+    if (-not $proxyUri.IsAbsoluteUri -or $proxyUri.Scheme -ne 'https' -or -not $proxyUri.Host -or $proxyUri.UserInfo) {
+        Write-Error "CODEL_PROXY_URL must be an https:// URL."
+        exit 1
+    }
     Write-Host '  Fetching deployment config...' -ForegroundColor DarkGray
     try {
         $headers = @{ 'Authorization' = "Bearer $($env:CODEL_DEPLOYMENT_KEY)" }
-        $deployResponse = Invoke-RestMethod -Uri "$ProxyUrl/deployment/config" -Headers $headers -UseBasicParsing
+        # IRM follows redirects and would resend the Bearer token.
+        $deployResponse = Invoke-RestMethod -Uri "$ProxyUrl/deployment/config" -Headers $headers -UseBasicParsing -MaximumRedirection 0
     } catch {
         Write-Host "  Warning: failed to fetch deployment config from $ProxyUrl/deployment/config" -ForegroundColor Yellow
         $deployResponse = $null

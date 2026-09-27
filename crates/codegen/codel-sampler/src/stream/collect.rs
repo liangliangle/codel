@@ -1,9 +1,7 @@
 //! Buffered consumer for [`SamplingEvent`] streams.
 //!
-//! Drains a Layer-2 event stream into the final
-//! `(ConversationResponse, InferenceLatencyStats)` pair. Used by
-//! callers that don't need streaming UI updates (e.g., compaction,
-//! `/btw`, dream-model calls).
+//! Drains a Layer-2 event stream into the final `(ConversationResponse, InferenceLatencyStats)` pair.
+//! Used by callers that don't need streaming UI updates (e.g., compaction, `/btw`, dream-model calls).
 
 use futures_util::StreamExt;
 use futures_util::stream::Stream;
@@ -14,19 +12,8 @@ use crate::events::{SamplingErrorInfo, SamplingErrorKind, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 
 /// Drain a [`SamplingEvent`] stream, returning the final response.
-///
-/// Returns `Ok((response, metrics))` on the first
-/// [`SamplingEvent::Completed`] and `Err(error)` on the first
-/// [`SamplingEvent::Failed`]. Intermediate events (deltas, retries,
-/// metadata) are silently consumed -- this function is for callers
-/// that only need the final result.
-///
-/// If the stream ends without yielding either terminal event,
-/// returns an `Err` of kind [`SamplingErrorKind::Api`] indicating
-/// truncation. The Layer-2 transforms guarantee a terminal event in
-/// every successful return path, so this only fires for streams that
-/// are dropped mid-flight (e.g., the producer panicked or the
-/// underlying `tokio::spawn` was cancelled).
+/// Intermediate events (deltas, retries, metadata) are silently consumed; this function is for callers that only need the final result.
+/// This error only fires when the stream was dropped mid-flight, e.g. the producer panicked or the underlying `tokio::spawn` was cancelled.
 pub async fn collect_response(
     stream: impl Stream<Item = SamplingEvent>,
 ) -> Result<(ConversationResponse, InferenceLatencyStats), SamplingErrorInfo> {
@@ -49,8 +36,13 @@ pub async fn collect_response(
         message: "stream ended without Completed or Failed".to_string(),
         is_retryable: false,
         retry_after_secs: None,
+        should_retry: None,
+        error_code: None,
         model_metadata: None,
         empty_response_context: None,
+        doom_loop_triggers: None,
+        doom_loop_aborted_at_chunk: None,
+        credential: codel_sampling_types::SentCredential::Unknown,
     })
 }
 
@@ -165,9 +157,13 @@ mod tests {
                 items: vec![ConversationItem::assistant("hi")],
                 stop_reason: Some(StopReason::Stop),
                 usage: None,
+                cost_usd_ticks: None,
                 message_chunks_emitted: 1,
                 doom_loop_signals: Vec::new(),
                 stop_message: None,
+                message_id: None,
+                raw_stop_reason: None,
+                stop_sequence: None,
             }),
             metrics: InferenceLatencyStats::default(),
         };

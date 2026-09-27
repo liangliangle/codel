@@ -394,21 +394,6 @@ mod agent {
         acp::SetSessionModelResponse,
         acp::AGENT_METHOD_NAMES.session_set_model,
     );
-    acp_define_request_response!(
-        acp::ListSessionsRequest,
-        acp::ListSessionsResponse,
-        acp::AGENT_METHOD_NAMES.session_list,
-    );
-    acp_define_request_response!(
-        acp::CloseSessionRequest,
-        acp::CloseSessionResponse,
-        acp::AGENT_METHOD_NAMES.session_close,
-    );
-    acp_define_request_response!(
-        acp::ResumeSessionRequest,
-        acp::ResumeSessionResponse,
-        acp::AGENT_METHOD_NAMES.session_resume,
-    );
 
     /// ACP messages meant *for* the agent.
     #[derive(Debug, From)]
@@ -423,9 +408,6 @@ mod agent {
         ExtMethod(AcpArgsGeneric<acp::ExtRequest, S>),
         ExtNotification(AcpArgsGeneric<acp::ExtNotification, S>),
         SetSessionModel(AcpArgsGeneric<acp::SetSessionModelRequest, S>),
-        ListSessions(AcpArgsGeneric<acp::ListSessionsRequest, S>),
-        CloseSession(AcpArgsGeneric<acp::CloseSessionRequest, S>),
-        ResumeSession(AcpArgsGeneric<acp::ResumeSessionRequest, S>),
     }
 
     #[allow(type_alias_bounds)]
@@ -446,9 +428,6 @@ mod agent {
                 Self::ExtMethod(a) => a.method_name(),
                 Self::ExtNotification(a) => a.method_name(),
                 Self::SetSessionModel(a) => a.method_name(),
-                Self::ListSessions(a) => a.method_name(),
-                Self::CloseSession(a) => a.method_name(),
-                Self::ResumeSession(a) => a.method_name(),
             }
         }
     }
@@ -483,15 +462,6 @@ mod agent {
                     state.serialize_field("request", args.request.borrow())?
                 }
                 Self::SetSessionModel(args) => {
-                    state.serialize_field("request", args.request.borrow())?
-                }
-                Self::ListSessions(args) => {
-                    state.serialize_field("request", args.request.borrow())?
-                }
-                Self::CloseSession(args) => {
-                    state.serialize_field("request", args.request.borrow())?
-                }
-                Self::ResumeSession(args) => {
                     state.serialize_field("request", args.request.borrow())?
                 }
             }
@@ -540,12 +510,6 @@ mod agent {
                 parse!(Cancel)
             } else if method == acp::AGENT_METHOD_NAMES.session_set_model {
                 parse!(SetSessionModel)
-            } else if method == acp::AGENT_METHOD_NAMES.session_list {
-                parse!(ListSessions)
-            } else if method == acp::AGENT_METHOD_NAMES.session_close {
-                parse!(CloseSession)
-            } else if method == acp::AGENT_METHOD_NAMES.session_resume {
-                parse!(ResumeSession)
             } else if method == "ext_method" {
                 parse!(ExtMethod)
             } else if method == "ext_notification" {
@@ -571,9 +535,6 @@ mod agent {
                 Self::ExtMethod(args) => AcpAgentMessageBox::ExtMethod(args.boxed()),
                 Self::ExtNotification(args) => AcpAgentMessageBox::ExtNotification(args.boxed()),
                 Self::SetSessionModel(args) => AcpAgentMessageBox::SetSessionModel(args.boxed()),
-                Self::ListSessions(args) => AcpAgentMessageBox::ListSessions(args.boxed()),
-                Self::CloseSession(args) => AcpAgentMessageBox::CloseSession(args.boxed()),
-                Self::ResumeSession(args) => AcpAgentMessageBox::ResumeSession(args.boxed()),
             }
         }
 
@@ -663,33 +624,6 @@ mod agent {
                         _ = args
                             .response_tx
                             .send(agent.set_session_model(args.request).await)
-                            .ok();
-                    }
-                    .boxed_local(),
-                ),
-                AcpAgentMessage::ListSessions(args) => spawn(
-                    async move {
-                        _ = args
-                            .response_tx
-                            .send(agent.list_sessions(args.request).await)
-                            .ok();
-                    }
-                    .boxed_local(),
-                ),
-                AcpAgentMessage::CloseSession(args) => spawn(
-                    async move {
-                        _ = args
-                            .response_tx
-                            .send(agent.close_session(args.request).await)
-                            .ok();
-                    }
-                    .boxed_local(),
-                ),
-                AcpAgentMessage::ResumeSession(args) => spawn(
-                    async move {
-                        _ = args
-                            .response_tx
-                            .send(agent.resume_session(args.request).await)
                             .ok();
                     }
                     .boxed_local(),

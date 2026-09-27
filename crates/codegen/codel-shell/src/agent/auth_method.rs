@@ -1,16 +1,11 @@
 use agent_client_protocol as acp;
 
 use crate::agent::config::ModelEntry;
-use crate::auth::PreferredAuthMethod;
+use codel_login::PreferredAuthMethod;
 
-/// Shared, live handle to the agent's current ACP auth method id.
-///
-/// `Arc` so a clone can cross the per-session-thread boundary at spawn; the
-/// `ArcSwapOption` interior lets the agent's `authenticate` handler publish a
-/// new method that every running session's per-turn auth gate observes on its
-/// next turn -- no re-spawn. `None` until the first `authenticate`. Auth is
-/// process-global (one user, one `AuthManager`), so all sessions sharing one
-/// cell is correct.
+/// Shared, live handle to the agent's current ACP auth method id. `Arc` so a clone can cross the per-session-thread boundary at spawn.
+/// The `ArcSwapOption` interior lets the agent's `authenticate` handler publish a new method without re-spawning sessions. Every running session's per-turn auth gate observes the new method on its next turn.
+/// `None` until the first `authenticate`. Auth is process-global (one user, one `AuthManager`), so all sessions sharing one cell is correct.
 pub(crate) type SharedAuthMethodId = std::sync::Arc<arc_swap::ArcSwapOption<acp::AuthMethodId>>;
 
 /// Construct a [`SharedAuthMethodId`]. `None` is the pre-`authenticate` state.
@@ -20,97 +15,76 @@ pub(crate) fn new_shared_auth_method_id(initial: Option<acp::AuthMethodId>) -> S
     ))
 }
 
-/// Whether `codel.api_key` should be advertised (and pushed FIRST) when building
-/// the `auth_methods` list at `initialize()` time.
-///
-/// The global `CODEL_API_KEY` env var has been removed: every model must carry
-/// its own `api_key`/`env_key` (or `auth_provider`) in the model config. This
-/// predicate now reports whether ANY configured model has such per-model
-/// credentials, which is the only thing that makes the non-interactive
-/// `codel.api_key` method viable.
-///
-/// Regression: `codel.api_key` must stay first when per-model credentials
-/// exist. Deferring it made BYOK users hit the login screen because the pager
-/// uses `auth_methods.first()` for startup metadata.
-///
-/// [`build_auth_methods`] consumes this predicate and pins the ordering;
-/// its tests catch call-site and predicate regressions.
-///
-/// Consults each `ModelEntry` for a resolvable api_key/env_key at call time —
-/// the input can change between calls, so the result is not cached.
-pub fn should_advertise_codel_api_key<'a, I>(_disable_api_key_auth: bool, models: I) -> bool
+// The first-party env-key primitives live in the low `codel-login` crate
+// (auth needs them without pulling in shell's `ModelEntry`); re-exported here so
+// `crate::agent::auth_method::{CODEL_API_KEY_ENV_VAR, ..}` call sites keep resolving.
+pub use codel_login::auth_method::{
+    LEGACY_CODEL_API_KEY_ENV_VAR, CODEL_API_KEY_ENV_VAR, has_codel_api_key_env, read_codel_api_key_env,
+};
+
+/// Whether `codel.api_key` should be advertised (and pushed FIRST) when building the `auth_methods` list at `initialize()` time.
+/// Regression: `codel.api_key` must stay first when only per-model credentials exist (no global `CODEL_API_KEY`).
+/// Deferring it made BYOK users hit the login screen because the pager uses `auth_methods.first()` for startup metadata. Both inputs can change between calls, so the result is not cached. When true the method is never advertised, regardless of available credentials, so `CODEL_API_KEY` can't bypass a deployment's forced IdP login. Presence-only for the first-party env key (treats it as usable).
+pub(crate) fn should_advertise_codel_api_key<'a, I>(disable_api_key_auth: bool, models: I) -> bool
 where
     I: IntoIterator<Item = &'a ModelEntry>,
 {
-    models.into_iter().any(ModelEntry::has_own_credentials)
+    should_advertise_codel_api_key_with_env_ok(disable_api_key_auth, models, true)
 }
 
-/// Inputs to [`build_auth_methods`].
-///
-/// Booleans are computed by the caller (`MvpAgent::initialize()`) because they
-/// depend on async side effects (token refresh) and shared mutable state
-/// (`AuthManager`). The list-construction logic itself is pure so it can be
-/// unit-tested without any of that machinery.
+/// Single advertise policy for `codel.api_key`: the kill switch, BYOK, and the first-party env key.
+/// The env key is gated by `first_party_env_ok` (probe result, or `true` for presence-only); BYOK still advertises without a probe.
+pub(crate) fn should_advertise_codel_api_key_with_env_ok<'a, I>(
+    disable_api_key_auth: bool,
+    models: I,
+    first_party_env_ok: bool,
+) -> bool
+where
+    I: IntoIterator<Item = &'a ModelEntry>,
+{
+    if disable_api_key_auth {
+        return false;
+    }
+    let has_byok = models.into_iter().any(ModelEntry::has_own_credentials);
+    has_byok || (has_codel_api_key_env() && first_party_env_ok)
+}
+
+/// Inputs to [`build_auth_methods`]. The caller (`MvpAgent::initialize()`) computes the booleans. They depend on async side effects (token refresh) and shared mutable state (`AuthManager`).
+/// The list-construction logic itself is pure so it can be unit-tested without any of that machinery.
 pub struct AuthMethodsBuildInputs<'a> {
-    /// True if `codel.api_key` should be advertised AT ALL. Caller computes via
-    /// [`should_advertise_codel_api_key`]. When `preferred_method` is `Oidc`,
-    /// this is ignored (API key is never advertised under that pin).
+    /// True if `codel.api_key` should be advertised AT ALL. Login/initialize callers compute it via [`should_advertise_codel_api_key_with_env_ok`] after the validity probe.
+    /// Presence-only paths may use [`should_advertise_codel_api_key`]. When `preferred_method` is `Oidc`, this is ignored (API key is never advertised under that pin).
     pub has_external_api_key: bool,
-    /// True if a cached session token is available (either present at startup
-    /// or recovered via silent refresh).
+    /// True if a cached session token is available (either present at startup or recovered via silent refresh).
     pub has_cached_token: bool,
-    /// True if enterprise OIDC is configured. Mutually exclusive with the
-    /// default `codel.dev` method.
+    /// True if enterprise OIDC is configured.
+    /// Mutually exclusive with the default `codel.dev` method.
     pub has_enterprise_oidc: bool,
     /// Required when `has_enterprise_oidc` is true; ignored otherwise.
     pub enterprise_oidc_issuer: Option<&'a str>,
     /// Optional display label for the login method (`codel.dev` or `oidc`).
     pub login_label: Option<&'a str>,
-    /// True if `codel_com_config.auth_provider_command` is configured (sets
-    /// `meta.external_provider = true` on the `codel.dev` method).
+    /// True if `codel_com_config.auth_provider_command` is configured (sets `meta.external_provider = true` on the `codel.dev` method).
     pub has_auth_provider_command: bool,
-    /// Config pin (`[auth] preferred_method`). `None` keeps multi-method
-    /// fallthrough; `Some` is fail-closed (only that method family).
+    /// Config pin (`[auth] preferred_method`).
+    /// `None` keeps multi-method fallthrough; `Some` is fail-closed (only that method family).
     pub preferred_method: Option<PreferredAuthMethod>,
 }
 
 /// Output of [`build_auth_methods`].
 pub struct BuiltAuthMethods {
-    /// Auth methods in advertised order. ORDER IS THE CONTRACT: the pager's
-    /// `startup_auth_metadata()` reads `methods.first()` to decide whether
-    /// interactive login is needed.
+    /// Auth methods in advertised order.
+    /// ORDER IS THE CONTRACT: the pager's `startup_auth_metadata()` reads `methods.first()` to decide whether interactive login is needed.
     pub methods: Vec<acp::AuthMethod>,
-    /// The default `auth_method_id` to install on the agent. When unpinned,
-    /// `cached_token` wins over `codel.api_key` when both are present. When
-    /// pinned, only the preferred method may appear; `None` means unavailable
-    /// (fail auth — no cross-method fallthrough).
+    /// The default `auth_method_id` to install on the agent.
+    /// When unpinned, `cached_token` wins over `codel.api_key` when both are present.
+    /// When pinned, only the preferred method may appear; `None` means unavailable (fail auth, no cross-method fallthrough).
     pub default_auth_method_id: Option<acp::AuthMethodId>,
 }
 
-/// Build the `auth_methods` list and default `auth_method_id` from
-/// pre-computed inputs.
-///
-/// REGRESSION GUARD: when unpinned and
-/// `has_external_api_key` is true, the **first** entry MUST be `codel.api_key`.
-/// A prior change deferred it to the END for per-model credentials, which made
-/// the pager send per-model-key users to the login screen. Unit tests lock this.
-///
-/// Unpinned ordering (when each method is enabled):
-/// 1. `codel.api_key`     (if `has_external_api_key`)
-/// 2. `cached_token`    (if `has_cached_token`)
-/// 3. exactly one of:
-///    - `oidc`          (if `has_enterprise_oidc`)
-///    - `codel.dev`      (otherwise)
-///
-/// Unpinned `default_auth_method_id`:
-/// - `cached_token` if `has_cached_token`
-/// - `codel.api_key`  else if `has_external_api_key`
-/// - `None`         otherwise
-///
-/// Pinned (`preferred_method`):
-/// - `ApiKey`: only `codel.api_key` if available; else empty list + `None` (fail).
-/// - `Oidc`: `cached_token` (if any) + interactive login; never `codel.api_key`.
-///   Default is `cached_token` when present, else `None` (interactive).
+/// REGRESSION GUARD: when unpinned and `has_external_api_key` is true, the **first** entry MUST be `codel.api_key`.
+/// Unpinned ordering (when each method is enabled): `codel.api_key` (if `has_external_api_key`) `cached_token` (if `has_cached_token`) exactly one of: `oidc` (if `has_enterprise_oidc`) `codel.dev` (otherwise)
+/// Unpinned `default_auth_method_id`: `cached_token` if `has_cached_token` `codel.api_key` else if `has_external_api_key` `None` otherwise Pinned (`preferred_method`): `ApiKey`: only `codel.api_key` if available; else an empty list and `None` (fail). `Oidc`: `cached_token` (if any) then interactive login; never `codel.api_key`.
 pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethods {
     let AuthMethodsBuildInputs {
         has_external_api_key,
@@ -144,6 +118,11 @@ pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethod
 
 fn build_pinned_api_key(has_external_api_key: bool) -> BuiltAuthMethods {
     if !has_external_api_key {
+        codel_logging::unified_log::warn(
+            "auth: preferred_method=api_key but no API key credentials available",
+            None,
+            None,
+        );
         return BuiltAuthMethods {
             methods: Vec::new(),
             default_auth_method_id: None,
@@ -202,11 +181,18 @@ fn build_unpinned(
 
     if has_cached_token {
         methods.push(cached_token_auth_method());
-        // cached_token wins over codel.api_key for default_auth_method_id so
-        // is_session_based_auth() returns true and OIDC refresh stays alive.
+        // cached_token wins over codel.api_key for default_auth_method_id so is_session_based_auth() returns true and OIDC refresh stays alive
         let overrode_api_key = default_auth_method_id.is_some();
         default_auth_method_id = Some(acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID));
         if overrode_api_key {
+            codel_logging::unified_log::info(
+                "auth method priority: cached_token overrides codel.api_key for default_auth_method_id",
+                None,
+                Some(serde_json::json!({
+                    "has_external_api_key": has_external_api_key,
+                    "has_cached_token": has_cached_token,
+                })),
+            );
         }
     }
 
@@ -232,12 +218,9 @@ fn push_interactive_login(
     has_auth_provider_command: bool,
 ) {
     if has_enterprise_oidc {
-        // Caller invariant: `enterprise_oidc_issuer` MUST be `Some(...)` when
-        // `has_enterprise_oidc` is true. Production callers derive both from
-        // the same `cfg.codel_com_config.oidc` Option, so the inconsistent
-        // `(true, None)` combination is a programmer error -- panic loudly
-        // (matches the original `cfg.codel_com_config.oidc.as_ref().unwrap()`
-        // call in `MvpAgent::initialize()` before this refactor).
+        // Caller invariant: `enterprise_oidc_issuer` MUST be `Some(...)` when `has_enterprise_oidc` is true
+        // Production callers derive both from the same `cfg.codel_com_config.oidc` Option
+        // The inconsistent `(true, None)` combination is a programmer error, so panic loudly
         let issuer = enterprise_oidc_issuer
             .expect("enterprise_oidc_issuer is required when has_enterprise_oidc is true");
         methods.push(oidc_auth_method(issuer, login_label));
@@ -273,7 +256,7 @@ impl AuthMethodKind {
     }
 
     /// `true` for session-based methods (cached_token, codel.dev, oidc).
-    pub fn is_session_based(self) -> bool {
+    pub(crate) fn is_session_based(self) -> bool {
         matches!(self, Self::CachedToken | Self::CodelCom | Self::Oidc)
     }
 
@@ -281,62 +264,28 @@ impl AuthMethodKind {
     pub fn needs_interactive_login(self) -> bool {
         matches!(self, Self::CodelCom | Self::Oidc)
     }
-
-    pub fn auth_error_message(self) -> &'static str {
-        if self.is_session_based() {
-            AUTH_ERROR_SESSION_EXPIRED
-        } else {
-            AUTH_ERROR_API_KEY
-        }
-    }
 }
 
 /// `true` for session-based ACP methods (cached_token, codel.dev, oidc).
-pub fn is_session_based_method(method_id: &acp::AuthMethodId) -> bool {
+pub(crate) fn is_session_based_method(method_id: &acp::AuthMethodId) -> bool {
     AuthMethodKind::from_id(method_id).is_session_based()
 }
 
-/// Per-model BYOK status: whether the selected model carries its own
-/// `[model.*]` `api_key`/`env_key`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModelByok {
+/// Per-model BYOK status: whether the selected model carries its own `[model.*]` `api_key`/`env_key`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub(crate) enum ModelByok {
     /// Model has its own per-model key (not refreshable).
     Byok,
     /// Model has no per-model key (session auth governs).
     NotByok,
-    /// Config couldn't be loaded/parsed — BYOK status indeterminate.
+    /// Config couldn't be loaded/parsed; BYOK status indeterminate.
     Unknown,
 }
-
-impl ModelByok {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Byok => "byok",
-            Self::NotByok => "not_byok",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-/// Whether this session+model uses a refreshable session token.
-///
-/// Gates on stable inputs, not `Credentials.auth_type`: that field collapses
-/// to `ApiKey` when the session-token cache is momentarily empty and a
-/// per-model key is set, which demoted live OIDC sessions to non-refreshable
-/// api-key mode and 401'd every prompt until restart. `model_byok` still
-/// excludes genuine per-model BYOK, whose keys are not refreshable.
-///
-/// `Unknown` (BYOK status indeterminate — config currently unparseable, no
-/// sampling config yet, or the per-model memo was cleared) must **not** demote
-/// a live session to non-refreshable api-key mode: that re-sends the stale
-/// buffered token on every turn and 401s with `bad-credentials` until restart
-/// (the stale-token regression this gate addresses; fall back rather than
-/// demote on `Unknown`). It refreshes when `endpoint_is_first_party` — the
-/// request targets a first-party host (cli-chat-proxy / first-party API),
-/// where sending the session token cannot leak to a third-party BYOK
-/// endpoint. A definite `NotByok` always refreshes (it only ever routes to
-/// the session endpoint); a definite `Byok` never does.
-pub fn session_token_auth_gate(
+/// Whether this session and model combination uses a refreshable session token. Gates on stable inputs, not `Credentials.auth_type`. `model_byok` still excludes genuine per-model BYOK, whose keys are not refreshable.
+/// It must **not** demote a live session to non-refreshable api-key mode. Instead, `Unknown` refreshes only when `endpoint_is_first_party`.
+/// On a first-party host (cli-chat-proxy / first-party API) the session token cannot leak to a third-party BYOK endpoint. A definite `NotByok` always refreshes (it only ever routes to the session endpoint); a definite `Byok` never does.
+pub(crate) fn session_token_auth_gate(
     is_session_based_method: bool,
     model_byok: ModelByok,
     endpoint_is_first_party: bool,
@@ -350,20 +299,14 @@ pub fn session_token_auth_gate(
 }
 
 pub const AUTH_ERROR_SESSION_EXPIRED: &str =
-    "Session expired. Re-authenticate via your model config (~/.codel/config.toml).";
+    "Session expired. Run `codel login` to re-authenticate.";
 
-pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Configure api_key or env_key in your model config (~/.codel/config.toml).";
+pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Run `codel login`, set CODEL_API_KEY, or add api_key to ~/.codel/config.toml.";
 
-/// Next ACP method id when `cached_token` cannot proceed (missing / expired /
-/// legacy WebLogin), or `None` when fallthrough is forbidden.
-///
-/// Unpinned: prefer non-interactive `codel.api_key` when advertiseable, else
-/// interactive `codel.dev`.
-///
-/// Pinned `oidc`: **no** fallthrough to api_key — return `None` so the caller
-/// fails auth. Pinned `api_key` should not reach this path (cached_token is
-/// not advertised).
-pub fn method_id_after_cached_token_unavailable(
+/// Next ACP method id when `cached_token` cannot proceed (missing / expired / legacy WebLogin), or `None` when fallthrough is forbidden.
+/// Unpinned: prefer non-interactive `codel.api_key` when advertiseable, else interactive `codel.dev`. Pinned `oidc`: **no** fallthrough to api_key; return `None` so the caller fails auth.
+/// Pinned `api_key` should not reach this path (cached_token is not advertised).
+pub(crate) fn method_id_after_cached_token_unavailable(
     has_external_api_key: bool,
     preferred_method: Option<PreferredAuthMethod>,
 ) -> Option<&'static str> {
@@ -378,27 +321,27 @@ pub fn method_id_after_cached_token_unavailable(
 }
 
 /// Error when `preferred_method=api_key` but no key/BYOK credentials exist.
-pub const PREFERRED_API_KEY_UNAVAILABLE: &str = "preferred_method=api_key but no API key is configured (configure api_key or env_key in your model config ~/.codel/config.toml).";
+pub const PREFERRED_API_KEY_UNAVAILABLE: &str = "preferred_method=api_key but no API key is configured (set CODEL_API_KEY or model api_key/env_key in config.toml).";
 
 /// Error when `preferred_method=oidc` but the session path cannot proceed.
 pub const PREFERRED_OIDC_UNAVAILABLE: &str =
-    "preferred_method=oidc but no session is available. Configure api_key or env_key in your model config (~/.codel/config.toml).";
+    "preferred_method=oidc but no session is available. Run `codel login` to authenticate.";
 
 pub const CODEL_API_KEY_METHOD_ID: &str = "codel.api_key";
-pub fn codel_api_key_auth_method() -> acp::AuthMethod {
+pub(crate) fn codel_api_key_auth_method() -> acp::AuthMethod {
     acp::AuthMethod::Agent(
         acp::AuthMethodAgent::new(
             acp::AuthMethodId::new(CODEL_API_KEY_METHOD_ID),
             "codel.api_key".to_string(),
         )
-        .description(Some(
-            "api_key/env_key in config.toml".to_string(),
-        )),
+        .description(Some(format!(
+            "{CODEL_API_KEY_ENV_VAR} or api_key/env_key in config.toml"
+        ))),
     )
 }
 
 pub const CACHED_TOKEN_AUTH_METHOD_ID: &str = "cached_token";
-pub fn cached_token_auth_method() -> acp::AuthMethod {
+pub(crate) fn cached_token_auth_method() -> acp::AuthMethod {
     acp::AuthMethod::Agent(
         acp::AuthMethodAgent::new(
             acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID),
@@ -410,8 +353,8 @@ pub fn cached_token_auth_method() -> acp::AuthMethod {
 
 pub const CODEL_COM_METHOD_ID: &str = "codel.dev";
 
-/// Codel OAuth2/OIDC auth. Method id `"codel.dev"` kept for ACP wire-compat.
-pub fn codel_com_auth_method(
+/// Codel OAuth2/OIDC auth. Method id `"codel.dev"` kept for ACP wire compatibility.
+pub(crate) fn codel_com_auth_method(
     label: Option<&str>,
     has_auth_provider_command: bool,
 ) -> acp::AuthMethod {
@@ -431,7 +374,7 @@ pub fn codel_com_auth_method(
 }
 
 pub const OIDC_METHOD_ID: &str = "oidc";
-pub fn oidc_auth_method(issuer: &str, label: Option<&str>) -> acp::AuthMethod {
+pub(crate) fn oidc_auth_method(issuer: &str, label: Option<&str>) -> acp::AuthMethod {
     let name = label
         .map(|l| l.to_string())
         .unwrap_or_else(|| format!("Single sign-on ({})", issuer));
@@ -448,12 +391,9 @@ mod tests {
     use agent_client_protocol as acp;
     use serial_test::serial;
 
-    /// When API-key credentials are advertiseable, fall through from a dead
-    /// `cached_token` to non-interactive `codel.api_key` (not browser OAuth).
-    /// Covers the both-advertised case (`has_cached_token` true at initialize
-    /// but session later missing/expired/legacy): advertise order still puts
-    /// `codel.api_key` first, while `default_auth_method_id` prefers session;
-    /// after session fails, this helper must still pick `codel.api_key`.
+    /// When API-key credentials are advertiseable, fall through from a dead `cached_token` to non-interactive `codel.api_key` (not browser OAuth).
+    /// Covers the both-advertised case: `has_cached_token` was true at initialize but the session later went missing/expired/legacy. Advertise order still puts `codel.api_key` first while `default_auth_method_id` prefers session.
+    /// After the session fails, this helper must still pick `codel.api_key`.
     #[test]
     fn after_cached_token_unavailable_prefers_api_key_when_advertiseable() {
         assert_eq!(
@@ -462,7 +402,7 @@ mod tests {
         );
     }
 
-    /// No advertiseable API-key credentials → interactive `codel.dev`.
+    /// With no advertiseable API-key credentials, fall to interactive `codel.dev`.
     #[test]
     fn after_cached_token_unavailable_falls_to_codel_com_without_api_key() {
         assert_eq!(
@@ -471,7 +411,7 @@ mod tests {
         );
     }
 
-    /// Pinned methods never fall through across the api_key ↔ oidc boundary.
+    /// Pinned methods never fall through between api_key and oidc.
     #[test]
     fn after_cached_token_unavailable_fails_closed_when_pinned() {
         assert_eq!(
@@ -518,9 +458,8 @@ mod tests {
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
-    /// Default inputs to `build_auth_methods` representing a session-only user
-    /// with no API key anywhere. Tests override only the fields they care
-    /// about.
+    /// Default inputs to `build_auth_methods` representing a session-only user with no API key anywhere.
+    /// Tests override only the fields they care about.
     fn default_inputs() -> AuthMethodsBuildInputs<'static> {
         AuthMethodsBuildInputs {
             has_external_api_key: false,
@@ -574,18 +513,19 @@ mod tests {
                 .map(|id| id.0.as_ref()),
             Some(CODEL_API_KEY_METHOD_ID),
         );
-        // Cross-check with the pager-side predicate: the first method must
-        // not require interactive login, which is the exact condition the
-        // pager's `startup_auth_metadata()` uses.
+        // Cross-check with the pager-side predicate: the first method must not require interactive login
+        // That is the exact condition the pager's `startup_auth_metadata()` uses
         assert!(
-            !AuthMethodKind::from_id(built.methods[0].id()).needs_interactive_login(),
+            built
+                .methods
+                .first()
+                .is_some_and(|m| !AuthMethodKind::from_id(m.id()).needs_interactive_login()),
             "first method MUST NOT need interactive login when codel.api_key is available",
         );
     }
 
-    /// BYOK + cached session token: codel.api_key stays first in the methods
-    /// list (skips login screen), but `default_auth_method_id` is
-    /// `cached_token` (keeps OIDC refresh alive).
+    /// BYOK plus a cached session token: codel.api_key stays first in the methods list, skipping the login screen.
+    /// `default_auth_method_id` is still `cached_token`, which keeps OIDC refresh alive.
     #[test]
     fn byok_with_cached_token_keeps_codel_api_key_first() {
         let inputs = AuthMethodsBuildInputs {
@@ -618,9 +558,8 @@ mod tests {
         );
     }
 
-    /// Session-only user (no API key anywhere): cached_token first, then
-    /// `codel.dev` — `auth_methods.first()` does NOT need interactive login,
-    /// so this user also skips the login screen at startup.
+    /// Session-only user (no API key anywhere): cached_token first, then `codel.dev`.
+    /// `auth_methods.first()` does NOT need interactive login, so this user also skips the login screen at startup.
     #[test]
     fn session_only_user_first_method_is_cached_token() {
         let inputs = AuthMethodsBuildInputs {
@@ -643,10 +582,8 @@ mod tests {
         );
     }
 
-    /// Brand-new user (no API key, no cached token): only `codel.dev` is
-    /// advertised, and the pager will (correctly) show the login screen.
-    /// `default_auth_method_id` is None so the pager falls back to the
-    /// advertised login method.
+    /// Brand-new user (no API key, no cached token): only `codel.dev` is advertised, and the pager will (correctly) show the login screen.
+    /// `default_auth_method_id` is None so the pager falls back to the advertised login method.
     #[test]
     fn fresh_user_only_advertises_codel_com_and_requires_login() {
         let built = build_auth_methods(default_inputs());
@@ -656,8 +593,8 @@ mod tests {
         assert_eq!(built.methods.len(), 1);
     }
 
-    /// Enterprise OIDC replaces `codel.dev` (mutually exclusive). codel.api_key,
-    /// when present, still leads.
+    /// Enterprise OIDC replaces `codel.dev` (mutually exclusive).
+    /// codel.api_key, when present, still leads.
     #[test]
     fn enterprise_oidc_replaces_codel_com_but_codel_api_key_still_first() {
         let inputs = AuthMethodsBuildInputs {
@@ -686,9 +623,8 @@ mod tests {
         );
     }
 
-    /// `has_auth_provider_command` is plumbed through to the `codel.dev` method
-    /// as `meta.external_provider = true`. Pinning this here so the pager's
-    /// `AuthStartMode::Command` path keeps working.
+    /// `has_auth_provider_command` reaches the `codel.dev` method as `meta.external_provider = true`.
+    /// Pinned here so the pager's `AuthStartMode::Command` path keeps working.
     #[test]
     fn auth_provider_command_sets_external_provider_meta() {
         let inputs = AuthMethodsBuildInputs {
@@ -711,25 +647,21 @@ mod tests {
         );
     }
 
-    // ── End-to-end: enterprise TOML -> resolved models -> build_auth_methods ─
+    // ── End-to-end: enterprise TOML to resolved models to build_auth_methods ─
 
-    /// END-TO-END REGRESSION TEST: parses the literal enterprise-style
-    /// `~/.codel/config.toml` skeleton from the bug report, walks it through
-    /// the same predicate (`should_advertise_codel_api_key`) and the same
-    /// list-builder (`build_auth_methods`) that `MvpAgent::initialize()` uses
-    /// in production, and asserts that `auth_methods.first()` is `codel.api_key`
-    /// (which causes the pager to skip the login screen).
-    ///
-    /// This is the test that *would have caught* that regression -- if you mentally
-    /// re-introduce that bug (push codel.api_key LAST when has_external_api_key
-    /// && !global env var), this test fails because `first_kind` is no longer
-    /// `CodelApiKey`.
+    /// END-TO-END REGRESSION TEST: parses the literal enterprise-style `~/.codel/config.toml` skeleton from the bug report, walks it through the same predicate (`should_advertise_codel_api_key`) and the same list-builder (`build_auth_methods`) that `MvpAgent::initialize()` uses in production, and asserts that `auth_methods.first()` is `codel.api_key` (which causes the pager to skip the login screen).
+    /// This is the test that *would have caught* that regression.
+    /// If the bug returns (codel.api_key pushed LAST when only per-model credentials exist), `first_kind` stops being `CodelApiKey` and this test fails.
     #[test]
     #[serial]
     fn enterprise_byok_config_does_not_require_login() {
         const TEST_ENV_VAR: &str = "TEST_ENTERPRISE_REGRESSION_AUTH_TOKEN";
 
-        let dm = "test-model";
+        // Make sure no global key is masking the per-model path we're trying to exercise
+        // Held until end-of-scope so we restore on panic too
+        let _global = EnvGuard::unset(CODEL_API_KEY_ENV_VAR);
+
+        let dm = codel_models::default_model();
         let toml: toml::Value = toml::from_str(&format!(
             r#"
             [model."{dm}"]
@@ -748,9 +680,8 @@ mod tests {
             Some(vec![TEST_ENV_VAR])
         );
 
-        // Without the env var present, has_own_credentials() returns false,
-        // the predicate returns false, and the builder advertises only the
-        // login method. Confirms the predicate isn't trivially true.
+        // Without the env var present, has_own_credentials() and the predicate return false, and the builder advertises only the login method
+        // Confirms the predicate isn't trivially true
         {
             let _unset = EnvGuard::unset(TEST_ENV_VAR);
             let has_external_api_key = should_advertise_codel_api_key(false, models.values());
@@ -766,17 +697,15 @@ mod tests {
             );
         }
 
-        // With the env var present (the actual enterprise scenario), the predicate
-        // returns true and the builder MUST put `codel.api_key` first so the
-        // pager's `startup_auth_metadata()` returns `needs_login = false`.
+        // With the env var present (the actual enterprise scenario), the predicate returns true
+        // The builder MUST put `codel.api_key` first so the pager's `startup_auth_metadata()` returns `needs_login = false`
         {
             let _set = EnvGuard::set(TEST_ENV_VAR, "enterprise-secret-token");
             let has_external_api_key = should_advertise_codel_api_key(false, models.values());
             assert!(has_external_api_key);
             let built = build_auth_methods(AuthMethodsBuildInputs {
                 has_external_api_key,
-                // Realistic enterprise user: no cached session token, default
-                // codel.dev login (no enterprise OIDC).
+                // Realistic enterprise user: no cached session token, default codel.dev login (no enterprise OIDC)
                 has_cached_token: false,
                 ..default_inputs()
             });
@@ -787,7 +716,10 @@ mod tests {
                  ordering sends enterprise users to the login screen",
             );
             assert!(
-                !AuthMethodKind::from_id(built.methods[0].id()).needs_interactive_login(),
+                built
+                    .methods
+                    .first()
+                    .is_some_and(|m| !AuthMethodKind::from_id(m.id()).needs_interactive_login()),
                 "auth_methods.first() MUST NOT need interactive login -- this \
                  is the exact predicate the pager's startup_auth_metadata() \
                  uses to decide whether to show the login screen",
@@ -795,15 +727,103 @@ mod tests {
         }
     }
 
-    /// Admin kill switch (`disable_api_key_auth`): with the global
-    /// `CODEL_API_KEY` removed, this switch no longer gates anything — the
-    /// predicate is driven purely by per-model credentials. The field is kept
-    /// for config-parse compatibility but has no effect here.
+    /// `CODEL_API_KEY` alone (no per-model creds) also triggers advertising `codel.api_key` as the first method.
+    /// Historical "external key" path; covered here so the predicate keeps treating env-var-only users the same as per-model users.
     #[test]
     #[serial]
-    fn disable_api_key_auth_no_longer_gates_per_model_credentials() {
-        const TEST_ENV_VAR: &str = "TEST_DISABLE_SWITCH_AUTH_TOKEN";
-        let dm = "test-model";
+    fn global_external_api_key_advertises_codel_api_key_first() {
+        let _set = EnvGuard::set(CODEL_API_KEY_ENV_VAR, "codel-external-key");
+        let cfg = Config::default();
+        let models = resolve_model_list(&cfg, None);
+        let has_external_api_key = should_advertise_codel_api_key(false, models.values());
+        assert!(has_external_api_key);
+        let built = build_auth_methods(AuthMethodsBuildInputs {
+            has_external_api_key,
+            ..default_inputs()
+        });
+        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::CodelApiKey));
+    }
+
+    /// Admin kill switch (`disable_api_key_auth`): the predicate must return false even when credentials are available everywhere.
+    /// That includes both the global env var and a per-model env_key.
+    /// The builder then never advertises `codel.api_key`, and the pager sends the user to the deployment's login method instead.
+    #[test]
+    #[serial]
+    fn disable_api_key_auth_suppresses_codel_api_key_method() {
+        let _set = EnvGuard::set(CODEL_API_KEY_ENV_VAR, "codel-external-key");
+        let cfg = Config::default();
+        let models = resolve_model_list(&cfg, None);
+
+        // Flag off: today's behavior (advertised first).
+        assert!(should_advertise_codel_api_key(false, models.values()));
+
+        // Flag on: never advertised, regardless of credentials.
+        let has_external_api_key = should_advertise_codel_api_key(true, models.values());
+        assert!(!has_external_api_key);
+        let built = build_auth_methods(AuthMethodsBuildInputs {
+            has_external_api_key,
+            ..default_inputs()
+        });
+        assert!(
+            !built
+                .methods
+                .iter()
+                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::CodelApiKey),
+            "codel.api_key must not be advertised when disable_api_key_auth is set",
+        );
+        assert_eq!(
+            first_kind(&built.methods),
+            Some(AuthMethodKind::CodelCom),
+            "with api-key auth disabled and no cached token, the login method \
+             must lead so the pager requires interactive login",
+        );
+        assert!(built.default_auth_method_id.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn env_key_probe_unusable_suppresses_advertise_without_byok() {
+        let _set = EnvGuard::set(CODEL_API_KEY_ENV_VAR, "codel-dead-key");
+        let _legacy = EnvGuard::unset(LEGACY_CODEL_API_KEY_ENV_VAR);
+        let cfg = Config::default();
+        let models = resolve_model_list(&cfg, None);
+        assert!(
+            should_advertise_codel_api_key(false, models.values()),
+            "presence-only helper still sees the env key"
+        );
+        assert!(
+            !should_advertise_codel_api_key_with_env_ok(false, models.values(), false),
+            "probe-unusable env key alone must not advertise"
+        );
+        let built = build_auth_methods(AuthMethodsBuildInputs {
+            has_external_api_key: false,
+            ..default_inputs()
+        });
+        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::CodelCom));
+    }
+
+    #[test]
+    #[serial]
+    fn env_key_probe_ok_still_advertises() {
+        let _set = EnvGuard::set(CODEL_API_KEY_ENV_VAR, "codel-live-key");
+        let cfg = Config::default();
+        let models = resolve_model_list(&cfg, None);
+        assert!(should_advertise_codel_api_key_with_env_ok(
+            false,
+            models.values(),
+            true
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn byok_advertises_even_when_env_probe_unusable() {
+        const TEST_ENV_VAR: &str = "TEST_BYOK_PROBE_INDEPENDENT_TOKEN";
+        let _unset = EnvGuard::unset(CODEL_API_KEY_ENV_VAR);
+        let _legacy = EnvGuard::unset(LEGACY_CODEL_API_KEY_ENV_VAR);
+        let _byok = EnvGuard::set(TEST_ENV_VAR, "enterprise-secret-token");
+
+        let dm = codel_models::default_model();
         let toml: toml::Value = toml::from_str(&format!(
             r#"
             [model."{dm}"]
@@ -816,59 +836,69 @@ mod tests {
         .unwrap();
         let cfg = Config::new_from_toml_cfg(&toml).expect("config should parse");
         let models = resolve_model_list(&cfg, None);
-
-        let _set = EnvGuard::set(TEST_ENV_VAR, "enterprise-secret-token");
-        // Flag off and on behave identically now: per-model credentials are
-        // always advertised.
-        assert!(should_advertise_codel_api_key(false, models.values()));
-        assert!(should_advertise_codel_api_key(true, models.values()));
+        assert!(
+            should_advertise_codel_api_key_with_env_ok(false, models.values(), false),
+            "BYOK must not depend on the first-party env probe"
+        );
     }
 
-    // -- legacy session-token regression coverage ------------------------
-    //
-    // A legacy login produces a CodelAuth with `auth_mode: WebLogin`,
-    // `oidc_issuer: None`, and no `expires_at` (30-day hardcoded TTL).
-    // When this token is present via the `CODEL_AUTH` env var (or via legacy
-    // scope fallback in auth.json), `AuthManager::new` returns it from
-    // `current()`, feeding `has_cached_token = true` into `build_auth_methods`.
-    // This puts `cached_token` first so `startup_auth_metadata()` returns
-    // `needs_login = false` -- legacy users get frictionless auth, no login
-    // screen.
-    //
-    // This test pins the env-var path (highest priority in AuthManager) end-
-    // to-end. A regression in CODEL_AUTH JSON parsing or in auth method
-    // ordering would send legacy-token users to the login screen.
+    /// Legacy `CODEL_CODE_CODEL_API_KEY` env var is accepted as a fallback when `CODEL_API_KEY` is not set, so existing deployments keep working.
+    #[test]
+    #[serial]
+    fn legacy_env_var_fallback_advertises_codel_api_key() {
+        let _unset_new = EnvGuard::unset(CODEL_API_KEY_ENV_VAR);
+        let _set_legacy = EnvGuard::set(LEGACY_CODEL_API_KEY_ENV_VAR, "codel-legacy-key");
+        assert!(has_codel_api_key_env());
+        assert_eq!(read_codel_api_key_env().unwrap(), "codel-legacy-key");
 
-    /// END-TO-END REGRESSION TEST: a legacy auth token (WebLogin, no
-    /// expires_at) present in the `CODEL_AUTH` env var, with no other auth
-    /// available, MUST be loaded by `AuthManager` and cause `build_auth_methods`
-    /// to advertise `cached_token` first. The pager therefore skips the login
-    /// screen (frictionless legacy auth). This behavior works; the test
-    /// prevents regressions.
+        let cfg = Config::default();
+        let models = resolve_model_list(&cfg, None);
+        let has_external_api_key = should_advertise_codel_api_key(false, models.values());
+        assert!(has_external_api_key);
+    }
+
+    /// When both `CODEL_API_KEY` and `CODEL_CODE_CODEL_API_KEY` are set, the new name takes precedence.
+    #[test]
+    #[serial]
+    fn new_env_var_takes_precedence_over_legacy() {
+        let _new = EnvGuard::set(CODEL_API_KEY_ENV_VAR, "new-key");
+        let _legacy = EnvGuard::set(LEGACY_CODEL_API_KEY_ENV_VAR, "old-key");
+        assert_eq!(read_codel_api_key_env().unwrap(), "new-key");
+    }
+
+    // -- codel login --legacy regression coverage ------------------------ `codel login --legacy` produces a CodelAuth with `auth_mode: WebLogin`, `oidc_issuer: None`, and no `expires_at` (30-day hardcoded TTL)
+    // When this token is in the `CODEL_AUTH` env var (or the legacy scope fallback in auth.json), `AuthManager::new` returns it from `current()`
+    // That feeds `has_cached_token = true` into `build_auth_methods`, which puts `cached_token` first `startup_auth_metadata()` then returns `needs_login = false`: legacy users get frictionless auth, no login screen This test pins the env-var path (highest priority in AuthManager) end-to-end
+
+    /// END-TO-END REGRESSION TEST for a legacy auth token (WebLogin, no expires_at) in the `CODEL_AUTH` env var with no other auth available.
+    /// `AuthManager` MUST load it and `build_auth_methods` must advertise `cached_token` first.
+    /// The pager therefore skips the login screen (frictionless legacy auth).
     #[test]
     #[serial]
     fn codel_login_legacy_token_does_not_require_login() {
-        use crate::auth::{AuthManager, AuthMode, CodelAuth, CodelComConfig};
+        use codel_login::{AuthManager, AuthMode, CodelAuth, CodelComConfig};
 
         // Ensure clean slate for "no other auth available".
         let _g1 = EnvGuard::unset("CODEL_AUTH_PATH");
+        let _g2 = EnvGuard::unset(CODEL_API_KEY_ENV_VAR);
 
-        // Construct a legacy-style token exactly as a legacy login
-        // produces: WebLogin mode, no OIDC fields, no refresh_token, no
-        // expires_at (is_expired falls back to 30-day age check).
+        // Construct a legacy-style token exactly as `codel login --legacy` produces it
+        // That means WebLogin mode, no OIDC fields, no refresh_token, no expires_at (is_expired falls back to the 30-day age check)
         let legacy_token = CodelAuth {
             key: "legacy-relay-token".into(),
-            auth_mode: AuthMode::ApiKey,
+            auth_mode: AuthMode::WebLogin,
             create_time: chrono::Utc::now(),
             user_id: "legacy-user".into(),
             email: Some("legacy@example.com".into()),
+            oidc_issuer: None,
+            oidc_client_id: None,
+            refresh_token: None,
             expires_at: None,
             ..CodelAuth::test_default()
         };
 
-        // Provide it via CODEL_AUTH env var (highest priority code path in
-        // AuthManager::new). This is the "legacy auth token exists in the env"
-        // case with no other auth.
+        // Provide it via the CODEL_AUTH env var (highest priority code path in AuthManager::new)
+        // This is the "legacy auth token exists in the env" case with no other auth
         let legacy_json = serde_json::to_string(&legacy_token).expect("serialize legacy token");
         let _g = EnvGuard::set("CODEL_AUTH", &legacy_json);
 
@@ -888,12 +918,11 @@ mod tests {
             "loaded token must match the one injected via env",
         );
 
-        // derive has_cached_token exactly as initialize() does.
+        // Derive has_cached_token exactly as initialize() does
         let has_cached_token = mgr.current().is_some();
         assert!(has_cached_token);
 
-        // With only this legacy token (no codel api key), first method must be
-        // cached_token so pager skips login screen.
+        // With only this legacy token (no codel api key), the first method must be cached_token so the pager skips the login screen
         let built = build_auth_methods(AuthMethodsBuildInputs {
             has_external_api_key: false,
             has_cached_token,
@@ -907,7 +936,10 @@ mod tests {
              (pager startup_auth_metadata returns needs_login=false)",
         );
         assert!(
-            !AuthMethodKind::from_id(built.methods[0].id()).needs_interactive_login(),
+            built
+                .methods
+                .first()
+                .is_some_and(|m| !AuthMethodKind::from_id(m.id()).needs_interactive_login()),
             "auth_methods.first() MUST NOT need interactive login when legacy token \
              is in env -- prevents login screen regression",
         );
@@ -920,15 +952,13 @@ mod tests {
         );
     }
 
-    /// Negative case for the legacy flow: when auth.json does NOT contain a
-    /// legacy-scope entry, AuthManager::current() is None,
-    /// has_cached_token is false, and build_auth_methods advertises only
-    /// the login method. This pins the predicate's "no" answer so the test
-    /// above isn't trivially passing.
+    /// Negative case for the legacy flow: when auth.json does NOT contain a legacy-scope entry, AuthManager::current() is None.
+    /// has_cached_token is then false and build_auth_methods advertises only the login method.
+    /// This pins the predicate's "no" answer so the test above isn't trivially passing.
     #[test]
     #[serial]
     fn no_legacy_token_means_no_cached_token_advertised() {
-        use crate::auth::{AuthManager, CodelComConfig};
+        use codel_login::{AuthManager, CodelComConfig};
 
         let _g1 = EnvGuard::unset("CODEL_AUTH");
         let _g2 = EnvGuard::unset("CODEL_AUTH_PATH");

@@ -1,22 +1,31 @@
-//! Wire e2e + pure tests for user-facing API error sanitization.
+//! Wire e2e and pure tests for user-facing API error sanitization.
 //!
-//! Edge proxies return non-JSON bodies (HTML). Those must never reach TUI
-//! scrollback; only structured JSON error envelopes and status-based copy.
+//! Edge proxies return non-JSON bodies (HTML).
+//! Those must never reach TUI scrollback; only structured JSON error envelopes and status-based copy.
 
 use std::sync::Arc;
 
 use codel_sampler::{SamplerConfig, SamplingClient};
 use codel_sampling_types::{
-    ContentPart, ConversationItem, ConversationRequest, UserItem, status_user_message,
-    user_facing_api_error_message,
+    ContentPart, ConversationItem, ConversationRequest, SamplingError, UserItem,
+    status_user_message, user_facing_api_error_message,
 };
 use codel_test_support::{MockInferenceServer, ScriptedResponse};
 
 const CF_524_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en-US">
-<head><title>codel.com | 524: A timeout occurred</title></head>
+<head><title>codel.dev | 524: A timeout occurred</title></head>
 <body>
   <h1>A timeout occurred <span>Error code 524</span></h1>
+  <div>Visit cloudflare.com for more information.</div>
+</body>
+</html>"#;
+
+const CF_522_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en-US">
+<head><title>codel.dev | 522: Connection timed out</title></head>
+<body>
+  <h1>Connection timed out <span>Error code 522</span></h1>
   <div>Visit cloudflare.com for more information.</div>
 </body>
 </html>"#;
@@ -65,6 +74,18 @@ async fn stream_524_html_uses_status_copy() {
     assert!(s.contains("524"));
 }
 
+/// The edge once served a 522 HTML page while the origin was gone and the turn died.
+/// The status has to survive the HTML body so retry can see it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_522_html_is_a_retryable_api_error() {
+    let err = stream_err(522, CF_522_HTML).await;
+    match &err {
+        SamplingError::Api { status, .. } => assert_eq!(status.as_u16(), 522),
+        other => panic!("expected Api error, got {other:?}"),
+    }
+    assert!(err.is_retryable(), "CF 522 off the wire must be retryable");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_503_html_uses_unavailable_copy() {
     let err = stream_err(503, "<html><body>Service Unavailable</body></html>").await;
@@ -90,6 +111,10 @@ fn status_user_message_matrix() {
         (504, "temporarily unavailable"),
         (520, "timed out"),
         (524, "timed out"),
+        (530, "timed out"),
+        (525, "Secure connection"),
+        (526, "Secure connection"),
+        (529, "overloaded"),
         (500, "Something went wrong on the server"),
         (400, "Request failed"),
     ];

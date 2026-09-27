@@ -1,4 +1,4 @@
-//! Jujutsu extension handlers — delegates to [`codel_workspace::session::jj`].
+//! Jujutsu extension handlers; delegates to [`codel_workspace::session::jj`].
 
 use agent_client_protocol as acp;
 
@@ -9,7 +9,7 @@ use codel_workspace::session::jj;
 /// Handle a `codel/git/*` method for a jj-colocated repo.
 ///
 /// Returns `Some(result)` if handled, `None` to fall through to git.
-pub async fn try_handle(
+pub(crate) async fn try_handle(
     method: &str,
     git_root: &std::path::Path,
     raw_params: &serde_json::value::RawValue,
@@ -17,12 +17,11 @@ pub async fn try_handle(
     match method {
         "codel/git/status" => Some(to_ext_response(jj::status(git_root).await)),
         "codel/git/info" => Some(to_ext_response(jj::info(git_root).await)),
-        // git HEAD points at `@-` in a colocated repo; route to jj so we report
-        // the working-copy commit (`@`), consistent with `status`/`info`.
+        // git HEAD points at `@-` in a colocated repo; route to jj so we report the working-copy commit (`@`), consistent with `status`/`info`
         "codel/git/current_commit" => Some(to_ext_response(jj::current_commit(git_root).await)),
         "codel/git/branches" => Some(to_ext_response(jj::list_bookmarks(git_root).await)),
 
-        // jj has no staging area — stage/unstage are no-ops
+        // jj has no staging area: stage/unstage are no-ops
         "codel/git/stage" => Some(to_ext_response(Ok(StageData { paths: Vec::new() }))),
         "codel/git/stage/content" | "codel/git/unstage" => Some(to_ext_response(Ok(Empty {}))),
 

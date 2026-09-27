@@ -31,18 +31,9 @@ impl WorktreeHintMode {
         }
     }
 
-    pub fn as_config_str(self) -> &'static str {
-        match self {
-            Self::Ask => "ask",
-            Self::Always => "always",
-            Self::Never => "never",
-        }
-    }
-
     /// Returns `(new_session_worktree_mode, fork_worktree_mode)`.
-    ///
-    /// - `/new`: `new_session_worktree_mode`, else legacy `worktree_mode`, else `Never`.
-    /// - `/fork`: `fork_worktree_mode`, else legacy `worktree_mode`, else `Ask`.
+    /// `/new`: `new_session_worktree_mode`, else legacy `worktree_mode`, else `Never`.
+    /// `/fork`: `fork_worktree_mode`, else legacy `worktree_mode`, else `Ask`.
     pub fn resolve_pair(hints: Option<&TomlValue>) -> (Self, Self) {
         let get_str = |key: &str| -> Option<Self> {
             hints
@@ -61,13 +52,9 @@ impl WorktreeHintMode {
     }
 }
 
-/// Resolved `[hints]` UI opt-outs (TUI "don't ask again" and related).
-///
-/// Read via effective config merge when available; falls back to partial layer
-/// merge so a bad user `config.toml` does not drop managed/requirements hints.
+/// Resolved `[hints]` worktree preferences for `/new` and `/fork`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedHints {
-    pub project_picker_disabled: bool,
     pub new_session_worktree_mode: WorktreeHintMode,
     pub fork_worktree_mode: WorktreeHintMode,
 }
@@ -75,7 +62,6 @@ pub struct ResolvedHints {
 impl Default for ResolvedHints {
     fn default() -> Self {
         Self {
-            project_picker_disabled: false,
             new_session_worktree_mode: WorktreeHintMode::Never,
             fork_worktree_mode: WorktreeHintMode::Ask,
         }
@@ -84,22 +70,15 @@ impl Default for ResolvedHints {
 
 impl ResolvedHints {
     fn from_hints_table(hints: Option<&TomlValue>) -> Self {
-        let hint_bool = |key: &str| -> bool {
-            hints
-                .and_then(|h| h.get(key))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        };
         let (new_session, fork) = WorktreeHintMode::resolve_pair(hints);
         Self {
-            project_picker_disabled: hint_bool("project_picker_disabled"),
             new_session_worktree_mode: new_session,
             fork_worktree_mode: fork,
         }
     }
 }
 
-/// Resolved per-tip contextual-hint gates (one bool per tip). Defaults all on.
+/// Resolved per-tip contextual-hint gates. Defaults all on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedContextualHints {
     pub undo: bool,
@@ -108,6 +87,7 @@ pub struct ResolvedContextualHints {
     pub send_now: bool,
     pub small_screen: bool,
     pub word_select: bool,
+    pub export_copy: bool,
     pub ssh_wrap: bool,
 }
 
@@ -120,16 +100,14 @@ impl Default for ResolvedContextualHints {
             send_now: true,
             small_screen: true,
             word_select: true,
+            export_copy: true,
             ssh_wrap: true,
         }
     }
 }
 
-/// Resolve the per-tip contextual-hint gates. Per tip the precedence is:
-/// env master `CODEL_CONTEXTUAL_HINTS` (all-on/off) > user config
-/// `[ui.contextual_hints].X` > remote settings `contextual_hints.X` >
-/// default ON. User-explicit beats the remote tier (which only sets the
-/// default / soft-disables); the env master is a global kill/force switch.
+/// Per tip, the env master `CODEL_CONTEXTUAL_HINTS` (all-on/off) beats user config `[ui.contextual_hints].X`.
+/// User config beats the remote tier `contextual_hints.X` (which only sets the default or soft-disables), and that beats the default ON.
 pub fn resolve_contextual_hints(
     ui: &ContextualHints,
     remote: Option<&ContextualHintsRemote>,
@@ -150,37 +128,30 @@ pub fn resolve_contextual_hints(
         send_now: resolve_tip(ui.send_now, remote.and_then(|r| r.send_now)),
         small_screen: resolve_tip(ui.small_screen, remote.and_then(|r| r.small_screen)),
         word_select: resolve_tip(ui.word_select, remote.and_then(|r| r.word_select)),
+        export_copy: resolve_tip(ui.export_copy, remote.and_then(|r| r.export_copy)),
         ssh_wrap: resolve_tip(ui.ssh_wrap, remote.and_then(|r| r.ssh_wrap)),
     }
 }
 
-/// Merge config layers in effective-config order (system managed → managed →
-/// user → requirements). Used when [`load_effective_config`] fails but some
-/// layers still loaded (same pattern as tips/announcements).
 fn merge_hints_config_layers(
     requirements: Option<&TomlValue>,
     user: Option<&TomlValue>,
     managed: Option<&TomlValue>,
 ) -> TomlValue {
-    let mut merged = crate::config::load_system_managed_config()
-        .unwrap_or_else(|_| TomlValue::Table(TomlMap::new()));
-    if let Some(m) = managed {
-        codel_config::deep_merge_toml(&mut merged, m);
-    }
-    if let Some(u) = user {
-        codel_config::deep_merge_toml(&mut merged, u);
-    }
-    if let Some(r) = requirements {
-        codel_config::deep_merge_toml(&mut merged, r);
-    }
-    merged
+    let empty = || TomlValue::Table(TomlMap::new());
+    let layers = crate::config::ConfigLayers {
+        system_managed: crate::config::load_system_managed_config().unwrap_or_else(|_| empty()),
+        managed: managed.cloned().unwrap_or_else(empty),
+        user: user.cloned().unwrap_or_else(empty),
+        env_overlay: crate::config::resolved_env_overlay().map(|o| o.value),
+        user_requirements: requirements.cloned(),
+        ..Default::default()
+    };
+    layers.effective_config_base()
 }
 
-/// Resolve `[hints]` from effective config or partial layer merge.
-///
-/// Prefer passing a pre-loaded `effective_config` when startup already called
-/// [`crate::config::load_effective_config`]. When it is `None`, merges the
-/// same layers tips/announcements use so managed/requirements still apply.
+/// Prefer passing a pre-loaded `effective_config` when startup already called [`crate::config::load_effective_config`].
+/// When it is `None`, this merges the same layers tips/announcements use so managed/requirements still apply.
 pub fn resolve_hints(
     effective_config: Option<&TomlValue>,
     requirements: Option<&TomlValue>,
@@ -193,31 +164,23 @@ pub fn resolve_hints(
     ResolvedHints::from_hints_table(root.get("hints"))
 }
 
-/// Load config from disk and resolve `[hints]`.
-pub fn resolve_hints_from_disk() -> ResolvedHints {
-    let effective = crate::config::load_effective_config().ok();
-    let requirements = crate::config::load_merged_requirements();
-    let user = crate::config::load_from_disk().ok();
-    let managed = crate::config::load_managed_config().ok();
-    resolve_hints(
-        effective.as_ref(),
-        requirements.as_ref(),
-        user.as_ref(),
-        managed.as_ref(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn resolve_hints_requirements_overrides_user_when_effective_missing() {
-        let user: TomlValue = toml::from_str("[hints]\nproject_picker_disabled = false\n").unwrap();
+        let user: TomlValue = toml::from_str("[hints]\nfork_worktree_mode = \"never\"\n").unwrap();
         let requirements: TomlValue =
-            toml::from_str("[hints]\nproject_picker_disabled = true\n").unwrap();
+            toml::from_str("[hints]\nfork_worktree_mode = \"always\"\n").unwrap();
         let resolved = resolve_hints(None, Some(&requirements), Some(&user), None);
-        assert!(resolved.project_picker_disabled);
+        assert_eq!(resolved.fork_worktree_mode, WorktreeHintMode::Always);
+        assert_eq!(resolved.new_session_worktree_mode, WorktreeHintMode::Never);
+    }
+
+    #[test]
+    fn resolve_hints_defaults_differ_per_command() {
+        let resolved = resolve_hints(None, None, None, None);
         assert_eq!(resolved.new_session_worktree_mode, WorktreeHintMode::Never);
         assert_eq!(resolved.fork_worktree_mode, WorktreeHintMode::Ask);
     }
@@ -225,15 +188,15 @@ mod tests {
     #[test]
     fn resolve_hints_uses_effective_root_when_provided() {
         let effective: TomlValue =
-            toml::from_str("[hints]\nproject_picker_disabled = true\n").unwrap();
+            toml::from_str("[hints]\nnew_session_worktree_mode = \"always\"\n").unwrap();
         let resolved = resolve_hints(Some(&effective), None, None, None);
-        assert!(resolved.project_picker_disabled);
+        assert_eq!(resolved.new_session_worktree_mode, WorktreeHintMode::Always);
     }
 
     const ENV_CONTEXTUAL_HINTS: &str = "CODEL_CONTEXTUAL_HINTS";
 
-    // `CODEL_CONTEXTUAL_HINTS` is process-global; serialize the tests reading it
-    // and force it unset so a developer's shell value can't make them flaky.
+    // `CODEL_CONTEXTUAL_HINTS` is process-global
+    // Serialize the tests reading it and force it unset so a developer's shell value can't make them flaky
     static CONTEXTUAL_HINTS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn contextual_hints_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -248,16 +211,16 @@ mod tests {
         undo: Option<bool>,
         plan_mode: Option<bool>,
         image_input: Option<bool>,
-        send_now: Option<bool>,
         word_select: Option<bool>,
     ) -> ContextualHintsRemote {
         ContextualHintsRemote {
             undo,
             plan_mode,
             image_input,
-            send_now,
+            send_now: None,
             small_screen: None,
             word_select,
+            export_copy: None,
             ssh_wrap: None,
         }
     }
@@ -272,13 +235,13 @@ mod tests {
         assert!(resolved.send_now, "send_now defaults ON");
         assert!(resolved.small_screen, "small_screen defaults ON");
         assert!(resolved.word_select, "word_select defaults ON");
+        assert!(resolved.export_copy, "export_copy defaults ON");
         assert!(resolved.ssh_wrap, "ssh_wrap defaults ON");
     }
 
     #[test]
     fn contextual_hints_config_opts_out_per_tip() {
         let _g = contextual_hints_guard();
-        // User disables only the undo tip; the others stay on.
         let ui = ContextualHints {
             undo: Some(false),
             ..ContextualHints::default()
@@ -290,18 +253,18 @@ mod tests {
         assert!(resolved.send_now);
         assert!(resolved.small_screen);
         assert!(resolved.word_select);
+        assert!(resolved.export_copy);
         assert!(resolved.ssh_wrap);
     }
 
     #[test]
     fn contextual_hints_remote_tier_controls_default_per_tip() {
         let _g = contextual_hints_guard();
-        // Remote disables plan_mode + ssh_wrap; absent tips fall through to
-        // default ON. Setting two distinct fields also catches a cross-wired
-        // resolver line (reading one remote field into another's gate).
+        // Disabling two distinct fields catches a cross-wired resolver line (reading one remote field into another's gate)
         let r = ContextualHintsRemote {
             ssh_wrap: Some(false),
-            ..remote(None, Some(false), None, None, None)
+            export_copy: Some(false),
+            ..remote(None, Some(false), None, None)
         };
         let resolved = resolve_contextual_hints(&ContextualHints::default(), Some(&r));
         assert!(resolved.undo, "absent remote tip → default ON");
@@ -309,18 +272,21 @@ mod tests {
         assert!(resolved.image_input);
         assert!(resolved.send_now);
         assert!(resolved.word_select);
+        assert!(
+            !resolved.export_copy,
+            "remote `false` soft-disables export_copy"
+        );
         assert!(!resolved.ssh_wrap, "remote `false` soft-disables ssh_wrap");
     }
 
     #[test]
     fn contextual_hints_config_true_overrides_remote_disable() {
         let _g = contextual_hints_guard();
-        // Explicit user opt-in beats a remote `false` (the disable tier).
         let ui = ContextualHints {
             image_input: Some(true),
             ..ContextualHints::default()
         };
-        let r = remote(None, None, Some(false), None, None);
+        let r = remote(None, None, Some(false), None);
         let resolved = resolve_contextual_hints(&ui, Some(&r));
         assert!(
             resolved.image_input,
@@ -332,7 +298,6 @@ mod tests {
     fn contextual_hints_env_master_forces_all_on() {
         let _g = contextual_hints_guard();
         unsafe { std::env::set_var(ENV_CONTEXTUAL_HINTS, "1") };
-        // User + remote both disable every tip; the env master forces all on.
         let ui = ContextualHints {
             undo: Some(false),
             plan_mode: Some(false),
@@ -340,15 +305,10 @@ mod tests {
             send_now: Some(false),
             small_screen: Some(false),
             word_select: Some(false),
+            export_copy: Some(false),
             ssh_wrap: Some(false),
         };
-        let r = remote(
-            Some(false),
-            Some(false),
-            Some(false),
-            Some(false),
-            Some(false),
-        );
+        let r = remote(Some(false), Some(false), Some(false), Some(false));
         let resolved = resolve_contextual_hints(&ui, Some(&r));
         assert!(
             resolved.undo
@@ -357,6 +317,7 @@ mod tests {
                 && resolved.send_now
                 && resolved.small_screen
                 && resolved.word_select
+                && resolved.export_copy
                 && resolved.ssh_wrap
         );
         unsafe { std::env::remove_var(ENV_CONTEXTUAL_HINTS) };
@@ -366,7 +327,6 @@ mod tests {
     fn contextual_hints_env_master_zero_forces_all_off() {
         let _g = contextual_hints_guard();
         unsafe { std::env::set_var(ENV_CONTEXTUAL_HINTS, "0") };
-        // User + remote both enable; the env master forces all off (global kill).
         let ui = ContextualHints {
             undo: Some(true),
             plan_mode: Some(true),
@@ -374,9 +334,10 @@ mod tests {
             send_now: Some(true),
             small_screen: Some(true),
             word_select: Some(true),
+            export_copy: Some(true),
             ssh_wrap: Some(true),
         };
-        let r = remote(Some(true), Some(true), Some(true), Some(true), Some(true));
+        let r = remote(Some(true), Some(true), Some(true), Some(true));
         let resolved = resolve_contextual_hints(&ui, Some(&r));
         assert!(
             !resolved.undo
@@ -385,6 +346,7 @@ mod tests {
                 && !resolved.send_now
                 && !resolved.small_screen
                 && !resolved.word_select
+                && !resolved.export_copy
                 && !resolved.ssh_wrap
         );
         unsafe { std::env::remove_var(ENV_CONTEXTUAL_HINTS) };

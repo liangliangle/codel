@@ -2,12 +2,12 @@
 
 Bring Codel into your terminal. Fast, flicker-free CLI built for plans, subagents, and parallel work.
 
-**[Homepage](https://codel.dev/cli)** | **[Documentation](https://docs.codel.dev/build/overview)**
+**[Homepage](https://codel/cli)** | **[Documentation](https://docs.codel/build/overview)**
 
 ## Install
 
 ```bash
-curl -fsSL https://codel.dev/cli/install.sh | bash
+curl -fsSL https://codel/cli/install.sh | bash
 ```
 
 Or install with npm:
@@ -54,7 +54,7 @@ npm i -g @codel-official/codel@latest
 
 ## Documentation
 
-For full documentation including configuration, MCP servers, custom models, headless mode, agent mode, and more, visit [docs.codel.dev/build/overview](https://docs.codel.dev/build/overview).
+For full documentation including configuration, MCP servers, custom models, headless mode, agent mode, and more, visit [docs.codel/build/overview](https://docs.codel/build/overview).
 
 ## Feedback
 

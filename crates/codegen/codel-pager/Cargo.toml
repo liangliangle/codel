@@ -1,6 +1,6 @@
 [package]
 name = "codel-pager"
-version = "0.2.112"
+version = "1.0.41"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["Codel"]
@@ -17,6 +17,12 @@ codel-prompt-queue = { workspace = true }
 # Presentation-primitives layer (extracted)
 codel-pager-render = { path = "../codel-pager-render" }
 
+# The /gboom easter-egg game (extracted)
+codel-gboom = { path = "../codel-gboom" }
+
+# Diff hunk construction (extracted)
+codel-pager-diff = { path = "../codel-pager-diff" }
+
 # Rendering
 ratatui = { workspace = true, features = ["crossterm", "unstable-widget-ref"] }
 codel-announcements = { workspace = true }
@@ -26,7 +32,6 @@ regex = { workspace = true }
 unicode-width = { workspace = true }
 unicode-segmentation = { workspace = true }
 strip-ansi-escapes = { workspace = true }
-enum_delegate = { workspace = true }
 
 # Markdown / syntax highlighting
 codel-markdown = { workspace = true }
@@ -42,6 +47,7 @@ indexmap = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+strum = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true, features = ["serde"] }
 
@@ -52,8 +58,8 @@ ansi-to-tui = { workspace = true }
 portable-pty = "0.9"
 
 # Utilities
-derive_more = { workspace = true, features = ["deref", "deref_mut"] }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 shlex = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
@@ -67,7 +73,9 @@ tokio = { workspace = true, features = [
     "io-util",
     "io-std",
 ] }
+tokio-stream = { workspace = true, optional = true }
 tokio-util = { workspace = true, features = ["compat"] }
+tempfile = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
@@ -89,18 +97,36 @@ codel-update = { path = "../codel-update" }
 # ACP
 agent-client-protocol = { workspace = true }
 codel-acp-lib = { workspace = true }
+codel-chat-state = { path = "../codel-chat-state", optional = true }
 codel-file-utils = { path = "../codel-file-utils" }
+# Crash-recovery registry of open TUI sessions.
+codel-active-sessions = { workspace = true }
 codel-config = { workspace = true }
+codel-feedback = { workspace = true }
+codel-sampling-types = { path = "../codel-sampling-types", optional = true }
+codel-tool-types = { workspace = true }
+codel-dirs = { workspace = true }
+codel-dashboard-store = { workspace = true }
 # Voice dictation. `audio` (mic capture) is enabled on every target. On
 # macOS/Windows it links cpal; on Linux it compiles a subprocess-recorder
 # backend instead, so cpal -> alsa-sys never reaches the static musl binary
 # (cpal is target-gated to non-Linux inside codel-voice).
 codel-voice = { path = "../codel-voice", default-features = false, features = ["audio"] }
+codel-login = { workspace = true }
 codel-shell = { workspace = true }
 codel-mcp = { workspace = true }
+# The status-line contract: the config the user writes and the payload the
+# agent sends. A leaf crate rather than the agent's, so the client reads it
+# from upstream of the crate that fills it in.
+codel-status-line = { workspace = true }
 codel-workspace = { workspace = true }
+# Foreign coding-agent session discovery.
+codel-foreign-sessions = { workspace = true }
 codel-token-estimation = { workspace = true }
+codel-logging = { workspace = true }
+codel-otel = { workspace = true }
 codel-fast-worktree = { path = "../codel-fast-worktree", features = ["metadata"] }
+gethostname = { workspace = true, optional = true }
 backon = { workspace = true }
 chrono = { workspace = true }
 flate2 = { workspace = true }
@@ -108,8 +134,10 @@ tar = { workspace = true }
 codel-tools = { workspace = true }
 codel-agent = { workspace = true }
 codel-plugin-marketplace = { path = "../codel-plugin-marketplace" }
+# Blocked-card copy: `hook_display_name` lives next to the hook-name grammar.
+codel-hooks = { path = "../codel-hooks" }
 codel-hooks-plugins-types = { path = "../codel-hooks-plugins-types" }
-wait-timeout = { workspace = true }
+walkdir = { workspace = true }
 codel-sandbox = { path = "../codel-sandbox", default-features = false }
 
 # Base64 encoding for image data
@@ -119,10 +147,9 @@ base64 = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "webp"] }
 
 # ID generation
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true, features = ["v4", "v7"] }
 
 # Path computation (plan file, etc.)
-dirs = { workspace = true }
 shellexpand = "3.1"
 
 # libgit2 for the startup git-info populator (no fork/exec, runs once on launch
@@ -161,28 +188,27 @@ core-foundation = { workspace = true }
 windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [dev-dependencies]
-# Enable the render crate's test-only helpers for the pager's test build.
+tokio = { workspace = true, features = ["test-util"] }
+codel-interjection-core = { workspace = true }
+# The fixture that builds a `[ui.status_line]` section field by field.
+codel-status-line = { workspace = true, features = ["test-support"] }
 codel-pager-render = { path = "../codel-pager-render", features = ["test-support"] }
+codel-ratatui-inline = { workspace = true, features = ["test-support"] }
+codel-gboom = { path = "../codel-gboom", features = ["test-support"] }
+codel-login = { workspace = true, features = ["test-support"] }
+codel-shell = { workspace = true, features = ["test-support"] }
 pretty_assertions = { workspace = true }
+wiremock = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
 tempfile = { workspace = true }
 serial_test = { workspace = true }
 codel-agent = { workspace = true }
-codel-pager-pty-harness = { path = "../codel-pager-pty-harness" }
 # In-process leader-cluster harness (mock inference server; no cycle:
 # codel-test-support depends on neither the pager nor the shell).
 codel-test-support = { workspace = true, features = [] }
-# Ring CryptoProvider install for the in-process leader-cluster tests. Explicit
-# spec mirroring the shell's, NOT `workspace = true`: the workspace pin enables
-# aws-lc-rs, under which `rustls::crypto::ring` does not exist. Dev-only — the
-# production lib deliberately dropped rustls (moved to codel-pager-bin).
-rustls = { version = "0.23", default-features = false, features = [
-    "ring",
-    "logging",
-    "std",
-    "tls12",
-] }
+# Provider install for the in-process leader-cluster tests.
+codel-extra-ca = { workspace = true }
 
 [[bench]]
 name = "render"
@@ -196,83 +222,16 @@ harness = false
 name = "edit_highlight"
 harness = false
 
-# PTY integration tests are split into coherent scheduling families. The test
-# modules remain under tests/pty_e2e/; these roots only define which cases share
-# one Cargo/Bazel process. All cases stay #[ignore]d for ordinary Cargo runs.
-# Selected Cargo runs must provide PAGER_BINARY; Bazel wires the sibling binary.
-[[test]]
-name = "doctor_early_dispatch"
-path = "tests/doctor_early_dispatch.rs"
-
-[[test]]
-name = "pty_e2e_smoke"
-path = "tests/pty_e2e_smoke.rs"
-
-[[test]]
-name = "pty_e2e_queue"
-path = "tests/pty_e2e_queue.rs"
-
-[[test]]
-name = "pty_e2e_scroll_selection"
-path = "tests/pty_e2e_scroll_selection.rs"
-
-[[test]]
-name = "pty_e2e_minimal"
-path = "tests/pty_e2e_minimal.rs"
-
-[[test]]
-name = "pty_e2e_config_ui"
-path = "tests/pty_e2e_config_ui.rs"
-
-[[test]]
-name = "pty_e2e_shell_tools"
-path = "tests/pty_e2e_shell_tools.rs"
-
-[[test]]
-name = "pty_e2e_persistence"
-path = "tests/pty_e2e_persistence.rs"
-
-[[test]]
-name = "pty_e2e_clipboard"
-path = "tests/pty_e2e_clipboard.rs"
-
-# Leader-mode PTY e2e — split from ordinary PTY families so multi-process
-# cluster bring-up never contends with their bounded pools.
-[[test]]
-name = "leader_pty_e2e"
-path = "tests/leader_pty_e2e/mod.rs"
+[[bench]]
+name = "resize"
+harness = false
 
 # Settings modal regression tests — keyboard/mouse dispatch + registry
 # contracts. Not gated by `--ignored`; runs on every `cargo test`.
+# Spawn-only pager tests live in `codel-pager-pty-harness`.
 [[test]]
 name = "settings_e2e"
 path = "tests/settings_e2e.rs"
-
-# Declarative scripted TUI scenarios — opt-in because they spawn the real pager.
-[[test]]
-name = "scripted_scenarios"
-path = "tests/scripted_scenarios.rs"
-
-# Permission Auto mode PTY e2e (Shift+Tab → Auto banner via PtyHarness).
-[[test]]
-name = "pty_auto_mode"
-path = "tests/pty_auto_mode.rs"
-
-[[bin]]
-name = "mouse-events-playground"
-path = "src/bin/mouse_events_playground.rs"
-
-[[bin]]
-name = "scrollback-selection-playground"
-path = "src/bin/scrollback_selection_playground.rs"
-
-[[bin]]
-name = "question-view-playground"
-path = "src/bin/question_view_playground.rs"
-
-[[bin]]
-name = "todo-pane-playground"
-path = "src/bin/todo_pane_playground.rs"
 
 # Opt into [workspace.lints.clippy] (too_many_arguments etc.). Without this,
 # `cargo clippy --workspace -- -D warnings` on this package is stricter than
@@ -286,7 +245,9 @@ default-bazel = [
     "jemalloc",
     "sandbox-enforce",
     "test-support",
+    "local-workspace",
     ]
+local-workspace = ["codel-shell/local-workspace"]
 # No-op on this crate: the actual `#[global_allocator]` (and the
 # `tikv-jemallocator` dep) live on the composition-root binary
 # `codel-pager-bin`, which owns `main.rs`. Kept as an empty feature so the
@@ -298,4 +259,4 @@ release-dist = []
 # Exposes test-only view-model constructors/setters (e.g. `test_agent_view`,
 # `AgentSession::set_yolo_mode_for_test`) to sibling crates' test builds — used
 # by `codel-pager-minimal`'s unit tests. Never enabled in production builds.
-test-support = ["codel-pager-render/test-support"]
+test-support = ["codel-pager-render/test-support", "codel-gboom/test-support"]

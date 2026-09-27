@@ -16,18 +16,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Declare our custom cfg to the compiler so cfg(bundle_rg) is recognized by lints
     println!("cargo:rustc-check-cfg=cfg(bundle_rg)");
 
-    // Decide whether to bundle: path override OR release build. Bail before
-    // touching the filesystem so debug `cargo check` needs no environment.
+    // Bundle when a path override is set or this is a release build
+    // Bail before touching the filesystem so debug `cargo check` needs no environment
     let path_override = env::var("CODEL_SHELL_BUNDLE_RG_PATH").ok();
     let is_release = env::var("PROFILE").as_deref() == Ok("release");
     if path_override.is_none() && !is_release {
         return Ok(());
     }
 
-    // In Bazel builds, write into OUT_DIR (which is writable) rather than
-    // CODEL_ROOT/target/tmp (which is read-only inside the sandbox). Outside
-    // Bazel, prefer CODEL_ROOT's shared cache dir (monorepo behavior) and fall
-    // back to OUT_DIR for standalone checkouts where CODEL_ROOT is not a thing.
+    // In Bazel builds, write into OUT_DIR; CODEL_ROOT/target/tmp is read-only inside the sandbox
+    // Outside Bazel, prefer CODEL_ROOT's shared cache dir and fall back to OUT_DIR for standalone checkouts where CODEL_ROOT is unset
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let in_bazel = is_bazel_build(&manifest_dir);
     let gen_dir = if in_bazel {
@@ -40,22 +38,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     fs::create_dir_all(&gen_dir)?;
 
-    // Skip auto-bundling on Windows: ripgrep ships .zip there (not .tar.gz)
-    // and we do not yet have a zip-extraction path. Returning here BEFORE
-    // emitting `cargo:rustc-cfg=bundle_rg` keeps the include_bytes! macros
-    // gated on cfg(bundle_rg) compiled-out, so the runtime falls back to
-    // `rg` on PATH (see src/util/ripgrep.rs::rg_path). Users install via
-    // `winget install BurntSushi.ripgrep.MSVC` or `scoop install ripgrep`.
-    // An explicit CODEL_SHELL_BUNDLE_RG_PATH still bundles on Windows (the
-    // override path below copies any binary regardless of target).
+    // Skip auto-bundling on Windows: ripgrep ships .zip archives there and this script only extracts .tar.gz
+    // Returning before `cargo:rustc-cfg=bundle_rg` keeps the include_bytes! macros compiled out The runtime then falls back to `rg` on PATH (see src/util/ripgrep.rs::rg_path)
+    // Users install via `winget install BurntSushi.ripgrep.MSVC` or `scoop install ripgrep` An explicit CODEL_SHELL_BUNDLE_RG_PATH still bundles on Windows; the override branch below copies any binary regardless of target
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "windows" && path_override.is_none() {
         return Ok(());
     }
 
-    // If a local rg binary is provided, copy it directly (skips target check).
+    // Expose cfg so the crate can include the bundled bytes.
+    println!("cargo:rustc-cfg=bundle_rg");
+    println!("cargo:rustc-env=CODEL_SHELL_RG_VER={}", RG_VER);
+    println!(
+        "cargo:rustc-env=CODEL_SHELL_RG_GEN_DIR={}",
+        gen_dir.display()
+    );
+
+    // If a local rg binary is provided, copy it directly and skip the target check
     if let Some(path) = path_override {
         let dest = gen_dir.join(format!("rg-{}-override.bin", RG_VER));
+        println!("cargo:rustc-env=CODEL_SHELL_RG_TARGET=override");
         let _ = fs::remove_file(&dest);
         fs::copy(PathBuf::from(path.clone()), &dest).map_err(|e| {
             format!(
@@ -63,10 +65,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dest.display()
             )
         })?;
-        println!("cargo:rustc-cfg=bundle_rg");
-        println!("cargo:rustc-env=CODEL_SHELL_RG_VER={}", RG_VER);
-        println!("cargo:rustc-env=CODEL_SHELL_RG_GEN_DIR={}", gen_dir.display());
-        println!("cargo:rustc-env=CODEL_SHELL_RG_TARGET=override");
         return Ok(());
     }
 
@@ -79,16 +77,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("linux", "x86_64") => "x86_64-unknown-linux-musl",
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
         _ => {
-            eprintln!("cargo:warning=Unsupported target for ripgrep bundling: {target_os}-{target_arch}. Skipping; runtime will use rg from PATH.");
-            return Ok(());
+            return Err(format!(
+                "Unsupported target for ripgrep bundling: {os}-{arch}. Set CODEL_SHELL_BUNDLE_RG_PATH to a local rg binary for offline or unsupported builds.",
+                os = target_os,
+                arch = target_arch
+            ).into());
         }
     };
 
+    println!("cargo:rustc-env=CODEL_SHELL_RG_TARGET={}", asset_triple);
     let dest = gen_dir.join(format!("rg-{}-{}.bin", RG_VER, asset_triple));
     let _ = fs::remove_file(&dest);
 
-    // Download base is overridable so sandboxed/offline CI can point at an
-    // internal mirror.
+    // The download base is overridable so sandboxed or offline CI can point at an internal mirror; it defaults to the public GitHub releases URL
+    // Example: CODEL_SHELL_RG_DOWNLOAD_BASE=http://<mirror>/github/BurntSushi/ripgrep/releases/download
     let download_base = env::var("CODEL_SHELL_RG_DOWNLOAD_BASE")
         .unwrap_or_else(|_| "https://github.com/BurntSushi/ripgrep/releases/download".to_string());
     let url = format!(
@@ -98,25 +100,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         t = asset_triple
     );
 
-    let bytes: Vec<u8> = match reqwest::blocking::get(&url) {
-        Ok(resp) if resp.status().is_success() => match resp.bytes() {
-            Ok(b) => b.to_vec(),
-            Err(e) => {
-                eprintln!("cargo:warning=Failed to read ripgrep response: {e}. Skipping bundle; runtime will use rg from PATH.");
-                return Ok(());
-            }
-        },
-        Ok(resp) => {
-            eprintln!("cargo:warning=HTTP {} downloading ripgrep. Skipping bundle; runtime will use rg from PATH.", resp.status());
-            return Ok(());
+    let bytes: Vec<u8> = {
+        let resp = reqwest::blocking::get(&url).map_err(|e| {
+            format!(
+                "Failed to download ripgrep: {}\nSet CODEL_SHELL_BUNDLE_RG_PATH to a local rg for offline builds.",
+                e
+            )
+        })?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "HTTP {} downloading ripgrep. Set CODEL_SHELL_BUNDLE_RG_PATH for offline builds.",
+                resp.status()
+            )
+            .into());
         }
-        Err(e) => {
-            eprintln!("cargo:warning=Failed to download ripgrep: {e}. Skipping bundle; runtime will use rg from PATH.");
-            return Ok(());
-        }
+        resp.bytes()?.to_vec()
     };
 
-    let gz = flate2::read::GzDecoder::new(&bytes[..]);
+    let gz = flate2::read::GzDecoder::new(bytes.as_slice());
     let mut ar = tar::Archive::new(gz);
     let mut found = false;
     for entry in ar.entries()? {
@@ -135,14 +136,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !found {
-        eprintln!("cargo:warning=Could not find 'rg' in ripgrep archive. Skipping bundle; runtime will use rg from PATH.");
-        return Ok(());
+        return Err(format!(
+            "Could not find 'rg' in ripgrep archive {}. Set CODEL_SHELL_BUNDLE_RG_PATH for offline builds.",
+            url
+        )
+        .into());
     }
-
-    println!("cargo:rustc-cfg=bundle_rg");
-    println!("cargo:rustc-env=CODEL_SHELL_RG_VER={}", RG_VER);
-    println!("cargo:rustc-env=CODEL_SHELL_RG_GEN_DIR={}", gen_dir.display());
-    println!("cargo:rustc-env=CODEL_SHELL_RG_TARGET={}", asset_triple);
 
     Ok(())
 }

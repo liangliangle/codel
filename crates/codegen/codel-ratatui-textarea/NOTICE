@@ -1,6 +1,6 @@
-xai-ratatui-textarea is first-party code maintained by xAI for the Grok TUI.
+codel-ratatui-textarea is first-party code maintained by Codel for the Codel TUI.
 
-Copyright 2023-2026 xAI
+Copyright 2023-2026 Codel
 Licensed under the Apache License, Version 2.0 (see the repository root LICENSE).
 
 This crate is not a wholesale redistribution of third-party source. Dependencies

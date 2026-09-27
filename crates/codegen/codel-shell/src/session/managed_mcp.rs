@@ -1,71 +1,31 @@
-//! Shell-side managed MCP: merges MCP server sources, then injects managed
-//! OAuth headers, and binds the extracted credential/catalog machinery to
-//! shell's auth manager.
+//! Shell-side MCP merge: local/plugin/compat sources plus admitted client servers.
+//! Managed connectors exist only via the gateway catalog (`GET /v1/mcp/tools/list`), not as injected `codel_com_*` HTTP servers.
 //!
-//! Merge layers are applied in order; later `insert()` beats earlier
-//! `or_insert()`:
+//! Merge layers are applied in order, keyed by server NAME (two names sharing one URL are distinct servers).
+//! Later `insert()` beats earlier `or_insert()`:
 //!   - config.toml    — seeds the map; `enabled = false` blocks lower layers
 //!   - Plugins        — `or_insert` (won't override config.toml)
 //!   - ~/.claude.json — `or_insert` (imported user/local MCP servers)
 //!   - `.mcp.json`    — `or_insert` (team baseline)
-//!   - Client         — `insert` (always wins)
-//!   - Managed        — header injection + auto-create missing connectors
+//!   - Client         — `insert` (wins except servers rejected by a disabled
+//!                      vendor `mcps` kill switch, which matches by normalized
+//!                      URL; see `admit_client_mcp_servers`)
 //!
-//! The transport/cache/injection core lives in
-//! `codel_shell_session_support::managed_mcp` and is re-exported here so
-//! `crate::session::managed_mcp::…` paths keep resolving unchanged.
+//! The gateway catalog/call core lives in `codel_shell_session_support::managed_mcp`.
+//! It is re-exported here so `crate::session::managed_mcp::…` paths keep resolving unchanged.
 
 pub use codel_shell_session_support::managed_mcp::*;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use agent_client_protocol as acp;
+use codel_workspace::permission::resolution::{
+    McpBlockReason, McpSubject, McpVerdict, PolicySubjectOrigin,
+};
 
-/// Build a [`RefreshContext`] whose token provider resolves fresh tokens from
-/// `auth_manager`; the extracted refresh task never sees the auth manager
-/// itself, only the closure.
-fn refresh_context(
-    proxy_base_url: String,
-    auth_manager: Arc<crate::auth::AuthManager>,
-) -> RefreshContext {
-    RefreshContext {
-        proxy_base_url,
-        token_provider: Arc::new(move || -> TokenFuture {
-            let auth_manager = auth_manager.clone();
-            Box::pin(async move { auth_manager.get_valid_token().await.ok() })
-        }),
-    }
-}
-
-/// Resolve an auth key from `auth_manager` then [`get_or_fetch`] the managed MCP
-/// configs (with a [`RefreshContext`] for proactive refresh). Single source for
-/// the auth-key dance across every managed-config fetch —
-/// [`crate::agent::MvpAgent::get_managed_mcp_configs`], the interactive
-/// folder-trust grant reload, agent-init MCP setup, and the reactive re-auth
-/// re-fetch — so the copies can't drift.
-/// Callers gate on `can_fetch_managed_mcps`/auth before calling.
-pub(crate) async fn fetch_managed_mcp_configs(
-    handle: &ManagedMcpStateHandle,
-    proxy_url: &str,
-    auth_manager: &Arc<crate::auth::AuthManager>,
-) -> Vec<ManagedMcpConfig> {
-    let auth_key = auth_manager
-        .get_valid_token()
-        .await
-        .ok()
-        .or_else(|| auth_manager.current_or_expired().map(|a| a.key));
-    get_or_fetch(
-        handle,
-        proxy_url,
-        auth_key.as_deref(),
-        Some(refresh_context(proxy_url.to_string(), auth_manager.clone())),
-    )
-    .await
-}
-
-/// Dedup key for the merge map: normalized URL for Http/Sse, name for Stdio.
-fn mcp_server_key(s: &acp::McpServer) -> String {
+/// Vendor kill-switch attribution key: normalized URL for Http/Sse (a client re-forwards the same endpoint under any display name), name for Stdio.
+/// Only for [`admit_client_mcp_servers`]; merge/discovery maps key by name.
+fn mcp_vendor_block_key(s: &acp::McpServer) -> String {
     match s {
         acp::McpServer::Http(acp::McpServerHttp { url, .. })
         | acp::McpServer::Sse(acp::McpServerSse { url, .. }) => normalize_url(url),
@@ -85,179 +45,381 @@ pub(crate) fn mcp_server_name(s: &acp::McpServer) -> &str {
     }
 }
 
-pub fn merge_managed_mcp_servers(
+/// Merge/discovery map key: server NAME is the sole merge identity (two names sharing one URL are distinct servers).
+/// Every name-keyed map in this module must derive its key through this helper so merge and discovery keying cannot desynchronize.
+fn mcp_merge_key(s: &acp::McpServer) -> String {
+    mcp_server_name(s).to_string()
+}
+
+/// Whole-definition equality. Not the derived `==` directly: `env`/`headers` come from HashMap
+/// iteration, so two loads of one TOML differ in order; `args` order stays significant.
+fn mcp_server_definitions_equal(a: &acp::McpServer, b: &acp::McpServer) -> bool {
+    canonical_definition(a) == canonical_definition(b)
+}
+
+/// Sort `env` and `headers` by name so map-iteration order cannot change equality or hot-reload diffs.
+pub(crate) fn canonicalize_mcp_maps(server: &mut acp::McpServer) {
+    match server {
+        acp::McpServer::Stdio(s) => s
+            .env
+            .sort_by(|a, b| (&a.name, &a.value).cmp(&(&b.name, &b.value))),
+        acp::McpServer::Http(s) => s
+            .headers
+            .sort_by(|a, b| (&a.name, &a.value).cmp(&(&b.name, &b.value))),
+        acp::McpServer::Sse(s) => s
+            .headers
+            .sort_by(|a, b| (&a.name, &a.value).cmp(&(&b.name, &b.value))),
+        // `McpServer` is #[non_exhaustive]; unknown transports have nothing to canonicalize.
+        _ => {}
+    }
+}
+
+fn canonical_definition(server: &acp::McpServer) -> acp::McpServer {
+    let mut server = server.clone();
+    canonicalize_mcp_maps(&mut server);
+    server
+}
+
+pub(crate) fn merge_managed_mcp_servers(
     client_mcp_servers: Vec<acp::McpServer>,
     cwd: &std::path::Path,
-    managed_configs: &[ManagedMcpConfig],
     plugin_registry: Option<&codel_agent::plugins::PluginRegistry>,
     compat: &codel_tools::types::compat::CompatConfig,
 ) -> Vec<acp::McpServer> {
-    merge_managed_mcp_servers_with_policy(
-        client_mcp_servers,
-        cwd,
-        managed_configs,
-        plugin_registry,
-        compat,
-    )
-    .into_iter()
-    .filter(|s| s.disabled_reason.is_none())
-    .map(|s| s.server)
-    .collect()
+    merge_managed_mcp_servers_with_policy(client_mcp_servers, cwd, plugin_registry, compat)
+        .into_iter()
+        .filter(|s| s.disabled_reason.is_none())
+        .map(|s| s.server)
+        .collect()
 }
 
-/// Merge the managed catalog into ONE live session's MCP set and push the
-/// result via [`crate::session::SessionCommand::UpdateMcpServers`]; returns
-/// `true` if the command was enqueued (session still alive).
-///
-/// Shared core for every "re-merge managed configs into a live session" path
-/// (`mcp/list cache=false`, config hot-reload, post-grant reload) so the merge
-/// inputs and the dropped-oneshot-response contract can't drift between them.
+/// Merge local/plugin/client MCP sources into ONE live session and push the result via [`crate::session::SessionCommand::UpdateMcpServers`].
+/// Returns `true` if the command was enqueued (session still alive).
+/// Shared core for every "re-merge MCP sources into a live session" path (config hot-reload, post-grant reload, plugin reload).
 pub(crate) fn merge_and_send_managed_mcp_update(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::session::SessionCommand>,
     cwd: &std::path::Path,
     initial_client_mcp_servers: Vec<acp::McpServer>,
-    managed: &[ManagedMcpConfig],
     plugin_registry: Option<&codel_agent::plugins::PluginRegistry>,
     compat: &codel_tools::types::compat::CompatConfig,
 ) -> bool {
-    let merged = merge_managed_mcp_servers(
-        initial_client_mcp_servers,
-        cwd,
-        managed,
-        plugin_registry,
-        compat,
-    );
+    let merged =
+        merge_managed_mcp_servers(initial_client_mcp_servers, cwd, plugin_registry, compat);
     let (tx, _rx) = tokio::sync::oneshot::channel();
     cmd_tx
         .send(crate::session::SessionCommand::UpdateMcpServers {
             mcp_servers: merged,
+            client_seed: None,
             respond_to: tx,
         })
         .is_ok()
 }
 
-pub fn merge_managed_mcp_servers_with_policy(
+/// Drop client-forwarded servers that match on-disk vendor MCP configs while that vendor's `mcps` kill switch is off.
+/// Call at session ingress before storing the hot-reload seed (`initial_client_mcp_servers`).
+/// Explicit later client updates re-run this with current disk, so a server that no longer matches a disabled vendor's config can be admitted.
+pub(crate) fn admit_client_mcp_servers(
     client_mcp_servers: Vec<acp::McpServer>,
     cwd: &std::path::Path,
-    managed_configs: &[ManagedMcpConfig],
+    compat: &codel_tools::types::compat::CompatConfig,
+) -> Vec<acp::McpServer> {
+    let mut blocked: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !compat.cursor.mcps {
+        let mut forced = *compat;
+        forced.cursor.mcps = true;
+        blocked.extend(
+            crate::util::config::load_cursor_mcp_servers(cwd, &forced)
+                .iter()
+                .map(mcp_vendor_block_key),
+        );
+    }
+    if !compat.claude.mcps {
+        // Attribution must see disk even when import-marker / runtime gates empty the normal Claude loader
+        blocked.extend(
+            crate::util::config::load_claude_json_mcp_servers_for_attribution(cwd)
+                .iter()
+                .map(mcp_vendor_block_key),
+        );
+    }
+    if blocked.is_empty() {
+        return client_mcp_servers;
+    }
+    client_mcp_servers
+        .into_iter()
+        .filter(|s| !blocked.contains(&mcp_vendor_block_key(s)))
+        .collect()
+}
+
+pub(crate) fn merge_managed_mcp_servers_with_policy(
+    client_mcp_servers: Vec<acp::McpServer>,
+    cwd: &std::path::Path,
     plugin_registry: Option<&codel_agent::plugins::PluginRegistry>,
     compat: &codel_tools::types::compat::CompatConfig,
 ) -> Vec<McpServerWithPolicy> {
-    let mut servers: HashMap<String, acp::McpServer> =
+    merge_managed_mcp_servers_with_policy_from(
+        client_mcp_servers,
+        cwd,
+        plugin_registry,
+        compat,
+        codel_workspace::permission::resolution::managed_settings(),
+    )
+}
+
+/// [`merge_managed_mcp_servers_with_policy`] over injected settings — the OnceLock test seam that
+/// lets a test drive the real merge glue with a constructed policy.
+fn merge_managed_mcp_servers_with_policy_from(
+    client_mcp_servers: Vec<acp::McpServer>,
+    cwd: &std::path::Path,
+    plugin_registry: Option<&codel_agent::plugins::PluginRegistry>,
+    compat: &codel_tools::types::compat::CompatConfig,
+    ms: &codel_workspace::permission::resolution::ManagedSettings,
+) -> Vec<McpServerWithPolicy> {
+    // Project-scoped names classify their servers foreign AND feed the
+    // project-MCP pin; computed once for both (via `mcp_subject`).
+    let project = crate::agent::folder_trust::project_scoped_mcp_names(cwd);
+    // Server and subject share one map entry, so a key collision can never
+    // pair a surviving server with another definition's subject.
+    let mut servers: HashMap<String, (acp::McpServer, McpSubject)> =
         merge_managed_mcp_servers_sourced(cwd, plugin_registry, compat)
             .into_iter()
-            .map(|(s, _source)| (mcp_server_key(&s), s))
+            .map(|(s, source)| {
+                let subject = mcp_subject(&s, &source, &project);
+                (mcp_merge_key(&s), (s, subject))
+            })
             .collect();
 
-    for server in client_mcp_servers {
-        servers.insert(mcp_server_key(&server), server);
+    // Re-admit at merge so a caller that forgot ingress sanitization cannot spawn disabled-vendor
+    // servers; subject inheritance needs the SAME definition, else foreign (fail closed).
+    for server in admit_client_mcp_servers(client_mcp_servers, cwd, compat) {
+        let key = mcp_merge_key(&server);
+        let subject = match servers.get(&key) {
+            Some((native, subject)) if mcp_server_definitions_equal(native, &server) => *subject,
+            _ => McpSubject {
+                origin: PolicySubjectOrigin::Foreign,
+                project_scoped: project.contains(mcp_server_name(&server)),
+            },
+        };
+        servers.insert(key, (server, subject));
     }
 
     let disabled = crate::util::config::disabled_mcp_server_names(cwd);
 
-    let mut merged: Vec<acp::McpServer> = servers.into_values().collect();
-    inject_managed_headers(&mut merged, managed_configs);
-    auto_inject_managed_servers_with_disabled(&mut merged, managed_configs, &disabled);
-    // Deterministic order: this list is collected from a HashMap (random
-    // iteration order). Downstream equality checks (`mcp_servers_equal`, used
-    // by both `update_configs` and the `update_configs_diff` short-circuit) are
-    // order-sensitive, so an unsorted list makes an unchanged server set look
-    // changed — spuriously cancelling/restarting MCP init on e.g. a hooks-only
-    // plugin reload. Sorting by the dedup key keeps reloads a true no-op when
-    // nothing changed.
-    merged.sort_by_key(mcp_server_key);
-    // Folder-trust gate: when `cwd`'s workspace is untrusted, drop its
-    // repo-local (project-scoped) servers before they can be spawned. No-op for
-    // a trusted/unrecorded workspace. Composes with the managed-deny allowlist
-    // applied next (both filters run on the survivors).
-    let merged = crate::agent::folder_trust::filter_untrusted_project_mcp(cwd, merged);
-    let allowlist = &codel_workspace::permission::resolution::managed_settings().mcp_allowlist;
-    apply_mcp_server_policy(merged, &disabled, allowlist)
+    let mut merged: Vec<(acp::McpServer, McpSubject)> = servers.into_values().collect();
+    // Sort by name: HashMap order is random, and the order-sensitive downstream equality would
+    // see a no-op reload as changed (spuriously restarting MCP init).
+    merged.sort_by(|a, b| mcp_server_name(&a.0).cmp(mcp_server_name(&b.0)));
+    // Folder-trust gate: an untrusted workspace's project-scoped servers drop before spawn;
+    // composes with the managed policy applied next.
+    let merged = crate::agent::folder_trust::filter_untrusted_project_mcp_with(
+        cwd,
+        merged,
+        &project,
+        |(server, _)| mcp_server_name(server),
+    );
+    apply_mcp_server_policy(merged, &disabled, ms)
 }
 
-/// Why an MCP server was disabled by policy.
-#[derive(Debug, Clone)]
-pub enum McpDisabledReason {
-    Allowlist { source: std::path::PathBuf },
-    Denylist { source: std::path::PathBuf },
+/// Classify what defined a server for policy scoping: config.toml and plugin servers are
+/// codel-native, the rest foreign; `project_names` reclassifies collisions foreign (fail closed).
+pub(crate) fn mcp_subject(
+    server: &acp::McpServer,
+    source: &codel_tools::types::config_source::ConfigSource,
+    project_names: &std::collections::HashSet<String>,
+) -> McpSubject {
+    use codel_tools::types::config_source::ConfigSource;
+    mcp_subject_for_tier(
+        mcp_server_name(server),
+        matches!(
+            source,
+            ConfigSource::ConfigToml { .. } | ConfigSource::Plugin { .. }
+        ),
+        project_names,
+    )
 }
 
-impl std::fmt::Display for McpDisabledReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Allowlist { source } => {
-                write!(f, "not in allowedMcpServers ({})", source.display())
-            }
-            Self::Denylist { source } => {
-                write!(f, "matches deniedMcpServers ({})", source.display())
-            }
-        }
-    }
-}
-
-impl McpDisabledReason {
-    /// Classify why a blocked server was rejected by the managed-settings
-    /// MCP policy: an explicit deny match vs a missing allowlist entry.
-    pub fn for_blocked_server(
-        policy: &codel_workspace::permission::resolution::McpServerAllowlist,
-        server: &acp::McpServer,
-    ) -> Self {
-        let source = policy.source_path.clone().unwrap_or_default();
-        if policy.is_server_denied(server) {
-            Self::Denylist { source }
+/// The ONE origin classifier (merge, discovery, agent pool): native tier unless the name is
+/// project-claimed — a collision classifies foreign (fail closed).
+pub(crate) fn mcp_subject_for_tier(
+    server_name: &str,
+    native_tier: bool,
+    project_names: &std::collections::HashSet<String>,
+) -> McpSubject {
+    let project_scoped = project_names.contains(server_name);
+    let native = native_tier && !project_scoped;
+    McpSubject {
+        origin: if native {
+            PolicySubjectOrigin::CodelNative
         } else {
-            Self::Allowlist { source }
-        }
+            PolicySubjectOrigin::Foreign
+        },
+        project_scoped,
     }
+}
+
+/// Project-pin gate shared by the merge and discovery: drop + warn when the
+/// `enableAllProjectMcpServers = false` pin blocks `server` (pin before verdict).
+fn dropped_by_project_pin(
+    ms: &codel_workspace::permission::resolution::ManagedSettings,
+    server: &acp::McpServer,
+    subject: McpSubject,
+) -> bool {
+    if ms.mcp_project_pin_block(server, subject).is_none() {
+        return false;
+    }
+    tracing::warn!(
+        server = %mcp_server_name(server),
+        source = %ms
+            .project_mcp
+            .source()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        "project-level MCP disabled by managed policy (enableAllProjectMcpServers = false)"
+    );
+    true
 }
 
 /// An MCP server paired with its policy status.
-pub struct McpServerWithPolicy {
+pub(crate) struct McpServerWithPolicy {
     pub server: acp::McpServer,
-    pub disabled_reason: Option<McpDisabledReason>,
+    pub disabled_reason: Option<McpBlockReason>,
 }
 
-/// Tag each merged MCP server with its managed-settings policy status and drop
-/// names disabled in config.toml. A server that fails `is_server_allowed` is
-/// tagged with a deny-vs-allowlist `McpDisabledReason` (via
-/// `McpDisabledReason::for_blocked_server`); the public
-/// `merge_managed_mcp_servers` then drops every tagged server. Split out from
-/// `merge_managed_mcp_servers_with_policy` so the deny/allow enforcement
-/// chokepoint can be tested with an injected allowlist — the runtime path reads
-/// the process-wide managed-settings `OnceLock`, which a test can't populate.
+/// The documented admin signal for a policy-dropped server — written to the always-on
+/// unified.jsonl as well as tracing, which alone reaches no file in a default run.
+fn log_policy_block(name: &str, reason: &McpBlockReason) {
+    tracing::warn!(
+        name,
+        reason = %reason,
+        "MCP server blocked by managed settings policy"
+    );
+    codel_logging::unified_log::warn(
+        "MCP server blocked by managed settings policy",
+        None,
+        Some(serde_json::json!({ "server": name, "reason": reason.to_string() })),
+    );
+}
+
+/// Apply the managed MCP policy to the merged list: drop config-disabled and project-pinned
+/// servers, tag everything [`ManagedSettings::mcp_verdict`] blocks; servers stay subject-paired.
 fn apply_mcp_server_policy(
-    merged: Vec<acp::McpServer>,
+    merged: Vec<(acp::McpServer, McpSubject)>,
     disabled: &std::collections::HashSet<String>,
-    allowlist: &codel_workspace::permission::resolution::McpServerAllowlist,
+    ms: &codel_workspace::permission::resolution::ManagedSettings,
 ) -> Vec<McpServerWithPolicy> {
     merged
         .into_iter()
-        .filter_map(|server| {
+        .filter_map(|(server, subject)| {
             if disabled.contains(mcp_server_name(&server)) {
                 return None;
             }
-            if !allowlist.is_server_allowed(&server) {
-                let reason = McpDisabledReason::for_blocked_server(allowlist, &server);
-                tracing::warn!(
-                    name = mcp_server_name(&server),
-                    reason = %reason,
-                    "MCP server blocked by managed settings policy"
-                );
-                return Some(McpServerWithPolicy {
-                    server,
-                    disabled_reason: Some(reason),
-                });
+            if dropped_by_project_pin(ms, &server, subject) {
+                return None;
             }
-            Some(McpServerWithPolicy {
-                server,
-                disabled_reason: None,
-            })
+            match ms.mcp_verdict(&server, subject) {
+                McpVerdict::Blocked(reason) => {
+                    log_policy_block(mcp_server_name(&server), &reason);
+                    Some(McpServerWithPolicy {
+                        server,
+                        disabled_reason: Some(reason),
+                    })
+                }
+                McpVerdict::Allowed => Some(McpServerWithPolicy {
+                    server,
+                    disabled_reason: None,
+                }),
+            }
         })
         .collect()
 }
 
+/// Policy gate for the session-less MCP pool (without it `codel/mcp/call` spawns blocked servers);
+/// native tier needs the payload to EQUAL the on-disk TOML definition, as in the session merge.
+/// Also drops `enabled = false` / `disabled_mcp_servers` names — the same kill switch as
+/// [`merge_managed_mcp_servers`] / [`apply_mcp_server_policy`].
+pub(crate) fn filter_policy_blocked_agent_mcp(
+    servers: Vec<acp::McpServer>,
+    cwd: &std::path::Path,
+) -> Vec<acp::McpServer> {
+    let servers = drop_config_disabled_mcp(servers, cwd);
+    if servers.is_empty() {
+        return servers;
+    }
+    let toml_servers: HashMap<String, acp::McpServer> =
+        crate::util::config::load_mcp_servers_toml_only(cwd)
+            .into_iter()
+            .map(|s| (mcp_merge_key(&s), s))
+            .collect();
+    filter_policy_blocked_agent_mcp_with(
+        servers,
+        &toml_servers,
+        &crate::agent::folder_trust::project_scoped_mcp_names(cwd),
+        codel_workspace::permission::resolution::managed_settings(),
+    )
+}
+
+/// Same name set [`apply_mcp_server_policy`] drops before spawn.
+fn drop_config_disabled_mcp(
+    servers: Vec<acp::McpServer>,
+    cwd: &std::path::Path,
+) -> Vec<acp::McpServer> {
+    if servers.is_empty() {
+        return servers;
+    }
+    let disabled = crate::util::config::disabled_mcp_server_names(cwd);
+    servers
+        .into_iter()
+        .filter(|s| !disabled.contains(mcp_server_name(s)))
+        .collect()
+}
+
+/// [`filter_policy_blocked_agent_mcp`] over injected inputs (the OnceLock
+/// seam — see [`merge_managed_mcp_servers_with_policy_from`]).
+fn filter_policy_blocked_agent_mcp_with(
+    servers: Vec<acp::McpServer>,
+    toml_servers: &HashMap<String, acp::McpServer>,
+    project_names: &std::collections::HashSet<String>,
+    ms: &codel_workspace::permission::resolution::ManagedSettings,
+) -> Vec<acp::McpServer> {
+    servers
+        .into_iter()
+        .filter(|server| {
+            let name = mcp_server_name(server);
+            // Name ownership alone is not enough: a squatted TOML name stays foreign (fail closed).
+            let native = toml_servers
+                .get(name)
+                .is_some_and(|disk| mcp_server_definitions_equal(disk, server));
+            let subject = mcp_subject_for_tier(name, native, project_names);
+            if dropped_by_project_pin(ms, server, subject) {
+                return false;
+            }
+            match ms.mcp_verdict(server, subject) {
+                McpVerdict::Allowed => true,
+                McpVerdict::Blocked(reason) => {
+                    log_policy_block(name, &reason);
+                    false
+                }
+            }
+        })
+        .collect()
+}
+
+/// Managed-policy block reasons keyed by server name (first writer wins) — the ONE reasons-map
+/// assembly for doctor and `mcp/list`, so CLI verdicts can't drift from the merge.
+pub(crate) fn mcp_blocked_reasons<'a>(
+    definitions: impl IntoIterator<Item = (&'a str, &'a acp::McpServer, McpSubject)>,
+    ms: &codel_workspace::permission::resolution::ManagedSettings,
+) -> HashMap<String, McpBlockReason> {
+    let mut out = HashMap::new();
+    for (name, server, subject) in definitions {
+        if let McpVerdict::Blocked(reason) = ms.mcp_verdict(server, subject) {
+            out.entry(name.to_string()).or_insert(reason);
+        }
+    }
+    out
+}
+
 /// Like [`merge_managed_mcp_servers`] but returns `ConfigSource` alongside each server.
-pub fn merge_managed_mcp_servers_sourced(
+pub(crate) fn merge_managed_mcp_servers_sourced(
     cwd: &std::path::Path,
     plugin_registry: Option<&codel_agent::plugins::PluginRegistry>,
     compat: &codel_tools::types::compat::CompatConfig,
@@ -274,22 +436,46 @@ pub fn merge_managed_mcp_servers_sourced(
         path: codel_tools::util::codel_home::codel_home().join("config.toml"),
     };
 
-    // Use the TOML-only loader so that entries from imported editor configs
-    // and .mcp.json are not pre-loaded with ConfigSource::ConfigToml.  Those
-    // sources are added below with their correct ConfigSource variants.
+    // Use the TOML-only loader so that entries from imported editor configs and .mcp.json are not pre-loaded with ConfigSource::ConfigToml
     let mut servers: HashMap<String, (acp::McpServer, ConfigSource)> =
         crate::util::config::load_mcp_servers_toml_only(cwd)
             .into_iter()
             .map(|s| {
-                let key = mcp_server_key(&s);
+                let key = mcp_merge_key(&s);
                 (key, (s, config_source.clone()))
             })
             .collect();
     for (name, (_, source)) in &servers {
-        tracing::info!(server = name, source = ?source, "MCP server loaded from source");
+        tracing::debug!(server = name, source = ?source, "MCP server loaded from source");
     }
 
-    // Plugins
+    for (server, source) in
+        non_toml_mcp_servers_with_source(cwd, plugin_registry, compat, &toml_claimed_names)
+    {
+        servers
+            .entry(mcp_merge_key(&server))
+            .or_insert((server, source));
+    }
+
+    servers.into_values().collect()
+}
+
+/// Plugin / Claude / Cursor / `.mcp.json` servers in merge priority order.
+/// Callers insert with `entry(name).or_insert` so the first listed source wins a shared name.
+/// TOML is applied separately (last-wins for merge and for discovery force-enable).
+fn non_toml_mcp_servers_with_source(
+    cwd: &std::path::Path,
+    plugin_registry: Option<&codel_agent::plugins::PluginRegistry>,
+    compat: &codel_tools::types::compat::CompatConfig,
+    toml_claimed_names: &std::collections::HashSet<String>,
+) -> Vec<(
+    acp::McpServer,
+    codel_tools::types::config_source::ConfigSource,
+)> {
+    use codel_tools::types::config_source::ConfigSource;
+
+    let mut out = Vec::new();
+
     if let Some(registry) = plugin_registry {
         for plugin in registry.active_plugins() {
             let mut plugin_servers: Vec<acp::McpServer> = Vec::new();
@@ -325,15 +511,13 @@ pub fn merge_managed_mcp_servers_sourced(
                 if toml_claimed_names.contains(mcp_server_name(&server)) {
                     continue;
                 }
-                let key = mcp_server_key(&server);
-                servers.entry(key).or_insert((server, source.clone()));
+                out.push((server, source.clone()));
             }
         }
     }
 
-    // ~/.claude.json
     let claude_json_source = ConfigSource::ClaudeJson {
-        path: dirs::home_dir()
+        path: codel_dirs::home_dir()
             .map(|h| h.join(".claude.json"))
             .unwrap_or_default(),
     };
@@ -341,15 +525,11 @@ pub fn merge_managed_mcp_servers_sourced(
         if toml_claimed_names.contains(mcp_server_name(&server)) {
             continue;
         }
-        let key = mcp_server_key(&server);
-        servers
-            .entry(key)
-            .or_insert((server, claude_json_source.clone()));
+        out.push((server, claude_json_source.clone()));
     }
 
-    // ~/.cursor/mcp.json
     let cursor_mcp_source = ConfigSource::McpJson {
-        path: dirs::home_dir()
+        path: codel_dirs::home_dir()
             .map(|h| h.join(".cursor").join("mcp.json"))
             .unwrap_or_default(),
     };
@@ -357,13 +537,9 @@ pub fn merge_managed_mcp_servers_sourced(
         if toml_claimed_names.contains(mcp_server_name(&server)) {
             continue;
         }
-        let key = mcp_server_key(&server);
-        servers
-            .entry(key)
-            .or_insert((server, cursor_mcp_source.clone()));
+        out.push((server, cursor_mcp_source.clone()));
     }
 
-    // .mcp.json
     let mcp_json_source = ConfigSource::McpJson {
         path: cwd.join(".mcp.json"),
     };
@@ -371,66 +547,78 @@ pub fn merge_managed_mcp_servers_sourced(
         if toml_claimed_names.contains(mcp_server_name(&server)) {
             continue;
         }
-        let key = mcp_server_key(&server);
-        servers
-            .entry(key)
-            .or_insert((server, mcp_json_source.clone()));
+        out.push((server, mcp_json_source.clone()));
     }
 
-    servers.into_values().collect()
+    out
 }
 
-/// Auto-create `codel_com_*` entries for managed configs not already in `merged`.
-/// Dedup by display name (first scope wins). Skips names in `disabled_names`.
-pub(crate) fn auto_inject_managed_servers_with_disabled(
-    merged: &mut Vec<acp::McpServer>,
-    managed_configs: &[ManagedMcpConfig],
-    disabled_names: &std::collections::HashSet<String>,
-) {
-    if managed_configs.is_empty() {
-        return;
+/// Shared inputs for MCP definition discovery (list stubs and setup probe).
+#[derive(Clone, Copy)]
+pub(crate) struct McpDiscoveryInputs<'a> {
+    pub cwd: &'a std::path::Path,
+    pub plugin_registry: Option<&'a codel_agent::plugins::PluginRegistry>,
+    pub compat: &'a codel_tools::types::compat::CompatConfig,
+}
+
+/// Definitions that would exist if personal disable were cleared.
+/// TOML `enabled = false` is force-enabled for stubs.
+/// Returns transports keyed by server name.
+pub(crate) fn discover_mcp_definitions_ignoring_disable(
+    inputs: &McpDiscoveryInputs<'_>,
+) -> HashMap<String, (acp::McpServer, McpSubject)> {
+    use crate::util::config::{
+        McpEnabledFilter, load_mcp_preferences, load_mcp_server_configs_with_project,
+        materialize_mcp_config,
+    };
+
+    let cwd = inputs.cwd;
+    let plugin_registry = inputs.plugin_registry;
+    let compat = inputs.compat;
+
+    let preferences = load_mcp_preferences().file();
+    let sub = &crate::config::expand_env_vars_in_string;
+    let toml_claimed = crate::util::config::all_toml_mcp_server_names(cwd);
+
+    // TOML wins its name (insert); lower tiers or_insert. Subjects come from the merge's
+    // classifier, so setup/stub verdicts can't diverge on a name collision.
+    let project = crate::agent::folder_trust::project_scoped_mcp_names(cwd);
+    let mut by_name: HashMap<String, (acp::McpServer, McpSubject)> = HashMap::new();
+    for (name, (config, scope)) in load_mcp_server_configs_with_project(cwd) {
+        let Some(transport) =
+            materialize_mcp_config(&name, config, &preferences, sub, McpEnabledFilter::Ignore)
+        else {
+            continue;
+        };
+        let subject = mcp_subject_for_tier(
+            &name,
+            scope != crate::util::config::MCP_SCOPE_PROJECT,
+            &project,
+        );
+        by_name.insert(name, (transport, subject));
+    }
+    for (server, source) in
+        non_toml_mcp_servers_with_source(cwd, plugin_registry, compat, &toml_claimed)
+    {
+        let subject = mcp_subject(&server, &source, &project);
+        by_name
+            .entry(mcp_merge_key(&server))
+            .or_insert((server, subject));
     }
 
-    let existing_names: std::collections::HashSet<String> = merged
-        .iter()
-        .map(|s| mcp_server_name(s).to_owned())
-        .collect();
-    let mut seen_display_names: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-    let mut count = 0usize;
-
-    for config in managed_configs {
-        if config.headers.is_empty() {
-            continue;
-        }
-        let name = to_managed_name(&config.name);
-
-        if existing_names.contains(&name) {
-            continue;
-        }
-        if disabled_names.contains(&name) {
-            tracing::debug!(server_name = %name, "Auto-inject skipped: disabled in config.toml");
-            continue;
-        }
-        if !seen_display_names.insert(config.name.to_lowercase()) {
-            continue;
-        }
-
-        let headers = config
-            .headers
-            .iter()
-            .map(|(k, v)| acp::HttpHeader::new(k.clone(), v.clone()))
-            .collect();
-
-        merged.push(acp::McpServer::Http(
-            acp::McpServerHttp::new(name, config.endpoint.clone()).headers(headers),
-        ));
-        count += 1;
-    }
-
-    if count > 0 {
-        tracing::info!(count, "Auto-injected managed MCP connectors");
-    }
+    let entries: Vec<(acp::McpServer, McpSubject)> = by_name.into_values().collect();
+    let entries = crate::agent::folder_trust::filter_untrusted_project_mcp_with(
+        cwd,
+        entries,
+        &project,
+        |(server, _)| mcp_server_name(server),
+    );
+    // Project-pin-dropped definitions stay: consumers gate through `mcp_verdict`, whose ProjectPin
+    // leg names the pinning source — dropping them misreported "not found in config".
+    entries
+        .into_iter()
+        .map(|(server, subject)| (mcp_merge_key(&server), (server, subject)))
+        .collect()
 }
 
 fn load_plugin_mcp_servers(
@@ -474,7 +662,7 @@ fn load_plugin_mcp_servers_from_config(
     crate::util::config::parse_mcp_config_with_oauth(config, &label, &sub)
 }
 
-pub fn collect_plugin_oauth_configs(
+pub(crate) fn collect_plugin_oauth_configs(
     plugin_registry: Option<&codel_agent::plugins::PluginRegistry>,
 ) -> crate::util::config::McpOAuthConfigMap {
     let mut oauth_configs = crate::util::config::McpOAuthConfigMap::new();
@@ -510,7 +698,7 @@ pub fn collect_plugin_oauth_configs(
     oauth_configs
 }
 
-pub fn merge_plugin_oauth_into(
+pub(crate) fn merge_plugin_oauth_into(
     oauth_config_map: &mut crate::util::config::McpOAuthConfigMap,
     plugin_oauth: crate::util::config::McpOAuthConfigMap,
     toml_mcp_names: &std::collections::HashSet<String>,
@@ -527,48 +715,38 @@ pub fn merge_plugin_oauth_into(
 mod tests {
     use super::*;
 
-    fn make_managed(name: &str, endpoint: &str, scope: &str) -> ManagedMcpConfig {
-        ManagedMcpConfig {
-            name: name.to_string(),
-            endpoint: endpoint.to_string(),
-            headers: HashMap::from([("Authorization".into(), "Bearer tok".into())]),
-            token_expires_at: None,
-            scope: Some(scope.to_string()),
-            scope_id: Some(format!("{scope}-id-123")),
-            scope_name: None,
-        }
+    fn at<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected index {i}, len {}", xs.len());
+        };
+        x
     }
 
     fn empty_cwd() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
     }
 
-    #[test]
-    fn auto_inject_creates_server_for_unmatched_managed_config() {
-        let managed = vec![make_managed("Slack", "https://mcp.slack.com/sse", "user")];
-        let cwd = empty_cwd();
-        let compat = codel_tools::types::compat::CompatConfig::default();
-        let merged = merge_managed_mcp_servers(vec![], cwd.path(), &managed, None, &compat);
-        let slack = merged
-            .iter()
-            .find(|s| matches!(s, acp::McpServer::Http(acp::McpServerHttp { name, .. }) if name == "codel_com_slack"));
-        let slack = slack.expect("should have auto-injected codel_com_slack");
-        match slack {
-            acp::McpServer::Http(acp::McpServerHttp { url, headers, .. }) => {
-                assert_eq!(url, "https://mcp.slack.com/sse");
-                assert!(headers.iter().any(|h| h.name == "Authorization"));
-            }
-            other => panic!("expected Http server, got {:?}", other),
-        }
+    /// Injected settings carrying just an MCP policy (the OnceLock seam).
+    fn settings_with_policy(
+        policy: codel_workspace::permission::resolution::McpServerPolicy,
+    ) -> codel_workspace::permission::resolution::ManagedSettings {
+        let mut ms = codel_workspace::permission::resolution::ManagedSettings::default();
+        ms.mcp_allowlist = policy;
+        ms
     }
 
-    /// A client-provided server (e.g. a client session binding injected at
-    /// `session/new`) exists in no on-disk config and no managed catalog —
-    /// the merge must keep it. Config hot-reload handlers
-    /// (`reload_all_mcp_servers` / `reload_project_mcp_servers`) rely on this
-    /// by re-seeding the merge with the session's
-    /// `initial_client_mcp_servers`; if this property breaks, those reloads
-    /// silently tear down client-injected servers mid-session.
+    /// Pair a server with a foreign, non-project subject (every policy binds).
+    fn foreign(server: acp::McpServer) -> (acp::McpServer, McpSubject) {
+        (
+            server,
+            McpSubject {
+                origin: PolicySubjectOrigin::Foreign,
+                project_scoped: false,
+            },
+        )
+    }
+
+    /// The merge must keep client-provided servers (they exist in no on-disk config), or hot-reloads tear them down.
     #[test]
     fn client_provided_servers_survive_merge() {
         let client = vec![acp::McpServer::Http(
@@ -580,7 +758,7 @@ mod tests {
         )];
         let cwd = empty_cwd();
         let compat = codel_tools::types::compat::CompatConfig::default();
-        let merged = merge_managed_mcp_servers(client, cwd.path(), &[], None, &compat);
+        let merged = merge_managed_mcp_servers(client, cwd.path(), None, &compat);
         assert!(
             merged.iter().any(|s| matches!(
                 s,
@@ -590,38 +768,1004 @@ mod tests {
         );
     }
 
-    /// The merge chokepoint must actually DROP a server matching
-    /// `deniedMcpServers`, and classify the drop as a `Denylist` hit (not a
-    /// missing `allowlist` entry) — that reason is the user-visible payload for
-    /// the toggle error and `mcp doctor` detail. The runtime merge reads the
-    /// process-wide managed-settings `OnceLock`, so we exercise the extracted
-    /// `apply_mcp_server_policy` seam with an injected allowlist built via the
-    /// public `McpServerAllowlist::new`.
+    fn write_cursor_project_mcp(cwd: &std::path::Path, name: &str) {
+        std::fs::create_dir_all(cwd.join(".cursor")).unwrap();
+        std::fs::write(
+            cwd.join(".cursor").join("mcp.json"),
+            format!(r#"{{"mcpServers": {{"{name}": {{"command": "true"}}}}}}"#),
+        )
+        .unwrap();
+    }
+
+    fn client_stdio(name: &str) -> acp::McpServer {
+        acp::McpServer::Stdio(acp::McpServerStdio::new(name.to_string(), "true"))
+    }
+
+    /// Vendor mcps kill switch must drop client-forwarded servers that match on-disk vendor config (pager may still load with default-on compat).
+    #[test]
+    fn client_cursor_server_dropped_when_cursor_mcps_disabled() {
+        let cwd = empty_cwd();
+        write_cursor_project_mcp(cwd.path(), "killswitch-cache");
+        let mut compat = codel_tools::types::compat::CompatConfig::default();
+        compat.cursor.mcps = false;
+        let merged = merge_managed_mcp_servers(
+            vec![client_stdio("killswitch-cache")],
+            cwd.path(),
+            None,
+            &compat,
+        );
+        assert!(
+            !merged
+                .iter()
+                .any(|s| mcp_server_name(s) == "killswitch-cache"),
+            "client-forwarded cursor server must be dropped when cursor.mcps is off"
+        );
+    }
+
+    #[test]
+    fn client_cursor_server_kept_when_cursor_mcps_enabled() {
+        let cwd = empty_cwd();
+        write_cursor_project_mcp(cwd.path(), "killswitch-cache");
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let merged = merge_managed_mcp_servers(
+            vec![client_stdio("killswitch-cache")],
+            cwd.path(),
+            None,
+            &compat,
+        );
+        assert!(
+            merged
+                .iter()
+                .any(|s| mcp_server_name(s) == "killswitch-cache"),
+            "client-forwarded cursor server must remain when cursor.mcps is on"
+        );
+    }
+
+    #[test]
+    fn unrelated_client_server_survives_when_cursor_mcps_disabled() {
+        let cwd = empty_cwd();
+        write_cursor_project_mcp(cwd.path(), "killswitch-cache");
+        let mut compat = codel_tools::types::compat::CompatConfig::default();
+        compat.cursor.mcps = false;
+        let merged = merge_managed_mcp_servers(
+            vec![
+                client_stdio("killswitch-cache"),
+                client_stdio("client-only-binding"),
+            ],
+            cwd.path(),
+            None,
+            &compat,
+        );
+        assert!(
+            !merged
+                .iter()
+                .any(|s| mcp_server_name(s) == "killswitch-cache"),
+            "matching cursor client server must be dropped"
+        );
+        assert!(
+            merged
+                .iter()
+                .any(|s| mcp_server_name(s) == "client-only-binding"),
+            "unrelated client-only server must survive vendor kill switch"
+        );
+    }
+
+    #[test]
+    fn toml_claim_survives_when_client_cursor_insert_skipped() {
+        let cwd = empty_cwd();
+        write_cursor_project_mcp(cwd.path(), "killswitch-cache");
+        std::fs::create_dir_all(cwd.path().join(".codel")).unwrap();
+        std::fs::write(
+            cwd.path().join(".codel").join("config.toml"),
+            r#"
+[mcp_servers.killswitch-cache]
+command = "echo"
+args = ["ok"]
+"#,
+        )
+        .unwrap();
+        git2::Repository::init(cwd.path()).unwrap();
+
+        let mut compat = codel_tools::types::compat::CompatConfig::default();
+        compat.cursor.mcps = false;
+        let merged = merge_managed_mcp_servers(
+            vec![client_stdio("killswitch-cache")],
+            cwd.path(),
+            None,
+            &compat,
+        );
+        let server = merged
+            .iter()
+            .find(|s| mcp_server_name(s) == "killswitch-cache")
+            .expect("toml-claimed server must remain when client cursor insert is skipped");
+        match server {
+            acp::McpServer::Stdio(acp::McpServerStdio { command, args, .. }) => {
+                assert_eq!(command.display().to_string(), "echo");
+                assert_eq!(args.as_slice(), &["ok"]);
+            }
+            other => panic!("expected toml stdio server, got {other:?}"),
+        }
+    }
+
+    /// Admitted seed must stay empty of the blocked server after vendor disk vanishes (hot-reload must not re-admit from a sanitized seed).
+    #[test]
+    fn admitted_seed_stays_blocked_after_vendor_disk_vanishes() {
+        let cwd = empty_cwd();
+        write_cursor_project_mcp(cwd.path(), "killswitch-cache");
+        let mut compat = codel_tools::types::compat::CompatConfig::default();
+        compat.cursor.mcps = false;
+
+        let admitted =
+            admit_client_mcp_servers(vec![client_stdio("killswitch-cache")], cwd.path(), &compat);
+        assert!(
+            !admitted
+                .iter()
+                .any(|s| mcp_server_name(s) == "killswitch-cache"),
+            "admit must drop matching vendor client server while flag is off"
+        );
+
+        std::fs::remove_file(cwd.path().join(".cursor").join("mcp.json")).unwrap();
+
+        let merged = merge_managed_mcp_servers(admitted, cwd.path(), None, &compat);
+        assert!(
+            !merged
+                .iter()
+                .any(|s| mcp_server_name(s) == "killswitch-cache"),
+            "admitted seed must not re-admit after vendor disk vanishes"
+        );
+    }
+
+    /// Http/Sse client identity is normalized URL, not display name.
+    #[test]
+    fn client_cursor_http_dropped_by_normalized_url_when_mcps_disabled() {
+        let cwd = empty_cwd();
+        std::fs::create_dir_all(cwd.path().join(".cursor")).unwrap();
+        std::fs::write(
+            cwd.path().join(".cursor").join("mcp.json"),
+            r#"{"mcpServers": {"disk-name": {"url": "https://killswitch.example.test/mcp/"}}}"#,
+        )
+        .unwrap();
+        let mut compat = codel_tools::types::compat::CompatConfig::default();
+        compat.cursor.mcps = false;
+
+        let matching = acp::McpServer::Http(
+            acp::McpServerHttp::new(
+                "killswitch-http".to_string(),
+                "https://killswitch.example.test/mcp".to_string(),
+            )
+            .headers(vec![]),
+        );
+        let other = acp::McpServer::Http(
+            acp::McpServerHttp::new(
+                "other-http".to_string(),
+                "https://other.example.test/mcp".to_string(),
+            )
+            .headers(vec![]),
+        );
+        let merged = merge_managed_mcp_servers(vec![matching, other], cwd.path(), None, &compat);
+        assert!(
+            !merged
+                .iter()
+                .any(|s| mcp_server_name(s) == "killswitch-http"),
+            "same normalized URL with different name must be dropped"
+        );
+        assert!(
+            merged.iter().any(|s| mcp_server_name(s) == "other-http"),
+            "different URL client server must survive"
+        );
+    }
+
+    /// Sse shares the Http policy arms: a URL deny blocks an Sse definition; a non-matching one stays allowed.
+    #[test]
+    fn sse_transport_matches_http_policy_verdicts() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy,
+        };
+
+        let denied = acp::McpServer::Sse(
+            acp::McpServerSse::new("corp-sse", "https://denied.corp.com/mcp").headers(vec![]),
+        );
+        let allowed = acp::McpServer::Sse(
+            acp::McpServerSse::new("ok-sse", "https://ok.example/mcp").headers(vec![]),
+        );
+        let ms = settings_with_policy(McpServerPolicy::single(McpServerAllowlist::new(
+            vec![],
+            vec![AllowedMcpServer::Http {
+                url_pattern: "https://denied.corp.com/*".into(),
+            }],
+            Some(std::path::PathBuf::from("/test/managed_config.toml")),
+        )));
+
+        assert!(
+            matches!(
+                ms.mcp_verdict(&denied, foreign(denied.clone()).1),
+                McpVerdict::Blocked(McpBlockReason::Deny { .. })
+            ),
+            "URL deny must bind the Sse transport"
+        );
+
+        let kept = apply_mcp_server_policy(
+            vec![foreign(denied), foreign(allowed)],
+            &std::collections::HashSet::new(),
+            &ms,
+        );
+        let reason_of = |name: &str| {
+            kept.iter()
+                .find(|s| mcp_server_name(&s.server) == name)
+                .expect("server present")
+                .disabled_reason
+                .clone()
+        };
+        assert!(
+            matches!(reason_of("corp-sse"), Some(McpBlockReason::Deny { .. })),
+            "merge must tag the denied Sse server"
+        );
+        assert!(
+            reason_of("ok-sse").is_none(),
+            "non-matching Sse server must stay allowed"
+        );
+    }
+
+    /// The CLI verdict map reads disable-IGNORING discovery: a personally-disabled server must keep its deny.
+    #[test]
+    fn blocked_map_covers_personally_disabled_servers() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy,
+        };
+
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cwd.path().join(".codel")).unwrap();
+        std::fs::write(
+            cwd.path().join(".codel").join("config.toml"),
+            r#"
+disabled_mcp_servers = ["corp"]
+
+[mcp_servers.corp]
+url = "https://denied.corp.com/mcp"
+"#,
+        )
+        .unwrap();
+
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let inputs = McpDiscoveryInputs {
+            cwd: cwd.path(),
+            plugin_registry: None,
+            compat: &compat,
+        };
+        let discovered = discover_mcp_definitions_ignoring_disable(&inputs);
+        assert!(
+            discovered.contains_key("corp"),
+            "disable-ignoring discovery must keep the disabled definition, got {:?}",
+            discovered.keys().collect::<Vec<_>>()
+        );
+
+        let ms = settings_with_policy(McpServerPolicy::single(McpServerAllowlist::new(
+            vec![],
+            vec![AllowedMcpServer::Http {
+                url_pattern: "https://denied.corp.com/*".into(),
+            }],
+            Some(std::path::PathBuf::from("/test/managed_config.toml")),
+        )));
+        let blocked = mcp_blocked_reasons(
+            discovered
+                .iter()
+                .map(|(name, (server, subject))| (name.as_str(), server, *subject)),
+            &ms,
+        );
+        assert!(
+            blocked.contains_key("corp"),
+            "denied+disabled server must be in the verdict map"
+        );
+    }
+
+    /// A repo-declared definition is discoverable while the folder is trusted and gone once it is not; user-tier and plugin-tier definitions survive either way.
+    /// Runs in a re-exec of this binary: discovery reads `$CODEL_HOME/config.toml` through the process-wide `codel_home()` `OnceLock`, so only a fresh process can isolate it.
+    #[test]
+    fn discovery_drops_project_definitions_for_untrusted_folder() {
+        let codel_home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            codel_home.path().join("config.toml"),
+            format!("[mcp_servers.usersrv]\nurl = \"{USER_MCP_URL}\"\n"),
+        )
+        .unwrap();
+        // module_path!() includes the crate name; libtest filters do not.
+        let filter = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .unwrap_or_default();
+        let exe = std::env::current_exe().expect("current_exe");
+        let mut cmd = std::process::Command::new(exe);
+        cmd.env("CODEL_HOME", codel_home.path())
+            .env_remove("CODEL_CONFIG")
+            .env_remove("CODEL_CONFIG_PATH")
+            .env(UNTRUSTED_DISCOVERY_CHILD, "1")
+            .arg("--ignored")
+            .arg("--exact")
+            .arg(format!("{filter}::untrusted_discovery_child"))
+            .arg("--nocapture")
+            .stdin(std::process::Stdio::null());
+        codel_tty_utils::detach_std_command(&mut cmd);
+        let output = cmd.output().expect("re-exec test binary");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "isolated discovery child failed:\n{stdout}\n{stderr}"
+        );
+        // libtest exits 0 when an --exact filter matches nothing.
+        assert!(
+            stdout.contains(UNTRUSTED_DISCOVERY_PASS_MARK),
+            "child did not run (filter matched nothing?)\n{stdout}\n{stderr}"
+        );
+    }
+
+    const UNTRUSTED_DISCOVERY_CHILD: &str = "CODEL_TEST_UNTRUSTED_DISCOVERY_CHILD";
+    const UNTRUSTED_DISCOVERY_PASS_MARK: &str = "untrusted-discovery-child-passed";
+    const USER_MCP_URL: &str = "https://user.example.com/mcp";
+    const PLUGIN_MCP_URL: &str = "https://plugin.example.com/mcp";
+
+    fn http_url(server: &acp::McpServer) -> Option<&str> {
+        match server {
+            acp::McpServer::Http(acp::McpServerHttp { url, .. }) => Some(url),
+            _ => None,
+        }
+    }
+
+    /// Body of `discovery_drops_project_definitions_for_untrusted_folder`; inert
+    /// unless the parent armed it.
+    #[test]
+    #[ignore = "spawned as a subprocess by discovery_drops_project_definitions_for_untrusted_folder"]
+    fn untrusted_discovery_child() {
+        if std::env::var_os(UNTRUSTED_DISCOVERY_CHILD).is_none() {
+            return;
+        }
+        let cwd = tempfile::tempdir().unwrap();
+        git2::Repository::init(cwd.path()).unwrap();
+        std::fs::create_dir_all(cwd.path().join(".codel")).unwrap();
+        std::fs::write(
+            cwd.path().join(".codel").join("config.toml"),
+            r#"
+[mcp_servers.projsrv]
+command = "echo"
+"#,
+        )
+        .unwrap();
+        let plugin_root = tempfile::tempdir().unwrap();
+        let registry =
+            plugin_registry_with_inline_server(plugin_root.path(), "pluginsrv", PLUGIN_MCP_URL);
+
+        // Keep the developer's ~/.claude.json and ~/.cursor/mcp.json out of discovery.
+        let mut compat = codel_tools::types::compat::CompatConfig::default();
+        compat.claude.mcps = false;
+        compat.cursor.mcps = false;
+        let inputs = McpDiscoveryInputs {
+            cwd: cwd.path(),
+            plugin_registry: Some(&registry),
+            compat: &compat,
+        };
+
+        crate::agent::folder_trust::record_for_test(cwd.path(), true);
+        let trusted = discover_mcp_definitions_ignoring_disable(&inputs);
+        let (_, subject) = trusted
+            .get("projsrv")
+            .expect("trusted repo-declared definition must be discoverable");
+        assert!(
+            subject.project_scoped,
+            "repo-declared definition must be tagged project-scoped"
+        );
+
+        crate::agent::folder_trust::record_for_test(cwd.path(), false);
+        let untrusted = discover_mcp_definitions_ignoring_disable(&inputs);
+        assert!(
+            !untrusted.contains_key("projsrv"),
+            "untrusted repo-declared definition must not be discoverable, got {:?}",
+            untrusted.keys().collect::<Vec<_>>()
+        );
+        let (user, _) = untrusted
+            .get("usersrv")
+            .expect("user-tier definition must survive the trust gate");
+        assert_eq!(http_url(user), Some(USER_MCP_URL));
+        let (plugin, _) = untrusted
+            .get("pluginsrv")
+            .expect("plugin-tier definition must survive the trust gate");
+        assert_eq!(http_url(plugin), Some(PLUGIN_MCP_URL));
+
+        println!("{UNTRUSTED_DISCOVERY_PASS_MARK}");
+    }
+
+    /// Pins the pool gate: binding deny drops; advisory binds vendor/
+    /// project-claimed names but not TOML-owned (codel-native) definitions.
+    #[test]
+    fn agent_pool_filter_drops_policy_blocked_servers() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy, PolicySourceAuthority,
+        };
+
+        let corp = || {
+            acp::McpServer::Http(
+                acp::McpServerHttp::new("corp", "https://denied.corp.com/mcp").headers(vec![]),
+            )
+        };
+        let deny = |authority: PolicySourceAuthority| {
+            settings_with_policy(McpServerPolicy::single(
+                McpServerAllowlist::new(
+                    vec![],
+                    vec![AllowedMcpServer::Http {
+                        url_pattern: "https://denied.corp.com/*".into(),
+                    }],
+                    Some(std::path::PathBuf::from("/test/managed_config.toml")),
+                )
+                .with_authority(authority),
+            ))
+        };
+        let names = |servers: &[acp::McpServer]| -> Vec<String> {
+            servers
+                .iter()
+                .map(|s| mcp_server_name(s).to_string())
+                .collect()
+        };
+        let none = std::collections::HashSet::new;
+        let no_toml = HashMap::new;
+
+        // A native deny binds everything: the matching server drops.
+        let out = filter_policy_blocked_agent_mcp_with(
+            vec![
+                corp(),
+                acp::McpServer::Http(
+                    acp::McpServerHttp::new("ok", "https://ok.example/mcp").headers(vec![]),
+                ),
+            ],
+            &no_toml(),
+            &none(),
+            &deny(PolicySourceAuthority::Native),
+        );
+        assert_eq!(names(&out), vec!["ok"]);
+
+        // An advisory deny binds only foreign subjects: the TOML-owned
+        // (codel-native) definition survives, the vendor-defined one drops.
+        let toml_servers = HashMap::from([("corp".to_string(), corp())]);
+        let advisory = deny(PolicySourceAuthority::Advisory);
+        let kept =
+            filter_policy_blocked_agent_mcp_with(vec![corp()], &toml_servers, &none(), &advisory);
+        assert_eq!(names(&kept), vec!["corp"]);
+        assert!(
+            filter_policy_blocked_agent_mcp_with(vec![corp()], &no_toml(), &none(), &advisory)
+                .is_empty()
+        );
+
+        // A project-claimed TOML name reclassifies foreign (fail closed).
+        let project = std::collections::HashSet::from(["corp".to_string()]);
+        assert!(
+            filter_policy_blocked_agent_mcp_with(vec![corp()], &toml_servers, &project, &advisory)
+                .is_empty()
+        );
+
+        // Squatting the TOML name with a different definition stays foreign under an advisory
+        // name deny: another URL, a transport swap onto the Http name, a Stdio with another command.
+        let stdio = |cmd: &str| {
+            acp::McpServer::Stdio(acp::McpServerStdio::new(
+                "corp",
+                std::path::PathBuf::from(cmd),
+            ))
+        };
+        let deny_name = settings_with_policy(McpServerPolicy::single(
+            McpServerAllowlist::new(
+                vec![],
+                vec![AllowedMcpServer::Name {
+                    name: "corp".into(),
+                }],
+                Some(std::path::PathBuf::from("/test/managed_config.toml")),
+            )
+            .with_authority(PolicySourceAuthority::Advisory),
+        ));
+        let stdio_toml = HashMap::from([("corp".to_string(), stdio("good"))]);
+        let http_squat = acp::McpServer::Http(
+            acp::McpServerHttp::new("corp", "https://denied.corp.com/evil").headers(vec![]),
+        );
+        for (squatter, toml) in [
+            (http_squat, &toml_servers),
+            (stdio("evil"), &toml_servers),
+            (stdio("evil"), &stdio_toml),
+        ] {
+            assert!(
+                filter_policy_blocked_agent_mcp_with(vec![squatter], toml, &none(), &deny_name)
+                    .is_empty()
+            );
+        }
+        let kept = filter_policy_blocked_agent_mcp_with(
+            vec![stdio("good")],
+            &stdio_toml,
+            &none(),
+            &deny_name,
+        );
+        assert_eq!(names(&kept), vec!["corp"]);
+    }
+
+    #[test]
+    fn filter_policy_blocked_agent_mcp_drops_enabled_false_name() {
+        let cwd = tempfile::tempdir().unwrap();
+        git2::Repository::init(cwd.path()).unwrap();
+        std::fs::create_dir_all(cwd.path().join(".codel")).unwrap();
+        std::fs::write(
+            cwd.path().join(".codel").join("config.toml"),
+            r#"
+[mcp_servers.agent_md_ks_adder]
+url = "https://toml.example/mcp"
+enabled = false
+"#,
+        )
+        .unwrap();
+        let servers = vec![acp::McpServer::Http(
+            acp::McpServerHttp::new("agent_md_ks_adder", "https://agent.example/mcp")
+                .headers(vec![]),
+        )];
+        assert!(
+            filter_policy_blocked_agent_mcp(servers, cwd.path()).is_empty(),
+            "enabled = false must drop the name before overlay/pool spawn"
+        );
+    }
+
+    /// The native match compares a `load_mcp_servers` payload with `load_mcp_servers_toml_only`;
+    /// pin from disk that the two loaders agree, HashMap-ordered `env`/`headers` included.
+    #[test]
+    fn toml_loaders_agree_on_env_and_header_bearing_definitions() {
+        let tmp = tempfile::tempdir().unwrap();
+        git2::Repository::init(tmp.path()).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".codel")).unwrap();
+        std::fs::write(
+            tmp.path().join(".codel").join("config.toml"),
+            r#"
+[mcp_servers.parity_stdio]
+command = "echo"
+args = ["a", "b"]
+env = { A = "1", B = "2", C = "3" }
+
+[mcp_servers.parity_http]
+url = "https://parity.example/mcp"
+headers = { "X-A" = "1", "X-B" = "2", "X-C" = "3" }
+"#,
+        )
+        .unwrap();
+
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let by_name = |servers: Vec<acp::McpServer>| -> HashMap<String, acp::McpServer> {
+            servers
+                .into_iter()
+                .map(|s| (mcp_merge_key(&s), s))
+                .collect()
+        };
+        let full = by_name(crate::util::config::load_mcp_servers(tmp.path(), &compat));
+        let toml = by_name(crate::util::config::load_mcp_servers_toml_only(tmp.path()));
+        for name in ["parity_stdio", "parity_http"] {
+            let (a, b) = (full.get(name).unwrap(), toml.get(name).unwrap());
+            assert!(mcp_server_definitions_equal(a, b), "{name}: {a:?} vs {b:?}");
+        }
+    }
+
+    /// Two loads of the same TOML emit `env`/`headers` in HashMap order; the native match must not depend on it.
+    #[test]
+    fn definition_equality_ignores_env_and_header_order_but_not_args() {
+        let stdio = |args: Vec<&str>, env: Vec<(&str, &str)>| {
+            acp::McpServer::Stdio(
+                acp::McpServerStdio::new("s", std::path::PathBuf::from("cmd"))
+                    .args(args.into_iter().map(String::from).collect())
+                    .env(
+                        env.into_iter()
+                            .map(|(k, v)| acp::EnvVariable::new(k, v))
+                            .collect(),
+                    ),
+            )
+        };
+        let http = |headers: Vec<(&str, &str)>| {
+            acp::McpServer::Http(
+                acp::McpServerHttp::new("s", "https://x.example/mcp").headers(
+                    headers
+                        .into_iter()
+                        .map(|(k, v)| acp::HttpHeader::new(k, v))
+                        .collect(),
+                ),
+            )
+        };
+
+        assert!(mcp_server_definitions_equal(
+            &stdio(vec!["a", "b"], vec![("A", "1"), ("B", "2")]),
+            &stdio(vec!["a", "b"], vec![("B", "2"), ("A", "1")]),
+        ));
+        assert!(mcp_server_definitions_equal(
+            &http(vec![("X-A", "1"), ("X-B", "2")]),
+            &http(vec![("X-B", "2"), ("X-A", "1")]),
+        ));
+        assert!(!mcp_server_definitions_equal(
+            &stdio(vec!["a", "b"], vec![]),
+            &stdio(vec!["b", "a"], vec![]),
+        ));
+        assert!(!mcp_server_definitions_equal(
+            &stdio(vec![], vec![("A", "1")]),
+            &stdio(vec![], vec![("A", "2")]),
+        ));
+    }
+
+    /// An advisory policy source binds only foreign-origin servers at the merge; a native source drops both.
+    #[test]
+    fn advisory_policy_exempts_codel_native_servers() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy, PolicySourceAuthority,
+        };
+
+        let server = || {
+            acp::McpServer::Http(
+                acp::McpServerHttp::new("corp", "https://denied.corp.com/mcp").headers(vec![]),
+            )
+        };
+        let deny = |authority: PolicySourceAuthority| {
+            McpServerPolicy::single(
+                McpServerAllowlist::new(
+                    vec![],
+                    vec![AllowedMcpServer::Http {
+                        url_pattern: "https://denied.corp.com/*".into(),
+                    }],
+                    Some(std::path::PathBuf::from("/test/managed-settings.json")),
+                )
+                .with_authority(authority),
+            )
+        };
+        let subject = |origin: PolicySubjectOrigin| McpSubject {
+            origin,
+            project_scoped: false,
+        };
+
+        // Advisory deny + native server: survives.
+        let tagged = apply_mcp_server_policy(
+            vec![(server(), subject(PolicySubjectOrigin::CodelNative))],
+            &std::collections::HashSet::new(),
+            &settings_with_policy(deny(PolicySourceAuthority::Advisory)),
+        );
+        assert!(
+            at(&tagged, 0).disabled_reason.is_none(),
+            "advisory deny must not bind a codel-native server"
+        );
+
+        // Advisory deny + foreign server: binds.
+        let tagged = apply_mcp_server_policy(
+            vec![(server(), subject(PolicySubjectOrigin::Foreign))],
+            &std::collections::HashSet::new(),
+            &settings_with_policy(deny(PolicySourceAuthority::Advisory)),
+        );
+        assert!(
+            at(&tagged, 0).disabled_reason.is_some(),
+            "advisory deny must bind a foreign server"
+        );
+
+        // Native (TOML) deny binds the native server too.
+        let tagged = apply_mcp_server_policy(
+            vec![(server(), subject(PolicySubjectOrigin::CodelNative))],
+            &std::collections::HashSet::new(),
+            &settings_with_policy(deny(PolicySourceAuthority::Native)),
+        );
+        assert!(
+            at(&tagged, 0).disabled_reason.is_some(),
+            "a native policy source binds every origin"
+        );
+    }
+
+    /// Single-plugin registry declaring one inline HTTP MCP server — the simplest injectable
+    /// codel-native definition (a test must not touch the process-global codel home).
+    fn plugin_registry_with_inline_server(
+        plugin_root: &std::path::Path,
+        server_name: &str,
+        url: &str,
+    ) -> codel_agent::plugins::PluginRegistry {
+        use codel_agent::plugins::discovery::{DiscoveredPlugin, PluginId};
+        use codel_agent::plugins::manifest::{PathOrInline, PluginManifest};
+        use codel_agent::plugins::{PluginRegistry, PluginScope};
+
+        std::fs::create_dir_all(plugin_root).unwrap();
+        let manifest = PluginManifest {
+            name: "native-plugin".into(),
+            version: None,
+            description: None,
+            author: None,
+            homepage: None,
+            repository: None,
+            license: None,
+            keywords: vec![],
+            skills: None,
+            commands: None,
+            agents: None,
+            hooks: None,
+            mcp_servers: Some(PathOrInline::Inline(serde_json::json!({
+                server_name: { "type": "http", "url": url }
+            }))),
+            lsp_servers: None,
+        };
+        let id = PluginId::new(PluginScope::User, plugin_root, "native-plugin");
+        let dp = DiscoveredPlugin {
+            manifest,
+            id,
+            root: plugin_root.to_path_buf(),
+            canonical_root: plugin_root.to_path_buf(),
+            scope: PluginScope::User,
+            origin: codel_agent::plugins::PluginOrigin::UserCodel,
+            trusted: true,
+            skill_dirs: vec![],
+            command_dirs: vec![],
+            agent_dirs: vec![],
+            hooks_path: None,
+            mcp_config_path: None,
+            lsp_config_path: None,
+            conflict: None,
+        };
+        PluginRegistry::from_discovered(vec![dp], &[], &["native-plugin".to_string()])
+    }
+
+    /// A client re-forwarding a native-defined name keeps the native subject; a client-only name fails closed to foreign.
+    #[test]
+    fn client_forwarded_native_name_keeps_native_subject() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy, PolicySourceAuthority,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = plugin_registry_with_inline_server(
+            &tmp.path().join("native-plugin"),
+            "corp",
+            "https://denied.corp.com/mcp",
+        );
+        let cwd = empty_cwd();
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let ms = settings_with_policy(McpServerPolicy::single(
+            McpServerAllowlist::new(
+                vec![],
+                vec![AllowedMcpServer::Http {
+                    url_pattern: "https://denied.corp.com/*".into(),
+                }],
+                Some(std::path::PathBuf::from("/test/managed-settings.json")),
+            )
+            .with_authority(PolicySourceAuthority::Advisory),
+        ));
+
+        let client = |name: &str| {
+            acp::McpServer::Http(
+                acp::McpServerHttp::new(name, "https://denied.corp.com/mcp").headers(vec![]),
+            )
+        };
+        let merged = merge_managed_mcp_servers_with_policy_from(
+            vec![client("corp"), client("rogue")],
+            cwd.path(),
+            Some(&registry),
+            &compat,
+            &ms,
+        );
+        let reason_of = |name: &str| {
+            merged
+                .iter()
+                .find(|s| mcp_server_name(&s.server) == name)
+                .unwrap_or_else(|| panic!("{name} must be in the merge"))
+                .disabled_reason
+                .as_ref()
+        };
+        assert!(
+            reason_of("corp").is_none(),
+            "advisory deny must not bind the client-forwarded copy of a native server"
+        );
+        assert!(
+            reason_of("rogue").is_some(),
+            "client-only server must stay foreign and be tagged"
+        );
+    }
+
+    /// Inheritance requires the SAME definition: a native name on a different endpoint falls back to foreign.
+    #[test]
+    fn client_redefinition_of_native_name_falls_back_to_foreign() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy, PolicySourceAuthority,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = plugin_registry_with_inline_server(
+            &tmp.path().join("native-plugin"),
+            "corp",
+            "https://ok.example.com/mcp",
+        );
+        let cwd = empty_cwd();
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let ms = settings_with_policy(McpServerPolicy::single(
+            McpServerAllowlist::new(
+                vec![],
+                vec![AllowedMcpServer::Http {
+                    url_pattern: "https://evil.example.com/*".into(),
+                }],
+                Some(std::path::PathBuf::from("/test/managed-settings.json")),
+            )
+            .with_authority(PolicySourceAuthority::Advisory),
+        ));
+
+        // Same native name, denied endpoint.
+        let client = acp::McpServer::Http(
+            acp::McpServerHttp::new("corp", "https://evil.example.com/mcp").headers(vec![]),
+        );
+        let merged = merge_managed_mcp_servers_with_policy_from(
+            vec![client],
+            cwd.path(),
+            Some(&registry),
+            &compat,
+            &ms,
+        );
+        let corp = merged
+            .iter()
+            .find(|s| mcp_server_name(&s.server) == "corp")
+            .expect("corp must be in the merge");
+        assert!(
+            corp.disabled_reason.is_some(),
+            "a client redefinition of a native name must stay foreign and be tagged"
+        );
+    }
+
+    /// Origin table: only config.toml and plugin servers are codel-native; a project-scoped name reclassifies foreign.
+    #[test]
+    fn mcp_subject_classifies_sources() {
+        use codel_tools::types::config_source::ConfigSource;
+
+        let server = acp::McpServer::Http(
+            acp::McpServerHttp::new("srv", "https://s.example.com/mcp").headers(vec![]),
+        );
+        let empty = std::collections::HashSet::new();
+        let native = [
+            ConfigSource::ConfigToml {
+                path: "/u/.codel/config.toml".into(),
+            },
+            ConfigSource::Plugin {
+                plugin_name: "p".into(),
+                path: "/p".into(),
+            },
+        ];
+        for source in &native {
+            assert_eq!(
+                mcp_subject(&server, source, &empty).origin,
+                PolicySubjectOrigin::CodelNative,
+                "{source:?}"
+            );
+        }
+        let foreign = [
+            ConfigSource::Project {
+                path: "/repo/.codel".into(),
+            },
+            ConfigSource::User { path: "/u".into() },
+            ConfigSource::Bundled { path: "/b".into() },
+            ConfigSource::Server { path: "/s".into() },
+            ConfigSource::ClaudeJson {
+                path: "/u/.claude.json".into(),
+            },
+            ConfigSource::McpJson {
+                path: "/repo/.mcp.json".into(),
+            },
+            ConfigSource::Cli {
+                path: "/cli".into(),
+            },
+            ConfigSource::Managed { path: None },
+            ConfigSource::Builtin,
+        ];
+        for source in &foreign {
+            assert_eq!(
+                mcp_subject(&server, source, &empty).origin,
+                PolicySubjectOrigin::Foreign,
+                "{source:?}"
+            );
+        }
+        // A project-scoped name strips the native classification.
+        let project: std::collections::HashSet<String> = ["srv".to_string()].into();
+        assert_eq!(
+            mcp_subject(&server, at(&native, 0), &project).origin,
+            PolicySubjectOrigin::Foreign
+        );
+    }
+
+    /// End-to-end merge glue with injected settings: the lockdown tags unlisted project servers and the pin drops project MCP.
+    #[test]
+    fn injected_settings_drive_lockdown_and_project_pin_through_merge() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, ManagedSettings, McpServerAllowlist, McpServerPolicy,
+            PolicyLayerOwnership, PolicyPin,
+        };
+
+        let cwd = empty_cwd();
+        std::fs::create_dir_all(cwd.path().join(".cursor")).unwrap();
+        std::fs::write(
+            cwd.path().join(".cursor").join("mcp.json"),
+            r#"{"mcpServers": {
+                "granted": {"url": "https://ok.example.com/mcp"},
+                "ungranted": {"url": "https://other.example.com/mcp"}
+            }}"#,
+        )
+        .unwrap();
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let merge = |ms: &ManagedSettings| {
+            let merged =
+                merge_managed_mcp_servers_with_policy_from(vec![], cwd.path(), None, &compat, ms);
+            merged
+                .iter()
+                .map(|s| {
+                    (
+                        mcp_server_name(&s.server).to_string(),
+                        s.disabled_reason.is_some(),
+                    )
+                })
+                .collect::<HashMap<String, bool>>()
+        };
+
+        // No policy: both project servers load untagged.
+        let mut ms = ManagedSettings::default();
+        let by_name = merge(&ms);
+        assert_eq!(by_name.get("granted"), Some(&false));
+        assert_eq!(by_name.get("ungranted"), Some(&false));
+
+        // Managed-only lockdown with one grant, tagged through the real
+        // origins-map handoff; the /etc/codel layer makes both Admin-owned.
+        ms.mcp_allowlist = McpServerPolicy::single(
+            McpServerAllowlist::new(
+                vec![AllowedMcpServer::Http {
+                    url_pattern: "https://ok.example.com/*".into(),
+                }],
+                vec![],
+                Some(std::path::PathBuf::from("/etc/codel/managed_config.toml")),
+            )
+            .with_managed_only()
+            .with_ownership(PolicyLayerOwnership::Admin),
+        );
+        let by_name = merge(&ms);
+        assert_eq!(by_name.get("granted"), Some(&false));
+        assert_eq!(
+            by_name.get("ungranted"),
+            Some(&true),
+            "unlisted server must be tagged blocked under managed-only"
+        );
+
+        // Project pin: ungranted project MCP is dropped outright; the
+        // allow-granted server survives the pin (admin grant, admin pin).
+        ms.project_mcp = PolicyPin::Disabled {
+            source: std::path::PathBuf::from("/etc/codel/managed_config.toml"),
+            ownership: PolicyLayerOwnership::Admin,
+        };
+        let by_name = merge(&ms);
+        assert_eq!(
+            by_name.get("granted"),
+            Some(&false),
+            "allow-granted project server survives the pin"
+        );
+        assert!(
+            !by_name.contains_key("ungranted"),
+            "pinned-off project server must be dropped"
+        );
+    }
+
+    /// The merge drops a `deniedMcpServers` match and classifies it `Denylist`, not a missing allow entry.
     #[test]
     fn merge_drops_denied_server_and_classifies_as_denylist() {
-        use codel_workspace::permission::resolution::{AllowedMcpServer, McpServerAllowlist};
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy,
+        };
 
         // Deny-only policy (no allowlist) blocking one host.
-        let allowlist = McpServerAllowlist::new(
+        let allowlist = McpServerPolicy::single(McpServerAllowlist::new(
             vec![],
             vec![AllowedMcpServer::Http {
                 url_pattern: "https://blocked.corp.com/*".into(),
             }],
             Some(std::path::PathBuf::from("/test/managed-settings.json")),
-        );
+        ));
 
         let tagged = apply_mcp_server_policy(
             vec![
-                acp::McpServer::Http(
+                foreign(acp::McpServer::Http(
                     acp::McpServerHttp::new("blocked", "https://blocked.corp.com/mcp")
                         .headers(vec![]),
-                ),
-                acp::McpServer::Http(
+                )),
+                foreign(acp::McpServer::Http(
                     acp::McpServerHttp::new("ok", "https://ok.corp.com/mcp").headers(vec![]),
-                ),
+                )),
             ],
             &std::collections::HashSet::new(),
-            &allowlist,
+            &settings_with_policy(allowlist),
         );
 
         // Denied server is classified as a denylist hit, not a missing-allow.
@@ -630,11 +1774,8 @@ mod tests {
             .find(|s| mcp_server_name(&s.server) == "blocked")
             .expect("denied server present in policy output");
         assert!(
-            matches!(
-                blocked.disabled_reason,
-                Some(McpDisabledReason::Denylist { .. })
-            ),
-            "expected Denylist reason, got {:?}",
+            matches!(blocked.disabled_reason, Some(McpBlockReason::Deny { .. })),
+            "expected Deny reason, got {:?}",
             blocked.disabled_reason
         );
 
@@ -645,8 +1786,7 @@ mod tests {
             .expect("allowed server present in policy output");
         assert!(ok.disabled_reason.is_none());
 
-        // The public `merge_managed_mcp_servers` drop predicate removes exactly
-        // the denied server.
+        // The public `merge_managed_mcp_servers` drop predicate removes exactly the denied server
         let surviving: Vec<&str> = tagged
             .iter()
             .filter(|s| s.disabled_reason.is_none())
@@ -659,34 +1799,74 @@ mod tests {
         );
     }
 
+    /// The documented admin signal must land in the always-on unified.jsonl, not just tracing.
+    #[test]
+    fn policy_block_writes_unified_log_warn() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy,
+        };
+
+        let allowlist = McpServerPolicy::single(McpServerAllowlist::new(
+            vec![],
+            vec![AllowedMcpServer::Name {
+                name: "corp-denied-unified-log".into(),
+            }],
+            Some(std::path::PathBuf::from("/test/managed-settings.json")),
+        ));
+        let tagged = apply_mcp_server_policy(
+            vec![foreign(acp::McpServer::Http(
+                acp::McpServerHttp::new("corp-denied-unified-log", "https://denied.example/mcp")
+                    .headers(vec![]),
+            ))],
+            &std::collections::HashSet::new(),
+            &settings_with_policy(allowlist),
+        );
+        assert!(
+            at(&tagged, 0).disabled_reason.is_some(),
+            "server must be tagged"
+        );
+
+        let log = codel_logging::unified_log::snapshot_log().unwrap_or_default();
+        let log = String::from_utf8_lossy(&log);
+        assert!(
+            log.lines().any(
+                |l| l.contains("MCP server blocked by managed settings policy")
+                    && l.contains("corp-denied-unified-log")
+            ),
+            "block signal missing from unified log"
+        );
+    }
+
     /// A bare policy `serverName` deny drops the managed (prefixed) server as a
     /// `Denylist` hit, exact-match only (no substring over-match).
     #[test]
     fn merge_drops_server_denied_by_name_including_managed_prefix() {
-        use codel_workspace::permission::resolution::{AllowedMcpServer, McpServerAllowlist};
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy,
+        };
 
-        let allowlist = McpServerAllowlist::new(
+        let allowlist = McpServerPolicy::single(McpServerAllowlist::new(
             vec![],
             vec![AllowedMcpServer::Name {
                 name: "slack".into(),
             }],
             Some(std::path::PathBuf::from("/test/managed-settings.json")),
-        );
+        ));
 
         let tagged = apply_mcp_server_policy(
             vec![
-                acp::McpServer::Http(
+                foreign(acp::McpServer::Http(
                     acp::McpServerHttp::new("codel_com_slack", "https://mcp.slack.com/sse")
                         .headers(vec![]),
-                ),
+                )),
                 // Substring-only match must not be denied.
-                acp::McpServer::Http(
+                foreign(acp::McpServer::Http(
                     acp::McpServerHttp::new("slackbot", "https://slackbot.example.com/mcp")
                         .headers(vec![]),
-                ),
+                )),
             ],
             &std::collections::HashSet::new(),
-            &allowlist,
+            &settings_with_policy(allowlist),
         );
 
         let slack = tagged
@@ -694,11 +1874,8 @@ mod tests {
             .find(|s| mcp_server_name(&s.server) == "codel_com_slack")
             .expect("managed server present in policy output");
         assert!(
-            matches!(
-                slack.disabled_reason,
-                Some(McpDisabledReason::Denylist { .. })
-            ),
-            "name-denied managed server must classify as Denylist, got {:?}",
+            matches!(slack.disabled_reason, Some(McpBlockReason::Deny { .. })),
+            "name-denied managed server must classify as Deny, got {:?}",
             slack.disabled_reason
         );
 
@@ -719,110 +1896,170 @@ mod tests {
         assert_eq!(surviving, ["slackbot"]);
     }
 
-    /// Drive the expectation through [`to_managed_name`] (not a hand-written
-    /// literal) so this fails if policy/runtime name normalization ever drifts.
+    /// Managed-only at the merge chokepoint: allowlisted argv/URL servers
+    /// survive; everything else drops as an allowlist miss.
     #[test]
-    fn policy_server_name_matches_to_managed_name_transform() {
-        use codel_workspace::permission::resolution::{AllowedMcpServer, McpServerAllowlist};
-
-        let managed_server = |runtime: &str| {
-            vec![acp::McpServer::Http(
-                acp::McpServerHttp::new(runtime.to_string(), "https://mcp.example.com/sse")
-                    .headers(vec![]),
-            )]
+    fn managed_only_lockdown_drops_non_allowlisted_keeps_allowlisted() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy,
         };
-        let name_entry = |display: &str| AllowedMcpServer::Name {
-            name: display.to_string(),
-        };
-        let source = || Some(std::path::PathBuf::from("/test/managed-settings.json"));
 
-        for display in ["Slack", "My Server"] {
-            let runtime = to_managed_name(display);
-
-            let deny = McpServerAllowlist::new(vec![], vec![name_entry(display)], source());
-            let tagged = apply_mcp_server_policy(
-                managed_server(&runtime),
-                &std::collections::HashSet::new(),
-                &deny,
-            );
-            assert!(
-                matches!(
-                    tagged[0].disabled_reason,
-                    Some(McpDisabledReason::Denylist { .. })
-                ),
-                "deny serverName {display:?} must block runtime {runtime:?}, got {:?}",
-                tagged[0].disabled_reason
-            );
-
-            let allow = McpServerAllowlist::new(vec![name_entry(display)], vec![], source());
-            let tagged = apply_mcp_server_policy(
-                managed_server(&runtime),
-                &std::collections::HashSet::new(),
-                &allow,
-            );
-            assert!(
-                tagged[0].disabled_reason.is_none(),
-                "allow serverName {display:?} must keep runtime {runtime:?}, got {:?}",
-                tagged[0].disabled_reason
-            );
-        }
-    }
-
-    #[test]
-    fn auto_inject_dedup_by_display_name_first_scope_wins() {
-        let managed = vec![
-            make_managed("Linear", "https://mcp.linear.app", "user"),
-            make_managed("Linear", "https://mcp.linear.app", "team"),
-        ];
-        let cwd = empty_cwd();
-        let compat = codel_tools::types::compat::CompatConfig::default();
-        let merged = merge_managed_mcp_servers(vec![], cwd.path(), &managed, None, &compat);
-        let linear_count = merged
-            .iter()
-            .filter(|s| matches!(s, acp::McpServer::Http(acp::McpServerHttp { name, .. }) if name == "codel_com_linear"))
-            .count();
-        assert_eq!(linear_count, 1, "should dedup by display name");
-    }
-
-    #[test]
-    fn auto_inject_skips_existing_server() {
-        let managed = vec![make_managed("Slack", "https://mcp.slack.com/sse", "user")];
-        let client = vec![acp::McpServer::Http(
-            acp::McpServerHttp::new(
-                "codel_com_slack".to_string(),
-                "https://mcp.slack.com/sse".to_string(),
+        let policy = McpServerPolicy::single(
+            McpServerAllowlist::new(
+                vec![
+                    AllowedMcpServer::StdioArgv {
+                        argv: vec![
+                            "npx".into(),
+                            "@example-corp/ui-kit-mcp".into(),
+                            "enterprise-webc".into(),
+                        ],
+                    },
+                    AllowedMcpServer::Http {
+                        url_pattern: "https://mcp.figma.com/*".into(),
+                    },
+                ],
+                vec![],
+                Some(std::path::PathBuf::from("/etc/codel/requirements.toml")),
             )
-            .headers(vec![]),
-        )];
-        let cwd = empty_cwd();
-        let compat = codel_tools::types::compat::CompatConfig::default();
-        let merged = merge_managed_mcp_servers(client, cwd.path(), &managed, None, &compat);
-        let slack_count = merged
+            .with_managed_only(),
+        );
+
+        let ui_kit = acp::McpServer::Stdio(
+            acp::McpServerStdio::new("ui-kit", std::path::PathBuf::from("npx")).args(vec![
+                "@example-corp/ui-kit-mcp".into(),
+                "enterprise-webc".into(),
+            ]),
+        );
+        let rogue_stdio = acp::McpServer::Stdio(acp::McpServerStdio::new(
+            "rogue",
+            std::path::PathBuf::from("python3"),
+        ));
+        let figma = acp::McpServer::Http(
+            acp::McpServerHttp::new("figma", "https://mcp.figma.com/mcp").headers(vec![]),
+        );
+        let rogue_http = acp::McpServer::Http(
+            acp::McpServerHttp::new("rogue-http", "https://evil.example.com/mcp").headers(vec![]),
+        );
+
+        let tagged = apply_mcp_server_policy(
+            vec![
+                foreign(ui_kit),
+                foreign(rogue_stdio),
+                foreign(figma),
+                foreign(rogue_http),
+            ],
+            &std::collections::HashSet::new(),
+            &settings_with_policy(policy),
+        );
+        let surviving: Vec<&str> = tagged
             .iter()
-            .filter(|s| matches!(s, acp::McpServer::Http(acp::McpServerHttp { name, .. }) if name == "codel_com_slack"))
-            .count();
-        assert_eq!(slack_count, 1, "should not duplicate existing server");
+            .filter(|s| s.disabled_reason.is_none())
+            .map(|s| mcp_server_name(&s.server))
+            .collect();
+        assert_eq!(surviving, ["ui-kit", "figma"]);
+
+        let rogue = tagged
+            .iter()
+            .find(|s| mcp_server_name(&s.server) == "rogue")
+            .expect("rogue stdio present in policy output");
+        assert!(
+            matches!(
+                rogue.disabled_reason,
+                Some(McpBlockReason::NotGranted { .. })
+            ),
+            "lockdown drop must classify as allowlist miss, got {:?}",
+            rogue.disabled_reason
+        );
     }
 
+    /// Project-MCP pin: project servers drop unless allowlisted; non-project
+    /// servers and an unpinned policy are unaffected.
     #[test]
-    fn auto_inject_skips_disabled() {
-        let managed = vec![
-            make_managed("Slack", "https://mcp.slack.com/sse", "user"),
-            make_managed("Linear", "https://mcp.linear.app", "user"),
-        ];
-        let disabled: std::collections::HashSet<String> =
-            ["codel_com_slack".to_string()].into_iter().collect();
-        let mut merged = vec![];
-        auto_inject_managed_servers_with_disabled(&mut merged, &managed, &disabled);
+    fn project_mcp_pin_drops_project_servers_unless_allowlisted() {
+        use codel_workspace::permission::resolution::{
+            AllowedMcpServer, McpServerAllowlist, McpServerPolicy, PolicyLayerOwnership, PolicyPin,
+        };
 
-        let has_slack = merged
-            .iter()
-            .any(|s| matches!(s, acp::McpServer::Http(acp::McpServerHttp { name, .. }) if name == "codel_com_slack"));
-        let has_linear = merged
-            .iter()
-            .any(|s| matches!(s, acp::McpServer::Http(acp::McpServerHttp { name, .. }) if name == "codel_com_linear"));
-        assert!(!has_slack, "disabled connector should be skipped");
-        assert!(has_linear, "non-disabled connector should be injected");
+        let servers = || {
+            vec![
+                acp::McpServer::Http(
+                    acp::McpServerHttp::new("projsrv", "https://proj.example.com/mcp")
+                        .headers(vec![]),
+                ),
+                acp::McpServer::Http(
+                    acp::McpServerHttp::new("projallowed", "https://allowed.example.com/mcp")
+                        .headers(vec![]),
+                ),
+                acp::McpServer::Http(
+                    acp::McpServerHttp::new("usersrv", "https://user.example.com/mcp")
+                        .headers(vec![]),
+                ),
+            ]
+        };
+        let project_names: std::collections::HashSet<String> =
+            ["projsrv".to_string(), "projallowed".to_string()]
+                .into_iter()
+                .collect();
+        // The /etc/codel layer is admin-owned; the pin below carries the same
+        // ownership, so the exception grant must be admin-owned too.
+        let policy = McpServerPolicy::single(
+            McpServerAllowlist::new(
+                vec![AllowedMcpServer::Http {
+                    url_pattern: "https://allowed.example.com/*".into(),
+                }],
+                vec![],
+                Some(std::path::PathBuf::from("/etc/codel/requirements.toml")),
+            )
+            .with_ownership(PolicyLayerOwnership::Admin),
+        );
+        let subject = |name: &str| McpSubject {
+            origin: PolicySubjectOrigin::Foreign,
+            project_scoped: project_names.contains(name),
+        };
+        let paired = || -> Vec<(acp::McpServer, McpSubject)> {
+            servers()
+                .into_iter()
+                .map(|s| {
+                    let subject = subject(mcp_server_name(&s));
+                    (s, subject)
+                })
+                .collect()
+        };
+
+        // Pin disabled: project servers dropped, except the explicitly
+        // allowlisted one; the user-tier server survives.
+        let mut ms = settings_with_policy(policy.clone());
+        ms.project_mcp = PolicyPin::Disabled {
+            source: std::path::PathBuf::from("/etc/codel/requirements.toml"),
+            ownership: PolicyLayerOwnership::Admin,
+        };
+        let kept = apply_mcp_server_policy(paired(), &std::collections::HashSet::new(), &ms);
+        let names: Vec<&str> = kept.iter().map(|s| mcp_server_name(&s.server)).collect();
+        assert_eq!(names, ["projallowed", "usersrv"]);
+
+        // The verdict API's pin leg classifies the drop as a ProjectPin hit naming the pinning layer.
+        let listed = servers();
+        let reason = ms
+            .mcp_project_pin_block(at(&listed, 0), subject("projsrv"))
+            .expect("project server without a grant is dropped");
+        assert!(
+            matches!(&reason, McpBlockReason::ProjectPin { source }
+                if source == std::path::Path::new("/etc/codel/requirements.toml")),
+            "got {reason:?}"
+        );
+        assert!(
+            ms.mcp_project_pin_block(at(&listed, 1), subject("projallowed"))
+                .is_none(),
+            "allowlisted project server is not dropped"
+        );
+
+        // Unpinned: everything passes through.
+        let kept = apply_mcp_server_policy(
+            paired(),
+            &std::collections::HashSet::new(),
+            &settings_with_policy(policy),
+        );
+        assert_eq!(kept.len(), 3);
     }
 
     #[test]
@@ -852,7 +2089,7 @@ enabled = false
         .unwrap();
 
         let compat = codel_tools::types::compat::CompatConfig::default();
-        let merged = merge_managed_mcp_servers(vec![], cwd.path(), &[], None, &compat);
+        let merged = merge_managed_mcp_servers(vec![], cwd.path(), None, &compat);
         assert!(
             !merged.iter().any(|server| matches!(
                 server,
@@ -862,11 +2099,81 @@ enabled = false
         );
     }
 
-    /// End-to-end folder-trust gate through the public merge: an untrusted
-    /// workspace's project `.mcp.json` server is dropped before spawn (a
-    /// client-supplied server still survives), while a trusted workspace keeps
-    /// it. Existing merge tests record no decision, so the default-allowed gate
-    /// leaves them a no-op.
+    /// Builds a trusted git repo whose project config.toml declares two HTTP servers sharing one URL, each with its own auth header.
+    /// This mirrors a real setup: one ClickHouse endpoint, two orgs.
+    fn same_url_project_repo() -> tempfile::TempDir {
+        let cwd = empty_cwd();
+        std::fs::create_dir_all(cwd.path().join(".codel")).unwrap();
+        std::fs::write(
+            cwd.path().join(".codel").join("config.toml"),
+            r#"
+[mcp_servers.gb5207-org1]
+url = "https://dup-url.example.test/mcp"
+
+[mcp_servers.gb5207-org1.headers]
+Authorization = "Bearer org1-token"
+
+[mcp_servers.gb5207-org2]
+url = "https://dup-url.example.test/mcp"
+
+[mcp_servers.gb5207-org2.headers]
+Authorization = "Bearer org2-token"
+"#,
+        )
+        .unwrap();
+        git2::Repository::init(cwd.path()).unwrap();
+        crate::agent::folder_trust::record_for_test(cwd.path(), true);
+        cwd
+    }
+
+    /// Server NAME is the identity: two entries sharing one URL are distinct servers, and each keeps its own transport config.
+    #[test]
+    fn same_url_different_names_both_survive_merge() {
+        let cwd = same_url_project_repo();
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let merged = merge_managed_mcp_servers(vec![], cwd.path(), None, &compat);
+
+        let auth_header = |name: &str| -> &str {
+            let server = merged
+                .iter()
+                .find(|s| mcp_server_name(s) == name)
+                .unwrap_or_else(|| panic!("{name} must survive the merge"));
+            match server {
+                acp::McpServer::Http(acp::McpServerHttp { headers, .. }) => headers
+                    .iter()
+                    .find(|h| h.name == "Authorization")
+                    .unwrap_or_else(|| panic!("{name} must keep its Authorization header"))
+                    .value
+                    .as_str(),
+                other => panic!("expected Http server, got {other:?}"),
+            }
+        };
+        assert_eq!(auth_header("gb5207-org1"), "Bearer org1-token");
+        assert_eq!(auth_header("gb5207-org2"), "Bearer org2-token");
+    }
+
+    #[test]
+    fn same_url_different_names_both_sourced_from_toml() {
+        use codel_tools::types::config_source::ConfigSource;
+
+        let cwd = same_url_project_repo();
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let sourced = merge_managed_mcp_servers_sourced(cwd.path(), None, &compat);
+
+        for name in ["gb5207-org1", "gb5207-org2"] {
+            let (_, source) = sourced
+                .iter()
+                .find(|(s, _)| mcp_server_name(s) == name)
+                .unwrap_or_else(|| panic!("{name} must be in the sourced merge"));
+            assert!(
+                matches!(source, ConfigSource::ConfigToml { .. }),
+                "{name} must be attributed to config.toml, got {source:?}"
+            );
+        }
+    }
+
+    /// End-to-end folder-trust gate through the public merge: an untrusted workspace's project `.mcp.json` server is dropped before spawn.
+    /// A client-supplied server still survives, and a trusted workspace keeps its `.mcp.json` server.
     #[test]
     fn untrusted_workspace_drops_project_mcp_servers() {
         fn repo_with_project_server() -> tempfile::TempDir {
@@ -890,7 +2197,7 @@ enabled = false
             )
             .headers(vec![]),
         )];
-        let merged = merge_managed_mcp_servers(client, untrusted.path(), &[], None, &compat);
+        let merged = merge_managed_mcp_servers(client, untrusted.path(), None, &compat);
         assert!(
             !merged.iter().any(|s| mcp_server_name(s) == "projsrv"),
             "untrusted workspace must drop its repo-local MCP server"
@@ -902,11 +2209,46 @@ enabled = false
 
         let trusted = repo_with_project_server();
         crate::agent::folder_trust::record_for_test(trusted.path(), true);
-        let merged = merge_managed_mcp_servers(vec![], trusted.path(), &[], None, &compat);
+        let merged = merge_managed_mcp_servers(vec![], trusted.path(), None, &compat);
         assert!(
             merged.iter().any(|s| mcp_server_name(s) == "projsrv"),
             "trusted workspace must keep its repo-local MCP server"
         );
+    }
+
+    /// A project-pin-blocked definition must stay discoverable, or toggle/doctor/list misreport "not found".
+    #[test]
+    fn discovery_keeps_pin_blocked_project_definition_for_verdicts() {
+        use codel_workspace::permission::resolution::{PolicyLayerOwnership, PolicyPin};
+
+        let cwd = empty_cwd();
+        write_cursor_project_mcp(cwd.path(), "projsrv");
+        let compat = codel_tools::types::compat::CompatConfig::default();
+        let inputs = McpDiscoveryInputs {
+            cwd: cwd.path(),
+            plugin_registry: None,
+            compat: &compat,
+        };
+        let discovered = discover_mcp_definitions_ignoring_disable(&inputs);
+        let (server, subject) = discovered
+            .get("projsrv")
+            .expect("project definition must stay discoverable under a pin");
+        assert!(subject.project_scoped);
+
+        let mut ms = codel_workspace::permission::resolution::ManagedSettings::default();
+        ms.project_mcp = PolicyPin::Disabled {
+            source: std::path::PathBuf::from("/etc/codel/requirements.toml"),
+            ownership: PolicyLayerOwnership::Admin,
+        };
+        match ms.mcp_verdict(server, *subject) {
+            McpVerdict::Blocked(McpBlockReason::ProjectPin { source }) => {
+                assert_eq!(
+                    source,
+                    std::path::PathBuf::from("/etc/codel/requirements.toml")
+                );
+            }
+            other => panic!("expected ProjectPin refusal, got {other:?}"),
+        }
     }
 
     #[test]
@@ -929,7 +2271,7 @@ enabled = false
         );
 
         assert_eq!(servers.len(), 1, "should create one server");
-        match &servers[0] {
+        match &at(&servers, 0) {
             acp::McpServer::Stdio(acp::McpServerStdio {
                 name,
                 command,
@@ -943,40 +2285,39 @@ enabled = false
                     &["/home/user/.codel/plugins/team-tool/mcp-echo-server.py"]
                 );
             }
-            other => panic!("expected Stdio server, got {:?}", other),
+            _other => panic!("expected Stdio server"),
         }
     }
 
+    /// A sticky `enabled = false` disable must drop a plugin server through the REAL merge, not a hand-built set.
     #[test]
-    fn load_plugin_mcp_disabled_server_excluded_from_merge() {
-        let config: crate::util::config::McpConfig = serde_json::from_value(serde_json::json!({
-            "mcpServers": {
-                "test-server": {
-                    "command": "node",
-                    "args": ["server.js"]
-                }
-            }
-        }))
-        .expect("parse test MCP config");
-
-        let (servers, _) = load_plugin_mcp_servers_from_config(
-            &config,
-            "my-plugin",
-            "/tmp/plugin",
-            "/tmp/plugin-data",
+    fn plugin_mcp_disabled_server_excluded_from_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = plugin_registry_with_inline_server(
+            &tmp.path().join("plug"),
+            "plugsrv",
+            "https://plug.example.test/mcp",
         );
-        assert_eq!(servers.len(), 1);
+        let cwd = empty_cwd();
+        let compat = codel_tools::types::compat::CompatConfig::default();
 
-        // Simulate disabling via disabled_mcp_server_names.
-        let disabled: std::collections::HashSet<String> =
-            ["test-server".to_string()].into_iter().collect();
-
-        // auto_inject_managed_servers_with_disabled is for managed servers;
-        // for plugin servers, the disabled check happens during merge.
-        // Verify the server name matches what would be checked.
+        let merged = merge_managed_mcp_servers(vec![], cwd.path(), Some(&registry), &compat);
         assert!(
-            disabled.contains("test-server"),
-            "disabled set should contain the server name used in .mcp.json"
+            merged.iter().any(|s| mcp_server_name(s) == "plugsrv"),
+            "plugin server must merge before the disable"
+        );
+
+        git2::Repository::init(cwd.path()).unwrap();
+        std::fs::create_dir_all(cwd.path().join(".codel")).unwrap();
+        std::fs::write(
+            cwd.path().join(".codel").join("config.toml"),
+            "[mcp_servers.plugsrv]\nurl = \"https://plug.example.test/mcp\"\nenabled = false\n",
+        )
+        .unwrap();
+        let merged = merge_managed_mcp_servers(vec![], cwd.path(), Some(&registry), &compat);
+        assert!(
+            !merged.iter().any(|s| mcp_server_name(s) == "plugsrv"),
+            "disabled plugin server must be dropped by the merge"
         );
     }
 
@@ -988,12 +2329,12 @@ enabled = false
         let (servers, _) =
             load_plugin_mcp_servers_from_value(&value, "sentry", "/tmp/p", "/tmp/pd");
         assert_eq!(servers.len(), 1);
-        match &servers[0] {
+        match &at(&servers, 0) {
             acp::McpServer::Http(acp::McpServerHttp { name, url, .. }) => {
                 assert_eq!(name, "sentry");
                 assert_eq!(url, "https://mcp.sentry.dev/mcp");
             }
-            other => panic!("expected Http server, got {:?}", other),
+            _other => panic!("expected Http server"),
         }
     }
 
@@ -1133,7 +2474,7 @@ enabled = false
             1,
             "same plugin declaring one server name twice must register exactly once"
         );
-        match sentry[0] {
+        match at(&sentry, 0) {
             acp::McpServer::Http(acp::McpServerHttp { url, .. }) => {
                 assert_eq!(url, "https://file.example/mcp", "file source must win");
             }

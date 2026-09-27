@@ -14,26 +14,44 @@ members = [
     "crates/codegen/codel-chat-state",
     "crates/codegen/codel-codebase-graph",
     "crates/codegen/codel-crash-handler",
+    "crates/codegen/codel-dirs",
     "crates/codegen/codel-fast-worktree",
     "crates/codegen/codel-file-utils",
     "crates/codegen/codel-fsnotify",
+    "crates/codegen/codel-fuzzy-file-search",
     "crates/codegen/codel-gix-status",
+    "crates/codegen/codel-active-sessions",
     "crates/codegen/codel-agent",
     "crates/codegen/codel-announcements",
     "crates/codegen/codel-auth",
+    "crates/codegen/codel-bundle",
+    "crates/codegen/codel-compaction-transcript",
     "crates/codegen/codel-config",
     "crates/codegen/codel-config-types",
+    "crates/codegen/codel-dashboard-store",
+    "crates/codegen/codel-diag-server",
     "crates/codegen/codel-env",
+    "crates/codegen/codel-extra-ca",
+    "crates/codegen/codel-feedback",
+    "crates/codegen/codel-file-lock",
+    "crates/codegen/codel-foreign-sessions",
+    "crates/codegen/codel-gboom",
     "crates/codegen/codel-hooks",
     "crates/codegen/codel-http",
+    "crates/codegen/codel-image",
+    "crates/codegen/codel-login",
     "crates/codegen/codel-markdown",
     "crates/codegen/codel-markdown-core",
     "crates/codegen/codel-mcp",
     "crates/codegen/codel-memory",
     "crates/codegen/codel-mermaid",
     "crates/codegen/codel-models",
+    "crates/codegen/codel-logging",
+    "crates/codegen/codel-mixpanel",
+    "crates/codegen/codel-otel",
     "crates/codegen/codel-pager",
     "crates/codegen/codel-pager-bin",
+    "crates/codegen/codel-pager-diff",
     "crates/codegen/codel-pager-minimal",
     "crates/codegen/codel-pager-pty-harness",
     "crates/codegen/codel-pager-render",
@@ -43,10 +61,14 @@ members = [
     "crates/codegen/codel-sampling-types",
     "crates/codegen/codel-sandbox",
     "crates/codegen/codel-secrets",
+    "crates/codegen/codel-session-events",
+    "crates/codegen/codel-session-search",
     "crates/codegen/codel-shared",
     "crates/codegen/codel-shell",
     "crates/codegen/codel-shell-base",
     "crates/codegen/codel-shell-session-support",
+    "crates/codegen/codel-shell-terminal",
+    "crates/codegen/codel-status-line",
     "crates/codegen/codel-subagent-resolution",
     "crates/codegen/codel-test-support",
     "crates/codegen/codel-tools",
@@ -56,6 +78,7 @@ members = [
     "crates/codegen/codel-voice",
     "crates/codegen/codel-workspace",
     "crates/codegen/codel-workspace-client",
+    "crates/codegen/codel-workspace-daemon",
     "crates/codegen/codel-workspace-types",
     "crates/codegen/codel-hooks-plugins-types",
     "crates/codegen/codel-hunk-tracker",
@@ -66,6 +89,7 @@ members = [
     "crates/codegen/codel-system-power",
     "crates/codegen/codel-token-estimation",
     "crates/codegen/codel-tracing-macros",
+    "crates/common/codel-tracing",
     "crates/codegen/codel-tty-utils",
     "crates/codegen/codel-workflow",
     "crates/common/codel-circuit-breaker",
@@ -74,6 +98,7 @@ members = [
     "crates/common/codel-computer-hub-sdk",
     "crates/common/codel-compaction",
     "crates/common/codel-interjection-core",
+    "crates/common/codel-message-delivery-core",
     "crates/common/codel-test-utils",
     "crates/common/codel-tool-protocol",
     "crates/common/codel-tool-runtime",
@@ -108,6 +133,7 @@ async-openai = { version = "0.33.0", features = ["responses"] }
 async-stream = "0.3"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }
+axum-server = "0.8"
 backon = { version = "1.6" }
 backtrace = "0.3"
 base64 = "0.22"
@@ -124,14 +150,15 @@ criterion = "0.6"
 crossbeam = "0.8"
 crossterm = "0.28"
 cryptify = "3.2"
+ctor = "0.4"
 dashmap = "6"
-derive_more = { version = "2", features = ["add", "add_assign", "debug", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_into"] }
+derive_more = { version = "2", features = ["add", "add_assign", "debug", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "as_ref", "try_into"] }
 dhat = "0.3"
 dirs = "5.0"
 documented = "0.9"
 dunce = "1"
 educe = "0.6.0"
-enum_delegate = "0.2"
+encoding_rs = "0.8.35"
 env_logger = "0.11"
 eventsource-stream = "0.2"
 fastrand = "2"
@@ -144,9 +171,11 @@ futures-util = "0.3"
 fuzzy-matcher = "0.3.7"
 gcloud-storage = { version = "1.3.0", default-features = false, features = ["auth", "jwt-aws-lc-rs", "external-account"] }
 gethostname = "1"
+git2 = "0.20"
 gix = { version = "0.83", default-features = false, features = ["sha1"] }
 glob = "0.3"
 globset = "0.4"
+hmac = "0.12"
 htmd = "0.5.4"
 html-escape = "0.2"
 http = "1"
@@ -160,10 +189,12 @@ infer = "0.19.0"
 insta = "1"
 itertools = "0.14"
 jsonschema = "0.30.0"
+kamadak-exif = "0.5"
 libc = "0.2"
 linkify = "0.10"
 lipsum = "0.9"
 log = { version = "0.4", features = ["kv", "kv_unstable"] }
+loom = "0.7"
 md5 = "0.8"
 mermaid-to-svg = { path = "third_party/mermaid-to-svg" }
 minijinja = "2.9"
@@ -189,12 +220,14 @@ pretty_assertions = "1"
 prometheus = { version = "0.14", features = ["process"] }
 prost = "0.14"
 prost-build = "0.14"
+prost-reflect = "0.16"
 pulldown-cmark = "0.13"
-quick-xml = "0.38"
+quick-xml = "0.41"
 rand = "0.9"
 ratatui = { version = "0.29" }
 ratatui-core = "0.1"
 rayon = "1"
+rcgen = { version = "0.13", features = ["pem"] }
 reflink-copy = "0.1"
 regex = "1"
 reqwest = { version = "0.12", features = ["rustls-tls", "stream", "json", "multipart", "http2", "blocking", "socks"], default-features = false }
@@ -205,6 +238,9 @@ ring = "0.17"
 rsa = "0.9"
 runfiles = "0.1"
 rustc-hash = "2"
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+rustls-native-certs = "0.8"
+same-file = "1"
 schemars = "1"
 scraper = "0.23"
 semver = "1"
@@ -213,6 +249,7 @@ serde_json = "1"
 serde_path_to_error = "0.1"
 serde_yaml = "0.9"
 serial_test = "3"
+sha1 = "0.10"
 sha2 = { version = "0.10", features = ["force-soft"] }
 shlex = "1"
 signal-hook = "0.3"
@@ -222,22 +259,22 @@ smallvec = "1"
 strip-ansi-escapes = "0.2.1"
 strum = { version = "0.27", features = ["derive"] }
 supports-color = "3.0"
-syntect = "5.3"
+syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
 tar = "0.4"
 tempfile = "3"
 terminput = "0.3"
 termwiz = { version = "0.23", default-features = false }
 textwrap = "0.16"
 thiserror = "2"
-tikv-jemalloc-ctl = "0.6"
-tikv-jemalloc-sys = "0.6"
-tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
+tikv-jemalloc-ctl = "0.7"
+tikv-jemalloc-sys = "0.7"
+tikv-jemallocator = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 time = "0.3"
 tiny-skia = "0.12"
 tokio = { version = "1", features = ["full"] }
 tokio-retry = "0.3"
 tokio-stream = { version = "0.1", features = ["net"] }
-tokio-tungstenite = "0.27"
+tokio-tungstenite = "0.28"
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.9"
 toml_edit = "0.22"
@@ -249,9 +286,13 @@ tower-http = "0.6"
 tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "smallvec", "tracing-log", "std", "ansi"] }
+tree-sitter = "0.26"
 ts-rs = "12.0"
 tui-scrollbar = "0.2"
-two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
+two-face = { version = "0.4", default-features = false, features = ["syntect-onig"] }
+unicode-bidi = "0.3"
+unicode-bidi-mirroring = "0.4"
+unicode-normalization = "0.1"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2"
 url = "2"
@@ -261,6 +302,7 @@ vte = "0.15.0"
 wait-timeout = "0.2"
 walkdir = "2"
 webbrowser = { version = "1.0.4" }
+webpki-roots = "0.26"
 which = "8"
 whoami = "1.4"
 wildmatch = "2"
@@ -272,34 +314,63 @@ codel-agent-lifecycle = { path = "crates/codegen/codel-agent-lifecycle" }
 codel-circuit-breaker = { path = "crates/common/codel-circuit-breaker" }
 codel-computer-hub-core = { path = "crates/common/codel-computer-hub-core" }
 codel-computer-hub-sdk = { path = "crates/common/codel-computer-hub-sdk" }
+codel-dirs = { path = "crates/codegen/codel-dirs" }
+codel-fuzzy-file-search = { path = "crates/codegen/codel-fuzzy-file-search" }
 codel-gix-status = { path = "crates/codegen/codel-gix-status" }
+codel-active-sessions = { path = "crates/codegen/codel-active-sessions" }
 codel-agent = { path = "crates/codegen/codel-agent" }
 codel-announcements = { path = "crates/codegen/codel-announcements" }
 codel-auth = { path = "crates/codegen/codel-auth" }
+codel-bundle = { path = "crates/codegen/codel-bundle" }
 codel-config = { path = "crates/codegen/codel-config" }
 codel-config-types = { path = "crates/codegen/codel-config-types" }
+codel-tracing = { path = "crates/common/codel-tracing" }
+fastrace = { version = "0.7" }
+fastrace-opentelemetry = { version = "0.18" }
+fastrace-reqwest = { version = "0.2" }
+fastrace-tonic = { version = "0.1" }
+opentelemetry-http = { version = "0.32", features = ["reqwest-blocking"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "reqwest-blocking-client", "tls-roots"] }
+opentelemetry-proto = { version = "0.32", features = ["gen-tonic"] }
+codel-compaction-transcript = { path = "crates/codegen/codel-compaction-transcript" }
+codel-dashboard-store = { path = "crates/codegen/codel-dashboard-store" }
+codel-diag-server = { path = "crates/codegen/codel-diag-server" }
 codel-env = { path = "crates/codegen/codel-env" }
+codel-extra-ca = { path = "crates/codegen/codel-extra-ca" }
+codel-feedback = { path = "crates/codegen/codel-feedback" }
+codel-file-lock = { path = "crates/codegen/codel-file-lock" }
+codel-foreign-sessions = { path = "crates/codegen/codel-foreign-sessions" }
 codel-http = { path = "crates/codegen/codel-http" }
+codel-image = { path = "crates/codegen/codel-image" }
+codel-login = { path = "crates/codegen/codel-login" }
 codel-markdown = { path = "crates/codegen/codel-markdown" }
 codel-markdown-core = { path = "crates/codegen/codel-markdown-core" }
 codel-mcp = { path = "crates/codegen/codel-mcp" }
 codel-memory = { path = "crates/codegen/codel-memory" }
 codel-mermaid = { path = "crates/codegen/codel-mermaid" }
 codel-models = { path = "crates/codegen/codel-models" }
+codel-otel = { path = "crates/codegen/codel-otel" }
 codel-sampler = { path = "crates/codegen/codel-sampler" }
 codel-secrets = { path = "crates/codegen/codel-secrets" }
+codel-session-events = { path = "crates/codegen/codel-session-events" }
+codel-session-search = { path = "crates/codegen/codel-session-search" }
 codel-shared = { path = "crates/codegen/codel-shared" }
 codel-shell = { path = "crates/codegen/codel-shell" }
 codel-shell-base = { path = "crates/codegen/codel-shell-base" }
 codel-shell-session-support = { path = "crates/codegen/codel-shell-session-support" }
+codel-shell-terminal = { path = "crates/codegen/codel-shell-terminal" }
+codel-status-line = { path = "crates/codegen/codel-status-line" }
+codel-logging = { path = "crates/codegen/codel-logging" }
 codel-test-support = { path = "crates/codegen/codel-test-support" }
 codel-tools = { path = "crates/codegen/codel-tools" }
 codel-tools-api = { path = "crates/codegen/codel-tools-api" }
 codel-version = { path = "crates/codegen/codel-version" }
-codel-workspace = { path = "crates/codegen/codel-workspace" }
+codel-workspace = { path = "crates/codegen/codel-workspace", default-features = false }
 codel-workspace-types = { path = "crates/codegen/codel-workspace-types" }
 codel-hooks-plugins-types = { path = "crates/codegen/codel-hooks-plugins-types" }
 codel-interjection-core = { path = "crates/common/codel-interjection-core" }
+codel-message-delivery-core = { path = "crates/common/codel-message-delivery-core" }
+codel-mixpanel = { path = "crates/codegen/codel-mixpanel" }
 codel-prompt-queue = { path = "crates/codegen/codel-prompt-queue" }
 codel-proto-build = { path = "crates/build/codel-proto-build" }
 codel-ratatui-inline = { path = "crates/codegen/codel-ratatui-inline" }
@@ -313,6 +384,7 @@ codel-tool-runtime = { path = "crates/common/codel-tool-runtime" }
 codel-tool-types = { path = "crates/common/codel-tool-types" }
 codel-tty-utils = { path = "crates/codegen/codel-tty-utils" }
 zbus = { version = "5" }
+zip = "3"
 zstd = "0.13"
 
 [profile.release]
@@ -356,6 +428,14 @@ panic = "unwind"
 inherits = "release-dist"
 # All settings now match the parent — this is an intentional alias.
 
+# Size-optimized profile for prod-admin-cli distribution builds. Cargo ignores
+# profiles in non-root manifests, so this lives here instead of the CLI crate.
+[profile.admin-cli-dist]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
 
 [profile.dev]
 panic = "abort"
@@ -365,6 +445,10 @@ debug = "line-tables-only"
 opt-level = 0
 lto = false
 incremental = true
+
+# Skip debug info for non-workspace dependencies; workspace crates keep line-tables-only.
+[profile.dev.package."*"]
+debug = false
 
 [profile.bench]
 debug = true
