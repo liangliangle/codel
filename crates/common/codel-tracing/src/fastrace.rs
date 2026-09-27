@@ -1,39 +1,9 @@
 use fastrace::prelude::*;
-use fastrace_opentelemetry::OpenTelemetryReporter;
-use opentelemetry::InstrumentationScope;
-use opentelemetry::KeyValue;
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_otlp::{ExporterBuildError, SpanExporter};
-use opentelemetry_sdk::Resource;
 use std::borrow::Cow;
-use std::iter;
 
-// Fastrace initialization
-pub fn init_fastrace(
-    endpoint: String,
-    name: String,
-    resource_attributes: impl IntoIterator<Item = (String, String)>,
-) -> Result<(), ExporterBuildError> {
-    let exporter = SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(endpoint)
-        .with_protocol(opentelemetry_otlp::Protocol::Grpc)
-        .with_timeout(opentelemetry_otlp::OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT)
-        .build()?;
-    let attributes = resource_attributes
-        .into_iter()
-        .chain(iter::once(("service.name".into(), name.clone())))
-        .map(|(k, v)| KeyValue::new(k, v));
-    let reporter = OpenTelemetryReporter::new(
-        exporter,
-        Cow::Owned(Resource::builder().with_attributes(attributes).build()),
-        InstrumentationScope::builder(name)
-            .with_version(env!("CARGO_PKG_VERSION"))
-            .build(),
-    );
-    fastrace::set_reporter(reporter, fastrace::collector::Config::default());
-    Ok(())
-}
+// No reporter is installed: this crate's spans stay in-process, so nothing is
+// batched to a collector. The trace-context helpers below only give callers
+// existing or fresh W3C ids to correlate local spans and outgoing requests.
 
 pub fn current_trace_id() -> Option<String> {
     SpanContext::current_local_parent().map(|current| current.encode_w3c_traceparent())

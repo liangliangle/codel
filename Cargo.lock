@@ -3759,7 +3759,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "fastrace",
- "fastrace-opentelemetry",
  "fastrace-reqwest",
  "fastrace-tonic",
  "http 1.4.0",
@@ -3767,7 +3766,6 @@ dependencies = [
  "log",
  "opentelemetry",
  "opentelemetry-http",
- "opentelemetry-otlp",
  "opentelemetry_sdk",
  "reqwest 0.12.24",
  "reqwest-middleware 0.4.2",
@@ -9320,25 +9318,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "opentelemetry-otlp"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
-dependencies = [
- "http 1.4.0",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-proto",
- "opentelemetry_sdk",
- "prost",
- "reqwest 0.13.4",
- "thiserror 2.0.18",
- "tokio",
- "tonic",
- "tonic-types",
-]
-
-[[package]]
 name = "opentelemetry-proto"
 version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13076,7 +13055,6 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
- "rustls-native-certs",
  "socket2",
  "sync_wrapper",
  "tokio",
@@ -13126,17 +13104,6 @@ dependencies = [
  "syn 2.0.117",
  "tempfile",
  "tonic-build",
-]
-
-[[package]]
-name = "tonic-types"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a875a902255423d34c1f20838ab374126db8eb41625b7947a1d54113b0b7399"
-dependencies = [
- "prost",
- "prost-types",
- "tonic",
 ]
 
 [[package]]

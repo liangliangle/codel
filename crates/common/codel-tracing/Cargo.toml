@@ -10,11 +10,9 @@ http = { workspace = true }
 log = { workspace = true }
 fastrace = { workspace = true }
 fastrace-tonic = { workspace = true }
-fastrace-opentelemetry = { workspace = true }
 fastrace-reqwest = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-http = { workspace = true }
-opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
