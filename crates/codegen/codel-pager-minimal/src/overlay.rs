@@ -182,7 +182,6 @@ fn compute_target(app: &mut AppView, term_h: u16, width: u16) -> u16 {
         let hint = super::auth::minimal_auth_hint(
             &app.auth_state,
             &app.trust_state,
-            app.has_access(),
             app.is_zdr_blocked(),
         );
         let needed = super::auth::auth_hint_rows(&hint, width);

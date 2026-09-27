@@ -59,7 +59,7 @@ pub async fn assert_empty_enter_force_sends_top_queued() -> Result<()> {
 
     content
         .server()
-        .set_settings(json!({ "allow_access": true, "dock_enabled": true }));
+        .set_settings(json!({ "dock_enabled": true }));
     std::fs::write(
         content.sandbox().codel_home().join("requirements.toml"),
         "[features]\ndock = true\n",

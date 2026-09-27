@@ -2171,13 +2171,6 @@ fn reset_session_title_complete_pushes_system_block() {
 
 
 
-fn test_gate() -> codel_login::GateInfo {
-    codel_login::GateInfo {
-        message: "Subscribe".into(),
-        url: None,
-        label: None,
-    }
-}
 
 
 

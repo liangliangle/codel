@@ -26,12 +26,11 @@ pub(super) enum MinimalAuthHint {
 }
 
 /// Map the app's auth and trust state to what the no-agent live region should show.
-/// Mirrors the welcome screen's gate order: trust is only offered after auth is `Done`, when the user has access and is not ZDR-blocked.
+/// Mirrors the welcome screen's gate order: trust is only offered after auth is `Done` and the account is not ZDR-blocked.
 /// Those gates already block sessions, and the input interceptor only answers trust under the same conditions.
 pub(super) fn minimal_auth_hint(
     auth: &AuthState,
     trust: &TrustState,
-    has_access: bool,
     is_zdr_blocked: bool,
 ) -> MinimalAuthHint {
     match auth {
@@ -43,7 +42,7 @@ pub(super) fn minimal_auth_hint(
                 codel_shell::agent::auth_method::AUTH_ERROR_API_KEY.to_owned(),
             )
         }
-        AuthState::Done if has_access && !is_zdr_blocked => {
+        AuthState::Done if !is_zdr_blocked => {
             if let TrustState::Pending { workspace } = trust {
                 MinimalAuthHint::TrustFolder {
                     workspace: workspace.clone(),

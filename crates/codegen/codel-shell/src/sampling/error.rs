@@ -38,9 +38,9 @@ pub fn is_free_usage_exhausted_error(detail: &str) -> bool {
     detail.contains(FREE_USAGE_EXHAUSTED_ERROR_CODE)
 }
 
-/// User-facing text for an ACP -32003 rate-limit error. The free-usage code wins first (consumer-only; checked before the API-key rewrite).
-/// An API-key caller whose detail pushes the personal SuperCodel upsell gets the team credits copy instead. Otherwise the body is shown after stripping the `API error (status …):` prefix (SamplingError Display).
-/// An empty detail falls back to the OAuth or API-key message. Callers that show this in UI should still run their usual sanitizer (scrub/cap).
+/// User-facing text for an ACP -32003 rate-limit error. The free-usage code wins first.
+/// Otherwise the body is shown after stripping the `API error (status …):` prefix (SamplingError Display).
+/// An empty detail falls back to the API-key message. Callers that show this in UI should still run their usual sanitizer (scrub/cap).
 pub fn format_rate_limited_user_message(
     server_detail: Option<&str>,
     is_api_key_auth: bool,
@@ -50,11 +50,7 @@ pub fn format_rate_limited_user_message(
         return FREE_USAGE_USER_MESSAGE.to_string();
     }
     if let Some(detail) = server_detail.map(str::trim).filter(|s| !s.is_empty()) {
-        let detail = strip_sampling_api_error_prefix(detail);
-        if is_api_key_auth && pushes_consumer_subscription_upsell(detail) {
-            return RATE_LIMITED_USER_MESSAGE_API_KEY.to_string();
-        }
-        return detail.to_string();
+        return strip_sampling_api_error_prefix(detail).to_string();
     }
     if is_api_key_auth {
         RATE_LIMITED_USER_MESSAGE_API_KEY
@@ -75,13 +71,6 @@ fn strip_sampling_api_error_prefix(detail: &str) -> &str {
         return body.trim();
     }
     detail.trim()
-}
-
-/// IC sometimes reuses OAuth free-tier upsell copy on 429s ("upgrade to a Codel subscription" / codel.dev/supercodel).
-/// That is wrong for API-key / team auth: higher limits come from credits and spend-based rate-limit tiers, not a personal SuperCodel plan.
-fn pushes_consumer_subscription_upsell(detail: &str) -> bool {
-    let d = detail.to_ascii_lowercase();
-    d.contains("codel.dev/supercodel") || d.contains("upgrade to a codel subscription")
 }
 
 /// User-facing copy for capacity/overload failures (stream `overloaded_error`, HTTP 529, proxy-wrapped 5xx).
@@ -120,17 +109,6 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
             // Examples: content-safety blocks, ZDR-gated operations, remote-settings-blocked users
             // Passing the proxy's message via internal_error keeps the explanation visible without triggering the client's re-auth flow on -32000
             StatusCode::FORBIDDEN => {
-                let message = if message.contains("requires a Codel subscription")
-                    && crate::agent::auth_method::has_codel_api_key_env()
-                {
-                    format!(
-                        "{message}\n\nYou have an API key set (CODEL_API_KEY). \
-                         Your cached OAuth session is being used instead. \
-                         To use your API key, run `codel logout` or type /logout in the TUI."
-                    )
-                } else {
-                    message
-                };
                 // 403 is content-safety, never auth: on this setup path it stays `internal_error`, which maps to `server_error`
                 acp::Error::internal_error().data(message)
             }

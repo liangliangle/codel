@@ -1,6 +1,5 @@
 //! Tests for the dispatch module tree: shared fixtures and per-domain test modules.
 mod auth;
-mod billing;
 mod cta_e2e;
 mod dashboard;
 mod jump;
@@ -22,10 +21,6 @@ mod task_result;
 mod transcript;
 mod turn;
 mod voice;
-use super::billing::{
-    CreditLimitUpsellMode, credit_limit_upsell_mode, is_max_tier, open_credit_limit_upsell,
-    open_free_usage_upsell,
-};
 use super::cta::{
     CTA_MCP_ABSENT_MAX_ATTEMPTS, CTA_MCP_POLL_MAX_ATTEMPTS, cta_impression_plugin_name,
     cta_install_error_category, cta_install_relative_path, plugin_cta_phase_for,
@@ -108,7 +103,6 @@ fn make_test_agent_session(app: &AppView, id: AgentId, sid: &str) -> AgentSessio
         restore_degree: None,
         rate_limited: false,
         model_incompatible: false,
-        credit_limit_blocked: false,
         free_usage_blocked: false,
         available_commands: Vec::new(),
         available_commands_generation: 0,
@@ -377,7 +371,6 @@ fn insert_placeholder_agent(app: &mut AppView, id: AgentId) {
             restore_degree: None,
             rate_limited: false,
             model_incompatible: false,
-            credit_limit_blocked: false,
             free_usage_blocked: false,
             available_commands: Vec::new(),
             available_commands_generation: 0,
@@ -540,7 +533,6 @@ fn two_agent_app_with_bg_task() -> AppView {
             restore_degree: None,
             rate_limited: false,
             model_incompatible: false,
-            credit_limit_blocked: false,
             free_usage_blocked: false,
             available_commands: Vec::new(),
             available_commands_generation: 0,
@@ -837,18 +829,4 @@ fn reset_mouse_capture_enabled(on: bool) {
 }
 fn mouse_capture_is_enabled() -> bool {
     crate::app::MOUSE_CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
-}
-/// Build a minimal `CreditBalance` for billing dispatch tests.
-fn test_bal(usage_pct: f64) -> crate::views::credit_bar::CreditBalance {
-    crate::views::credit_bar::CreditBalance {
-        usage_pct,
-        effective_usage_pct: usage_pct,
-        period_end_display: None,
-        pay_as_you_go: false,
-        on_demand_cap_cents: None,
-        on_demand_used_cents: None,
-        prepaid_balance_cents: None,
-        period_type: None,
-        is_unified_billing_user: None,
-    }
 }

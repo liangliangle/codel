@@ -27,214 +27,11 @@
         );
     }
 
-    #[test]
-    fn settings_api_key_keeps_voice_despite_remote_false() {
-        // Remote false alone must not disable an already API-key session.
-        let mut app = make_app_with_agent("sess-api-key");
-        app.is_api_key_auth = true;
-        app.apply_voice_mode_enabled(true);
-        app.voice_ui_active = true;
-        assert!(handle_ext_notification(
-            &voice_settings_update(false),
-            &mut app
-        ));
-        assert!(app.voice_mode_enabled);
-        assert!(app.voice_ui_active);
 
-        // Same update can stamp API Key while remote settings sends voice false.
-        let mut app = make_app_with_agent("sess-combined");
-        let notif = acp::ExtNotification::new(
-            "codel/settings/update",
-            std::sync::Arc::from(
-                serde_json::value::to_raw_value(&serde_json::json!({
-                    "voice_mode_enabled": false,
-                    "subscription_tier_display": "API Key"
-                }))
-                .unwrap(),
-            ),
-        );
-        assert!(handle_ext_notification(&notif, &mut app));
-        assert!(app.is_api_key_auth);
-        assert!(app.voice_mode_enabled);
-        assert!(app.tier_restricted_commands.is_empty());
-    }
 
-    #[test]
-    fn settings_non_api_key_tier_clears_stale_api_key_flag() {
-        let mut app = make_app_with_agent("sess-stale-key");
-        assert!(handle_ext_notification(
-            &tier_settings_update("API Key"),
-            &mut app
-        ));
-        assert!(app.is_api_key_auth);
-        assert!(!app.usage_visible);
-        assert!(app.tier_restricted_commands.is_empty());
-        assert!(app.voice_mode_enabled);
 
-        // Later personal Free stamp must not keep API-key bypass or force-on voice.
-        assert!(handle_ext_notification(
-            &tier_settings_update("Free"),
-            &mut app
-        ));
-        assert!(!app.is_api_key_auth);
-        assert!(app.usage_visible);
-        assert!(!app.tier_restricted_commands.is_empty());
-        assert!(!app.voice_mode_enabled);
 
-        // Paid tier after API Key must not force voice off (omit voice field).
-        let mut app = make_app_with_agent("sess-paid-keep-voice");
-        assert!(handle_ext_notification(
-            &tier_settings_update("API Key"),
-            &mut app
-        ));
-        assert!(app.voice_mode_enabled);
-        assert!(handle_ext_notification(
-            &tier_settings_update("SuperCodel"),
-            &mut app
-        ));
-        assert!(!app.is_api_key_auth);
-        assert!(app.voice_mode_enabled);
-        assert!(app.tier_restricted_commands.is_empty());
-    }
 
-    #[test]
-    fn voice_remote_true_re_enables_after_kill_switch() {
-        let mut app = make_app_with_agent("sess-1");
-        app.apply_voice_mode_enabled(false);
-        assert!(!app.voice_mode_enabled);
-
-        let affected = handle_ext_notification(&voice_settings_update(true), &mut app);
-
-        assert!(affected);
-        assert!(
-            app.voice_mode_enabled,
-            "remote true lifts the kill switch (env unset)"
-        );
-    }
-
-    #[test]
-    fn voice_settings_update_omitted_leaves_gate_unchanged() {
-        // Unrelated settings push must not flip the gate (default-on stays on; kill-switch stays off until an explicit true/false)
-        let mut app = make_app_with_agent("sess-1");
-        app.apply_voice_mode_enabled(true);
-        let omit = acp::ExtNotification::new(
-            "codel/settings/update",
-            std::sync::Arc::from(
-                serde_json::value::to_raw_value(&serde_json::json!({ "sharing_enabled": true }))
-                    .unwrap(),
-            ),
-        );
-        let _ = handle_ext_notification(&omit, &mut app);
-        assert!(app.voice_mode_enabled);
-
-        app.apply_voice_mode_enabled(false);
-        let _ = handle_ext_notification(&omit, &mut app);
-        assert!(!app.voice_mode_enabled);
-    }
-
-    #[test]
-    fn settings_update_clearing_group_tool_verbs_reverts_to_default() {
-        // Expected values come from the same chain the handler resolves, so the test holds regardless of host config/env
-        // A local `[ui]` or env override legitimately beats the remote tier on both legs
-        let requirements = codel_shell::config::load_merged_requirements();
-        let user_config = codel_shell::config::load_from_disk().ok();
-        let managed_config = codel_shell::config::load_managed_config().ok();
-        let resolve = |remote_val: Option<bool>| {
-            let remote = codel_shell::util::config::RemoteSettings {
-                group_tool_verbs: remote_val,
-                ..Default::default()
-            };
-            codel_shell::util::config::resolve_group_tool_verbs(
-                requirements.as_ref(),
-                user_config.as_ref(),
-                managed_config.as_ref(),
-                Some(&remote),
-            )
-            .value
-        };
-        let expect_on = resolve(Some(true));
-        let expect_cleared = resolve(None);
-        let mut app = make_app_with_agent("sess-1");
-
-        // Remote enable arrives (redundant with the on-default, still latched).
-        assert!(handle_ext_notification(
-            &group_tool_verbs_settings_update(Some(true)),
-            &mut app
-        ));
-        assert_eq!(
-            crate::appearance::cache::load_group_tool_verbs(),
-            expect_on,
-            "remote Some(true) must re-resolve into the cache"
-        );
-
-        // Seed the cache opposite to the expected outcome (the latched remote enable) so only a real re-resolve can pass
-        // The update must revert it to the local/default resolution instead of skipping the field
-        // An old payload without the field takes this same path
-        crate::appearance::cache::set_group_tool_verbs(!expect_cleared);
-        assert!(handle_ext_notification(
-            &group_tool_verbs_settings_update(None),
-            &mut app
-        ));
-        assert_eq!(
-            crate::appearance::cache::load_group_tool_verbs(),
-            expect_cleared,
-            "cleared remote tier must re-resolve the full chain, not stay latched"
-        );
-        // Restore default (on) for other tests that share the process cache.
-        crate::appearance::cache::set_group_tool_verbs(true);
-    }
-
-    #[test]
-    fn settings_update_clearing_collapsed_edit_blocks_reverts_to_default() {
-        // Expected values come from the same chain the handler resolves, so the test holds regardless of host config/env
-        // A local `[ui]` or env override legitimately beats the remote tier on both legs
-        let requirements = codel_shell::config::load_merged_requirements();
-        let user_config = codel_shell::config::load_from_disk().ok();
-        let managed_config = codel_shell::config::load_managed_config().ok();
-        let resolve = |remote_val: Option<bool>| {
-            let remote = codel_shell::util::config::RemoteSettings {
-                collapsed_edit_blocks: remote_val,
-                ..Default::default()
-            };
-            codel_shell::util::config::resolve_collapsed_edit_blocks(
-                requirements.as_ref(),
-                user_config.as_ref(),
-                managed_config.as_ref(),
-                Some(&remote),
-            )
-            .value
-        };
-        let expect_on = resolve(Some(true));
-        let expect_cleared = resolve(None);
-        let mut app = make_app_with_agent("sess-1");
-
-        // remote settings enable arrives (the team rollout path).
-        assert!(handle_ext_notification(
-            &collapsed_edit_blocks_settings_update(Some(true)),
-            &mut app
-        ));
-        assert_eq!(
-            crate::appearance::cache::load_collapsed_edit_blocks(),
-            expect_on,
-            "remote Some(true) must re-resolve into the cache"
-        );
-
-        // Seed the cache opposite to the expected outcome (the latched remote enable) so only a real re-resolve can pass
-        // The update must revert it to the local/default resolution instead of skipping the field
-        // An old payload without the field takes this same path
-        crate::appearance::cache::set_collapsed_edit_blocks(!expect_cleared);
-        assert!(handle_ext_notification(
-            &collapsed_edit_blocks_settings_update(None),
-            &mut app
-        ));
-        assert_eq!(
-            crate::appearance::cache::load_collapsed_edit_blocks(),
-            expect_cleared,
-            "cleared remote tier must re-resolve the full chain, not stay latched"
-        );
-        // Restore default (off) for other tests that share the process cache.
-        crate::appearance::cache::set_collapsed_edit_blocks(false);
-    }
 
     /// A remote collapsed_edit_blocks flip re-folds Edit rows still on their default display mode in the live transcript.
     /// The settings toggle applies the same policy via `apply_collapsed_edit_blocks_flip`.
@@ -703,3 +500,149 @@
         let _ = handle_ext_notification(&push(serde_json::json!({ "subagent_model_inheritance_enabled": null })), &mut app);
         assert_eq!(None, app.subagent_model_inheritance.other_tiers.remote);
     }
+
+    #[test]
+    fn settings_update_clearing_group_tool_verbs_reverts_to_default() {
+        // Expected values come from the same chain the handler resolves, so the test holds regardless of host config/env
+        // A local `[ui]` or env override legitimately beats the remote tier on both legs
+        let requirements = codel_shell::config::load_merged_requirements();
+        let user_config = codel_shell::config::load_from_disk().ok();
+        let managed_config = codel_shell::config::load_managed_config().ok();
+        let resolve = |remote_val: Option<bool>| {
+            let remote = codel_shell::util::config::RemoteSettings {
+                group_tool_verbs: remote_val,
+                ..Default::default()
+            };
+            codel_shell::util::config::resolve_group_tool_verbs(
+                requirements.as_ref(),
+                user_config.as_ref(),
+                managed_config.as_ref(),
+                Some(&remote),
+            )
+            .value
+        };
+        let expect_on = resolve(Some(true));
+        let expect_cleared = resolve(None);
+        let mut app = make_app_with_agent("sess-1");
+
+        // Remote enable arrives (redundant with the on-default, still latched).
+        assert!(handle_ext_notification(
+            &group_tool_verbs_settings_update(Some(true)),
+            &mut app
+        ));
+        assert_eq!(
+            crate::appearance::cache::load_group_tool_verbs(),
+            expect_on,
+            "remote Some(true) must re-resolve into the cache"
+        );
+
+        // Seed the cache opposite to the expected outcome (the latched remote enable) so only a real re-resolve can pass
+        // The update must revert it to the local/default resolution instead of skipping the field
+        // An old payload without the field takes this same path
+        crate::appearance::cache::set_group_tool_verbs(!expect_cleared);
+        assert!(handle_ext_notification(
+            &group_tool_verbs_settings_update(None),
+            &mut app
+        ));
+        assert_eq!(
+            crate::appearance::cache::load_group_tool_verbs(),
+            expect_cleared,
+            "cleared remote tier must re-resolve the full chain, not stay latched"
+        );
+        // Restore default (on) for other tests that share the process cache.
+        crate::appearance::cache::set_group_tool_verbs(true);
+    }
+
+
+    #[test]
+    fn settings_update_clearing_collapsed_edit_blocks_reverts_to_default() {
+        // Expected values come from the same chain the handler resolves, so the test holds regardless of host config/env
+        // A local `[ui]` or env override legitimately beats the remote tier on both legs
+        let requirements = codel_shell::config::load_merged_requirements();
+        let user_config = codel_shell::config::load_from_disk().ok();
+        let managed_config = codel_shell::config::load_managed_config().ok();
+        let resolve = |remote_val: Option<bool>| {
+            let remote = codel_shell::util::config::RemoteSettings {
+                collapsed_edit_blocks: remote_val,
+                ..Default::default()
+            };
+            codel_shell::util::config::resolve_collapsed_edit_blocks(
+                requirements.as_ref(),
+                user_config.as_ref(),
+                managed_config.as_ref(),
+                Some(&remote),
+            )
+            .value
+        };
+        let expect_on = resolve(Some(true));
+        let expect_cleared = resolve(None);
+        let mut app = make_app_with_agent("sess-1");
+
+        // remote settings enable arrives (the team rollout path).
+        assert!(handle_ext_notification(
+            &collapsed_edit_blocks_settings_update(Some(true)),
+            &mut app
+        ));
+        assert_eq!(
+            crate::appearance::cache::load_collapsed_edit_blocks(),
+            expect_on,
+            "remote Some(true) must re-resolve into the cache"
+        );
+
+        // Seed the cache opposite to the expected outcome (the latched remote enable) so only a real re-resolve can pass
+        // The update must revert it to the local/default resolution instead of skipping the field
+        // An old payload without the field takes this same path
+        crate::appearance::cache::set_collapsed_edit_blocks(!expect_cleared);
+        assert!(handle_ext_notification(
+            &collapsed_edit_blocks_settings_update(None),
+            &mut app
+        ));
+        assert_eq!(
+            crate::appearance::cache::load_collapsed_edit_blocks(),
+            expect_cleared,
+            "cleared remote tier must re-resolve the full chain, not stay latched"
+        );
+        // Restore default (off) for other tests that share the process cache.
+        crate::appearance::cache::set_collapsed_edit_blocks(false);
+    }
+
+
+    #[test]
+    fn voice_settings_update_omitted_leaves_gate_unchanged() {
+        // Unrelated settings push must not flip the gate (default-on stays on; kill-switch stays off until an explicit true/false)
+        let mut app = make_app_with_agent("sess-1");
+        app.apply_voice_mode_enabled(true);
+        let omit = acp::ExtNotification::new(
+            "codel/settings/update",
+            std::sync::Arc::from(
+                serde_json::value::to_raw_value(&serde_json::json!({ "sharing_enabled": true }))
+                    .unwrap(),
+            ),
+        );
+        let _ = handle_ext_notification(&omit, &mut app);
+        assert!(app.voice_mode_enabled);
+
+        app.apply_voice_mode_enabled(false);
+        let _ = handle_ext_notification(&omit, &mut app);
+        assert!(!app.voice_mode_enabled);
+    }
+
+
+    #[test]
+    fn voice_remote_true_re_enables_after_kill_switch() {
+        let mut app = make_app_with_agent("sess-1");
+        app.apply_voice_mode_enabled(false);
+        assert!(!app.voice_mode_enabled);
+
+        let affected = handle_ext_notification(&voice_settings_update(true), &mut app);
+
+        assert!(affected);
+        assert!(
+            app.voice_mode_enabled,
+            "remote true lifts the kill switch (env unset)"
+        );
+    }
+
+
+
+

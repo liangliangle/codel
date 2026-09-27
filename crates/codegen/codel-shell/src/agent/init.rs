@@ -485,13 +485,6 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
     let codel_auth = auth_manager.current().filter(|a| a.is_codel_auth());
     let user_id = codel_auth.as_ref().map(|a| a.user_id.clone());
     let team_id = codel_auth.as_ref().and_then(|a| a.team_id.clone());
-    let subscription_tier = super::mvp_agent::resolve_subscription_tier_for_telemetry(
-        config
-            .remote_settings
-            .as_ref()
-            .and_then(|rs| rs.subscription_tier_display.clone()),
-        auth_manager.current_or_expired().as_ref(),
-    );
     codel_logging::client::init(
         config.telemetry.clone(),
         config.resolve_telemetry_mode().value,
@@ -500,7 +493,6 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
         config.endpoints.deployment_key.clone(),
         crate::http::origin_client_info_from_env(),
         codel_version::VERSION.to_owned(),
-        subscription_tier,
         crate::http::shared_client(),
     );
 }

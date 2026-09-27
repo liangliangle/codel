@@ -85,8 +85,6 @@ mod tests {
             models,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
-            billing_surface_visible: true,
-            usage_command_visible: true,
             workflows_available: true,
             saved_workflows: &[],
             workflow_runs: &[],

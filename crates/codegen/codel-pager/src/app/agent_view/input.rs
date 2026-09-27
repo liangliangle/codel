@@ -1662,10 +1662,6 @@ mod btw_focus_tests {
                 crate::views::usage_modal::UsageInfoTab::SessionInfo,
                 crate::views::usage_modal::UsageInfoContext {
                     session_id: Some("s".into()),
-                    usage_visible: true,
-                    chat_kind: false,
-                    billing_redirect_url: None,
-                    subscription_tier: None,
                 },
             )),
         }

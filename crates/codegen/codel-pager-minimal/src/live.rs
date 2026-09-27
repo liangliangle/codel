@@ -84,7 +84,6 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
     let auth_hint = crate::auth::minimal_auth_hint(
         &app.auth_state,
         &app.trust_state,
-        app.has_access(),
         app.is_zdr_blocked(),
     );
     let pending_hint = minimal_pending_hint(&app.pending_action);

@@ -17,7 +17,6 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         "codel/getApiKey" => handle_get_api_key(),
         "codel/setApiKey" => handle_set_api_key(args),
         "codel/auth/info" => handle_info(agent),
-        "codel/auth/check_subscription" => handle_check_subscription(agent).await,
         "codel/auth/hydrate_team_capability" => handle_hydrate_team_capability(agent, args).await,
         _ => Err(acp::Error::method_not_found()),
     }
@@ -104,18 +103,6 @@ fn handle_set_api_key(args: &acp::ExtRequest) -> ExtResult {
 
 
 
-/// Re-checks the subscription once, for the retry button on the paywall screen.
-/// Returns the updated auth response with gate info so the pager can refresh the gate state.
-async fn handle_check_subscription(agent: &MvpAgent) -> ExtResult {
-    agent.retry_subscription_check().await;
-    let response = agent.auth_response_with_meta();
-    to_raw_response(&serde_json::json!({
-        "authenticated": response.meta.is_some(),
-        "meta": response.meta,
-    }))
-}
-
-/// Returns current auth method ID, user profile fields, and team/principal metadata.
 fn handle_info(agent: &MvpAgent) -> ExtResult {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]

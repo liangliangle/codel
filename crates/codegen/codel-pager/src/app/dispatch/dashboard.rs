@@ -90,25 +90,6 @@ pub(super) fn ensure_dashboard_state(app: &mut AppView) {
     state.set_screen_mode(app.screen_mode);
     state.set_recap_visible(app.session_recap_available);
     state.set_voice_visible(app.voice_mode_enabled);
-    state.set_restricted_commands(&app.tier_restricted_commands);
-    let billing = app.usage_visible;
-    let usage_cmd = !app.has_external_auth_provider;
-    state
-        .dispatch
-        .slash_controller
-        .set_billing_surface_visible(billing);
-    state
-        .dispatch
-        .slash_controller
-        .set_usage_command_visible(usage_cmd);
-    state
-        .peek_reply
-        .slash_controller
-        .set_billing_surface_visible(billing);
-    state
-        .peek_reply
-        .slash_controller
-        .set_usage_command_visible(usage_cmd);
     app.dashboard = Some(state);
 }
 /// Configure the dashboard for display: snapshot app-wide state (cwd, models, plugins, permission mode) and clear the staged dispatch settings.
@@ -193,7 +174,6 @@ pub(super) fn dispatch_open_dashboard(app: &mut AppView) -> Vec<Effect> {
         d.gc_stale_refs(&dashboard_alive_fn(&app.agents, workspace.as_ref()));
         d.set_recap_visible(app.session_recap_available);
         d.set_voice_visible(app.voice_mode_enabled);
-        d.set_restricted_commands(&app.tier_restricted_commands);
     }
     let agent_cwds: Vec<(AgentId, std::path::PathBuf)> = app
         .agents
@@ -1169,17 +1149,6 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                 source,
             });
         }
-        if reg.is_restricted(invocation.token) {
-            let token = invocation.token.to_string();
-            if let Some(d) = app.dashboard.as_mut() {
-                d.dispatch.set_text("");
-                d.set_error_toast(&format!(
-                    "/{token} requires SuperCodel: upgrade at {}",
-                    super::billing::UPSELL_URL_UPGRADE
-                ));
-            }
-            return vec![];
-        }
         let Some(command) = reg.get(invocation.token).cloned() else {
             return dispatch_dashboard_dispatch(app, text, false);
         };
@@ -1209,8 +1178,6 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             session_id: None,
             bundle_state: &app.bundle_state,
             screen_mode: app.screen_mode,
-            billing_surface_visible: app.usage_visible,
-            usage_command_visible: !app.has_external_auth_provider,
             pager_state: crate::settings::PagerLocalSnapshot {
                 multiline_mode: dashboard_multiline,
                 yolo_mode: app.default_yolo,

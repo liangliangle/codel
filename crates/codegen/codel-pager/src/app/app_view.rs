@@ -490,20 +490,6 @@ fn parse_esc_ttl(raw: Option<String>) -> Duration {
         .map(|ms| Duration::from_millis(ms.min(ESC_DOUBLE_PRESS_TEST_MS)))
         .unwrap_or(PendingAction::ESC_DOUBLE_PRESS_TTL)
 }
-/// Slash commands unavailable on the free and X Basic subscription tiers.
-/// To restrict another command for these tiers, add its canonical name (no leading `/`) here.
-/// Matching covers aliases automatically via [`crate::slash::registry::CommandRegistry::set_restricted_commands`].
-pub(crate) const TIER_RESTRICTED_COMMANDS: &[&str] =
-    &["usage", "imagine", "imagine-video", "voice"];
-/// Whether a subscription-tier display name is a tier with restricted commands: the free tier and X Basic.
-/// Free covers no subscription (`None`) or an explicit "Free"; X Basic covers CCP display name "X Basic" with JWT claim fallback "x_basic".
-/// The pager's *cosmetic* slash-command gate treats an absent tier (`None`) as restricted (it recovers live on the next settings update).
-fn is_restricted_tier(tier: Option<&str>) -> bool {
-    match tier {
-        None => true,
-        Some(t) => codel_shell::tier::is_restricted_tier_name(t),
-    }
-}
 /// True for API-key labels from shell/CCP: `"ApiKey"`, `"API Key"`, `"api_key"`.
 pub(crate) fn is_api_key_label(s: &str) -> bool {
     s.trim().to_ascii_lowercase().replace([' ', '_', '-'], "") == "apikey"
@@ -633,28 +619,10 @@ pub struct AppView {
     /// `None` keeps the default Codel Official source.
     pub plugin_cta_marketplace: Option<String>,
     pub workspace_dashboard_enabled: bool,
-    /// Consumer billing surface (credit fetches / warnings). False for team and API-key auth.
-    /// `/usage` itself stays available for session token/cost unless [`Self::has_external_auth_provider`].
-    pub usage_visible: bool,
-    /// External `auth_provider_command` deployment.
-    /// No codel.dev billing session exists; `/usage` and credit UI stay off.
-    pub has_external_auth_provider: bool,
-    /// `AuthMeta::backend_billed`: the agent's backend handles billing itself.
-    pub backend_billed: bool,
-    /// Slash commands denied for the current subscription tier ([`TIER_RESTRICTED_COMMANDS`] on the free / X Basic tier, empty otherwise).
-    /// Recomputed by [`Self::apply_tier_restrictions`] and fanned out to every slash registry (welcome prompt, agents, dashboard).
-    /// Deny wins over all other visibility gates.
-    pub tier_restricted_commands: Vec<String>,
     /// Whether the pager is connected via a leader (leader mode).
     /// The Agent Dashboard entry points (`/dashboard`, `Ctrl+\`, `codel dashboard`, the startup hook) are gated on this flag.
     /// They are only meaningful when a leader is coordinating a fleet of sessions.
     pub leader_mode: bool,
-    /// App-level credit balance used to show the usage warning on the welcome screen before any agent session exists.
-    pub credit_balance: Option<crate::views::credit_bar::CreditBalance>,
-    /// App-level auto top-up rule paired with `credit_balance` for the warning.
-    pub auto_topup: Option<crate::views::credit_bar::AutoTopupInfo>,
-    /// Periodic billing poll requested (credits >= 99%).
-    pub billing_poll_wanted: bool,
     /// Leader-mode session roster (FleetView dashboard).
     /// Populated from `codel/sessions/list` polls and `codel/sessions/changed` broadcasts.
     /// Empty in non-leader mode, which gates roster rendering.
@@ -760,10 +728,6 @@ pub struct AppView {
     pub welcome_on_changelog_cta: bool,
     /// Per-visit announcement UI state on the welcome screen (expansion, hover, overflow flag, hit-rect).
     pub welcome_announcement: WelcomeAnnouncementState,
-    /// Hit-test rect for the "[Refresh]" button on the paywall tier line.
-    pub welcome_refresh_rect: Option<ratatui::layout::Rect>,
-    /// Hit-test rect for the gate URL link on the paywall CTA.
-    pub welcome_gate_url_rect: Option<ratatui::layout::Rect>,
     /// Rewritten by every welcome frame, so a resize leaves no stale click target.
     pub welcome_consent_link_rects: Vec<(usize, ratatui::layout::Rect)>,
     /// Consent link the mouse is over, so every run of a wrapped link brightens together.
@@ -1003,29 +967,10 @@ pub struct AppView {
     /// Whether ZDR users are allowed to use the product.
     /// Server-controlled via RemoteSettings (remote settings). Default `false` (blocked) during beta.
     pub zdr_access_enabled: bool,
-    /// When set, `/usage` shows a link to this URL instead of fetching billing data from the backend.
-    /// Server-controlled via RemoteSettings (remote settings `codel_build_usage_redirect_url`, targeted at personal-team users).
-    /// `None` (default) fetches usage from the backend.
-    pub usage_billing_redirect_url: Option<String>,
-    pub access_gate_shown_logged: bool,
     /// (hide-key, surface) pairs whose `AnnouncementCtaShown` impression was already logged (once per pager process, cleared on logout).
     /// Keyed by `announcement_hide_key` (stable even for id-less items, unlike the event's `id`).
     pub announcement_cta_impressions_logged:
         std::collections::BTreeSet<(String, codel_logging::events::AnnouncementCtaSurface)>,
-    /// Access gate from `codel_build_access_gate`. `Some` means blocked.
-    pub gate: Option<codel_login::GateInfo>,
-    /// User-friendly subscription tier name (e.g. "SuperCodel", "Free").
-    pub subscription_tier: Option<String>,
-    /// When the pager started auto-checking subscriptions (for 10-min timeout).
-    pub paywall_check_started: Option<std::time::Instant>,
-    /// Debounce stamp for watch/focus subscription checks (see [`super::subscription`]).
-    pub last_subscription_check_at: Option<std::time::Instant>,
-    /// Server override (seconds) for the subscription-watch cadence.
-    pub subscription_watch_interval_secs: Option<u64>,
-    /// A stale-source gate held out of `gate` while a live check verifies it (see [`super::subscription`]).
-    pub pending_gate_verification: Option<codel_login::GateInfo>,
-    /// Generation stamp of the current gate verification.
-    pub gate_verify_gen: u64,
     /// Whether a leader reconnect is in progress (blocks prompt submission).
     pub reconnect_pending: bool,
     /// Structured startup warnings collected from the terminal diagnostics engine at launch.
@@ -1139,13 +1084,9 @@ impl AppView {
     pub fn is_zdr_blocked(&self) -> bool {
         self.is_zdr && !self.zdr_access_enabled
     }
-    /// User is not gated (no gate from remote settings or subscription fallback).
-    pub fn has_access(&self) -> bool {
-        self.gate.is_none()
-    }
-    /// True when the user should not see the prompt (gate, subscription, or ZDR).
+    /// True when the user should not see the prompt (ZDR-blocked accounts).
     pub fn is_access_blocked(&self) -> bool {
-        !self.has_access() || self.is_zdr_blocked()
+        self.is_zdr_blocked()
     }
     /// Whether `/feedback` may offer the trace-consent question: the shell advertised the offer and no card answer latched it off this session.
     /// Derived so no code path can fabricate an offer the shell never made.
@@ -1200,7 +1141,6 @@ impl AppView {
             return false;
         }
         if !matches!(self.auth_state, AuthState::Done)
-            || !self.has_access()
             || self.is_zdr_blocked()
             || !matches!(self.trust_state, TrustState::Done)
         {
@@ -1226,29 +1166,12 @@ impl AppView {
     /// A prompt starting with "n" thus cannot answer the folder-trust question and quit.
     pub fn ready_for_startup_typeahead(&self) -> bool {
         matches!(self.auth_state, AuthState::Done)
-            && self.has_access()
             && !self.is_zdr_blocked()
             && matches!(self.trust_state, TrustState::Done)
             && matches!(self.consent_state, ConsentState::Done)
     }
-    /// Extract `GateInfo` from `RemoteSettings`.
-    pub fn gate_from_settings(
-        rs: &codel_shell::util::config::RemoteSettings,
-    ) -> Option<codel_login::GateInfo> {
-        let msg = rs.gate_message.as_ref()?;
-        if msg.is_empty() {
-            return None;
-        }
-        Some(codel_login::GateInfo {
-            message: msg.clone(),
-            url: rs.gate_url.clone(),
-            label: rs.gate_label.clone(),
-        })
-    }
     /// Apply typed auth metadata from the shell.
     pub fn apply_auth_meta(&mut self, meta: &codel_login::AuthMeta) {
-        self.pending_gate_verification = None;
-        let was_gated = self.gate.is_some();
         self.account_email = meta.email.clone();
         self.team_id = meta.team_id.clone();
         self.is_team_principal = meta.is_team_principal;
@@ -1261,77 +1184,13 @@ impl AppView {
         self.can_administer_team = meta.can_administer_team;
         self.coding_data_retention_opt_out = meta.coding_data_retention_opt_out;
         self.shell_feedback_trace_offer = meta.feedback_trace_offer;
-        self.gate = meta.gate.clone();
-        if was_gated && self.gate.is_none() {
-            self.paywall_check_started = None;
-            codel_logging::session_ctx::log_event(
-                codel_logging::events::SubscriptionActivated {
-                    auth_method: None,
-                    upsell_shown_this_session: self.access_gate_shown_logged,
-                },
-            );
-        }
-        self.subscription_tier = meta.subscription_tier.clone();
-        self.backend_billed = meta.backend_billed;
         let was_api_key = self.is_api_key_auth;
-        self.is_api_key_auth = meta.auth_mode.as_deref().is_some_and(is_api_key_label)
-            || meta
-                .subscription_tier
-                .as_deref()
-                .is_some_and(is_api_key_label);
-        self.usage_visible = self.team_name.is_none() && self.consumer_account();
-        self.sync_billing_surface_to_agents();
-        self.apply_tier_restrictions();
-        if self.is_api_key_auth {
-            self.ensure_voice_for_api_key();
-        } else if was_api_key && is_restricted_tier(self.subscription_tier.as_deref()) {
-            self.voice_reset();
-            self.voice_ui_active = false;
-            self.apply_voice_mode_enabled(false);
-        }
+        self.is_api_key_auth = meta.auth_mode.as_deref().is_some_and(is_api_key_label);
+        let _ = was_api_key;
         if let Some(show) = meta.show_resolved_model {
             self.show_resolved_model = show;
         }
         super::dispatch::refresh_open_settings_modals(self);
-    }
-    /// Mirror the billing and `/usage` gates onto every slash surface (agents, welcome, dashboard dispatch / peek-reply).
-    pub(crate) fn sync_billing_surface_to_agents(&mut self) {
-        let billing = self.usage_visible;
-        let usage_cmd = !self.has_external_auth_provider;
-        for agent in self.agents.values_mut() {
-            agent.set_billing_surface_visible(billing);
-            agent.set_usage_command_visible(usage_cmd);
-        }
-        self.welcome_prompt
-            .slash_controller
-            .set_billing_surface_visible(billing);
-        self.welcome_prompt
-            .slash_controller
-            .set_usage_command_visible(usage_cmd);
-        if let Some(dash) = self.dashboard.as_mut() {
-            dash.dispatch
-                .slash_controller
-                .set_billing_surface_visible(billing);
-            dash.dispatch
-                .slash_controller
-                .set_usage_command_visible(usage_cmd);
-            dash.peek_reply
-                .slash_controller
-                .set_billing_surface_visible(billing);
-            dash.peek_reply
-                .slash_controller
-                .set_usage_command_visible(usage_cmd);
-        }
-    }
-    /// Force voice on for API-key sessions when only a remote rule left it off.
-    /// Requirement / env / config pins still win.
-    pub(crate) fn ensure_voice_for_api_key(&mut self) {
-        if !self.is_api_key_auth || self.voice_mode_enabled {
-            return;
-        }
-        if crate::app::resolve_voice_mode_live(None, false) {
-            self.apply_voice_mode_enabled(true);
-        }
     }
     /// Create a new AppView with the given ACP connection details.
     pub fn new(
@@ -1410,8 +1269,6 @@ impl AppView {
             welcome_prompt_rect: None,
             welcome_on_changelog_cta: false,
             welcome_announcement: WelcomeAnnouncementState::default(),
-            welcome_refresh_rect: None,
-            welcome_gate_url_rect: None,
             welcome_consent_link_rects: Vec::new(),
             welcome_consent_hover_link: None,
             consent_answered: None,
@@ -1518,16 +1375,7 @@ impl AppView {
                 codel_shell::agent::config::Feature::SubagentModelInheritance,
             ),
             zdr_access_enabled: false,
-            usage_billing_redirect_url: None,
-            access_gate_shown_logged: false,
             announcement_cta_impressions_logged: Default::default(),
-            gate: None,
-            subscription_tier: None,
-            paywall_check_started: None,
-            last_subscription_check_at: None,
-            subscription_watch_interval_secs: None,
-            pending_gate_verification: None,
-            gate_verify_gen: 0,
             reconnect_pending: false,
             startup_warnings: Vec::new(),
             is_api_key_auth: false,
@@ -1547,14 +1395,7 @@ impl AppView {
             plugin_cta_enabled: false,
             plugin_cta_marketplace: None,
             workspace_dashboard_enabled: false,
-            usage_visible: true,
-            has_external_auth_provider: false,
-            backend_billed: false,
-            tier_restricted_commands: Vec::new(),
             leader_mode: false,
-            credit_balance: None,
-            auto_topup: None,
-            billing_poll_wanted: false,
             leader_roster: Vec::new(),
             dashboard_local_sessions: Vec::new(),
             dashboard_sessions_loading: false,
@@ -1598,7 +1439,6 @@ impl AppView {
     }
     /// Whether launch may spawn the background STT pipeline (independent of `/voice`).
     /// Gated on the voice gate and a build that compiled in audio capture.
-    /// Free-tier upsell is separate ([`Self::is_voice_tier_restricted`]).
     pub fn voice_can_start_pipeline(&self) -> bool {
         self.voice_mode_enabled && codel_voice::AUDIO_SUPPORTED
     }
@@ -1643,37 +1483,6 @@ impl AppView {
     /// Recompute the tier-restricted slash commands from the current auth state.
     /// Sync the deny list into every slash surface (welcome prompt, all agents, dashboard) so restricted commands hide/show in lockstep.
     /// A mid-session upgrade thus lifts the restrictions without a restart.
-    pub fn apply_tier_restrictions(&mut self) {
-        let restricted = self.team_name.is_none()
-            && self.consumer_account()
-            && is_restricted_tier(self.subscription_tier.as_deref());
-        let names: Vec<String> = if restricted {
-            TIER_RESTRICTED_COMMANDS
-                .iter()
-                .map(|n| (*n).to_string())
-                .collect()
-        } else {
-            Vec::new()
-        };
-        for agent in self.agents.values_mut() {
-            agent.set_restricted_commands(&names);
-        }
-        self.welcome_prompt.set_restricted_commands(&names);
-        if let Some(dashboard) = self.dashboard.as_mut() {
-            dashboard.set_restricted_commands(&names);
-        }
-        self.tier_restricted_commands = names;
-    }
-    /// A personal subscription login. API keys, external auth providers, and backend-billed accounts carry no subscription tier
-    pub(super) fn consumer_account(&self) -> bool {
-        !self.backend_billed && !self.is_api_key_auth && !self.has_external_auth_provider
-    }
-    /// Whether voice mode is withheld for the current subscription tier (free / X Basic personal accounts).
-    /// Derived from the computed [`Self::tier_restricted_commands`] deny list so it stays in lockstep with the slash-command gate.
-    /// Used to gate the Ctrl+Space / F8 voice keybinding, which bypasses the slash registry entirely (see [`crate::app::dispatch::voice`]).
-    pub fn is_voice_tier_restricted(&self) -> bool {
-        self.tier_restricted_commands.iter().any(|c| c == "voice")
-    }
     /// Draw-time expiry can flip the live-announcement predicate between pushes.
     /// Resync the slash gate only when it diverges from the stored flags (checked per frame, fan-out runs only on change).
     pub fn resync_announcement_slash_gate_on_divergence(&mut self) {
@@ -2364,7 +2173,6 @@ impl AppView {
             return InputOutcome::Changed;
         }
         let zdr_blocked = self.is_zdr_blocked();
-        let has_access = self.has_access();
         let welcome_pinned_upgrade_cta = crate::views::announcements::promo_cta(
             &self.active_announcements,
             &self.hidden_announcement_ids,
@@ -2408,8 +2216,6 @@ impl AppView {
                     },
                     prompt_rect: self.welcome_prompt_rect.as_ref(),
                     import_banner_rect: self.welcome_import_banner_rect.as_ref(),
-                    refresh_rect: self.welcome_refresh_rect.as_ref(),
-                    gate_url_rect: self.welcome_gate_url_rect.as_ref(),
                     upgrade_cta_rect: self.welcome_upgrade_cta_rect.as_ref(),
                     privacy_banner_opt_in_rect: self.welcome_privacy_banner_opt_in_rect.as_ref(),
                     privacy_banner_opt_out_rect: self.welcome_privacy_banner_opt_out_rect.as_ref(),
@@ -2424,7 +2230,6 @@ impl AppView {
                     announcement_rect: self.welcome_announcement.rect.as_ref(),
                     on_announcement_cta: &mut self.welcome_announcement.on_cta,
                     announcement_expanded: &mut self.welcome_announcement.expanded,
-                    has_access,
                     is_zdr_blocked: zdr_blocked,
                     sp_entries: &mut self.session_picker_entries,
                     sp_loading,
@@ -3049,8 +2854,6 @@ struct WelcomeInputCtx<'a> {
     menu_count: usize,
     prompt_rect: Option<&'a ratatui::layout::Rect>,
     import_banner_rect: Option<&'a ratatui::layout::Rect>,
-    refresh_rect: Option<&'a ratatui::layout::Rect>,
-    gate_url_rect: Option<&'a ratatui::layout::Rect>,
     /// Hit-test rect for the welcome hero upgrade CTA `[label]` button (click opens the promo url).
     upgrade_cta_rect: Option<&'a ratatui::layout::Rect>,
     privacy_banner_opt_in_rect: Option<&'a ratatui::layout::Rect>,
@@ -3075,7 +2878,6 @@ struct WelcomeInputCtx<'a> {
     on_announcement_cta: &'a mut bool,
     /// Whether the long announcement is currently expanded inline.
     announcement_expanded: &'a mut bool,
-    has_access: bool,
     is_zdr_blocked: bool,
     sp_entries: &'a mut Option<Vec<SessionPickerEntry>>,
     /// Mirrors the render's `session_picker_loading` param: the spinner-only picker still owns input (Esc must dismiss it, not hit the hidden menu).
@@ -3216,7 +3018,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
         }
     }
     if matches!(ctx.auth_state, AuthState::Done)
-        && ctx.has_access
         && !ctx.is_zdr_blocked
         && matches!(ctx.consent_state, ConsentState::Pending { .. })
     {
@@ -3233,7 +3034,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
         );
     }
     if matches!(ctx.auth_state, AuthState::Done)
-        && ctx.has_access
         && !ctx.is_zdr_blocked
         && matches!(ctx.trust_state, TrustState::Pending { .. })
     {
@@ -3277,7 +3077,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
     #[cfg(feature = "local-workspace")]
     if *ctx.workspace_mode_ack_pending
         && matches!(ctx.auth_state, AuthState::Done)
-        && ctx.has_access
         && !ctx.is_zdr_blocked
     {
         if let Event::Key(key) = ev {
@@ -3314,7 +3113,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
     #[cfg(feature = "local-workspace")]
     if crate::views::welcome::workspace_mode::picker_interactive(
         ctx.chat_mode,
-        ctx.has_access,
         matches!(ctx.auth_state, AuthState::Done),
         ctx.is_zdr_blocked,
         ctx.session_picker_open,
@@ -3609,14 +3407,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 dispatch_zdr_menu_action,
             );
         }
-        if !ctx.has_access && matches!(ctx.auth_state, AuthState::Done) {
-            return handle_menu_shortcuts(
-                key,
-                ctx.menu_index,
-                &['g', 'l', 'q'],
-                dispatch_access_gate_menu_action,
-            );
-        }
         if (crate::input::key::is_paste_key(key) || crate::input::key::is_inline_paste_key(key))
             && matches!(ctx.auth_state, AuthState::Done)
         {
@@ -3727,8 +3517,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
     }
     if let Event::Paste(_text) = ev {
         if matches!(ctx.auth_state, AuthState::Done)
-            && ctx.has_access
-            && !ctx.is_zdr_blocked
+                && !ctx.is_zdr_blocked
         {
             *ctx.prompt_focused = true;
             return InputOutcome::ActionThenForward(Action::LeaveHome);
@@ -3753,9 +3542,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         if ctx.is_zdr_blocked {
                             return dispatch_zdr_menu_action(i);
                         }
-                        if !ctx.has_access {
-                            return dispatch_access_gate_menu_action(i);
-                        }
                         if ctx.has_claude_import
                             && i == 0
                             && mouse.column >= rect.x + rect.width.saturating_sub(4)
@@ -3770,16 +3556,6 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                             ctx.changelog_markdown.as_deref(),
                         );
                     }
-                }
-                if let Some(rect) = ctx.refresh_rect
-                    && rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                {
-                    return InputOutcome::Action(Action::CheckSubscription);
-                }
-                if let Some(rect) = ctx.gate_url_rect
-                    && rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                {
-                    return InputOutcome::Action(Action::OpenSupercodelUrl);
                 }
                 if let Some(rect) = ctx.upgrade_cta_rect
                     && rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
@@ -3986,15 +3762,6 @@ fn dispatch_zdr_menu_action(index: usize) -> InputOutcome {
         _ => InputOutcome::Unchanged,
     }
 }
-/// Menu actions when user is access-gated: item 0 is the subscribe CTA, item 1 is Quit.
-/// "Refresh" (ctrl-r) is handled as a direct key shortcut, not a menu item.
-fn dispatch_access_gate_menu_action(index: usize) -> InputOutcome {
-    match index {
-        0 => InputOutcome::Action(Action::OpenSupercodelUrl),
-        1 => InputOutcome::Action(Action::Quit),
-        _ => InputOutcome::Unchanged,
-    }
-}
 /// Dispatch an action for a welcome menu item by index.
 /// Menu order: `[Import]`, New worktree, Resume session, `[Changelog]`, Quit.
 /// `show_changelog_action` is true when the Changelog row is rendered; release notes open only once `changelog_md` is available.
@@ -4165,7 +3932,6 @@ impl AppView {
         self.maybe_trigger_ssh_wrap_tip();
         let compact = self.appearance.prompt.compact;
         let zdr_blocked_for_draw = self.is_zdr_blocked();
-        let has_access = self.has_access();
         let privacy_banner = self.privacy_banner_should_show();
         let voice_available = self.voice_available();
         let voice_on_surface = self.voice_target_on_active_surface();
@@ -4325,7 +4091,6 @@ impl AppView {
                                 flags: &flags_vec,
                                 selected: self.welcome_menu_index,
                                 team_name: self.team_name.as_deref(),
-                                has_access,
                                 has_claude_import: self.has_claude_import,
                                 mouse_pos: self.last_mouse_pos,
                                 is_zdr_blocked: zdr_blocked_for_draw,
@@ -4350,17 +4115,12 @@ impl AppView {
                                     .session_picker_entries_query
                                     .as_deref(),
                                 welcome_tick: self.welcome_tick,
-                                gate: self.gate.as_ref(),
-                                subscription_tier: self.subscription_tier.as_deref(),
                                 session_picker_grouped: self.session_picker_grouped,
                                 session_picker_source_filter: self.session_picker_source_filter,
                                 session_picker_pending_delete: self
                                     .session_picker_pending_delete
                                     .is_some(),
                                 chat_mode: self.chat_mode,
-                                credit_balance: self.credit_balance.as_ref(),
-                                auto_topup: self.auto_topup.as_ref(),
-                                usage_visible: self.usage_visible,
                                 is_api_key_auth: self.is_api_key_auth,
                                 changelog_bullets: &self.changelog_bullets,
                                 changelog_has_full_notes: self.changelog_markdown.is_some(),
@@ -4386,8 +4146,6 @@ impl AppView {
                             self.welcome_show_changelog_action = result.changelog_action_present;
                             self.welcome_prompt_rect = result.prompt_rect;
                             self.welcome_import_banner_rect = result.import_banner_rect;
-                            self.welcome_refresh_rect = result.refresh_rect;
-                            self.welcome_gate_url_rect = result.gate_url_rect;
                             self.welcome_consent_link_rects = result.consent_link_rects;
                             if self.welcome_consent_link_rects.is_empty() {
                                 self.welcome_consent_hover_link = None;
@@ -4459,13 +4217,6 @@ impl AppView {
                                     compact,
                                     &theme,
                                 );
-                            }
-                            if !has_access && !self.access_gate_shown_logged {
-                                self.access_gate_shown_logged = true;
-                                codel_logging::session_ctx::log_event(codel_logging::events::SuperCodelUpsellShown {
-                                    source: codel_logging::events::SuperCodelUpsell::WelcomeScreen,
-                                    auth_method: None,
-                                });
                             }
                             if let Some(tutorial) = self.tutorial.as_mut() {
                                 crate::views::tutorial::render_tutorial(
@@ -4675,7 +4426,6 @@ impl AppView {
                                     self.dashboard_session_picker.as_mut(),
                                     self.dashboard_sessions_loading,
                                     dash_upgrade_cta,
-                                    self.credit_balance.as_ref(),
                                 );
                                 let (popup_cursor, popup_post_flush, drawn_popup_agent) =
                                     if let Some(agent_id) = dashboard.attached_agent {

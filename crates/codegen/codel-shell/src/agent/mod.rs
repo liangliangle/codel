@@ -26,7 +26,6 @@ pub mod server;
 pub mod session_config;
 pub mod session_registry_client;
 pub(crate) mod subagent;
-pub(crate) mod subscription_check;
 #[cfg(feature = "test-support")]
 pub mod testkit;
 pub(crate) mod update_chunk_merge;

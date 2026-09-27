@@ -91,9 +91,7 @@ pub fn render_consent(
             None,
             h_margin,
             false,
-            VersionBadgeMode::Full {
-                subscription_tier: None,
-            },
+            VersionBadgeMode::Full,
         );
     }
 

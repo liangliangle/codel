@@ -375,11 +375,6 @@ pub struct RemoteSettings {
     pub dream_min_sessions: Option<u64>,
     #[serde(default)]
     pub dream_check_interval_secs: Option<u64>,
-    /// Cadence (seconds) of the pager's watch for a free account becoming paid.
-    /// `0` disables it; the pager clamps and defaults (see its `app::subscription` module).
-    /// It arrives from the `codel_build_settings` remote settings flag via the cli-chat-proxy `/settings` flatten catch-all.
-    #[serde(default)]
-    pub subscription_watch_interval_secs: Option<u64>,
     #[serde(default)]
     pub writeback_enabled: Option<bool>,
     /// OAuth2 provider issuer URL (e.g., "https://auth.codel.dev").
@@ -739,7 +734,7 @@ pub struct RemoteSettings {
     pub sharing_enabled: Option<bool>,
     /// Voice mode (STT dictation). The client default is on when absent.
     /// `Some(false)` is a remote kill switch; `Some(true)` forces on.
-    /// `CODEL_VOICE_MODE` overrides it locally. The free-tier SuperCodel upsell is a separate client tier gate.
+    /// `CODEL_VOICE_MODE` overrides it locally.
     #[serde(default)]
     pub voice_mode_enabled: Option<bool>,
     /// Consolidated panel dock above the prompt. Off when absent.
@@ -807,17 +802,6 @@ pub struct RemoteSettings {
     /// It is used only when no effective TOML permission key is set.
     #[serde(default)]
     pub permission_mode: Option<String>,
-    /// User's subscription tier from remote settings `codel_build_access_gate`.
-    /// E.g. "free", "premium", "supercodel", "supercodel_heavy".
-    /// It is stamped on analytics events and the user profile for filtering.
-    #[serde(default)]
-    pub subscription_tier: Option<String>,
-    #[serde(default)]
-    pub gate_message: Option<String>,
-    #[serde(default)]
-    pub gate_url: Option<String>,
-    #[serde(default)]
-    pub gate_label: Option<String>,
     /// A usable `id`, non-empty `body` and positive `version` turn it on; anything else fails open.
     #[serde(default, deserialize_with = "deserialize_tolerant")]
     pub consent_gate: Option<ConsentGate>,
@@ -825,20 +809,6 @@ pub struct RemoteSettings {
     /// When `None` or `Some(false)`, sessions are shown in a flat list.
     #[serde(default)]
     pub session_picker_grouped: Option<bool>,
-    /// Whether the user is allowed to use Codel Build. Remote settings `codel_build_access_gate` targeting rules set it.
-    /// `None` means no server response yet (the client uses its own fallback check); `Some(false)` means blocked.
-    #[serde(default)]
-    pub allow_access: Option<bool>,
-    /// User-friendly display name for the current subscription tier
-    /// (e.g. "SuperCodel", "X Premium+", "Free", "API Key"). Set by CCP
-    /// from the JWT tier claim (OAuth) or credential kind (API key).
-    /// Free/Invalid OAuth → `"Free"`; API keys → `"API Key"` (Mixpanel
-    /// `api_key`, never free).
-    #[serde(default)]
-    pub subscription_tier_display: Option<String>,
-    /// Whether on-demand credit usage is enabled. When `Some(false)`, the billing extension blocks on-demand cap changes.
-    #[serde(default)]
-    pub on_demand_enabled: Option<bool>,
     /// When set to a non-empty URL, the pager's `/usage` command shows a link to that URL instead of fetching billing data from the backend.
     /// The remote settings `codel_build_usage_redirect_url` feature flag controls it (target it at personal-team users).
     /// `None` or empty keeps the default of fetching usage from the backend.

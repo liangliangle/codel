@@ -49,29 +49,6 @@ fn voice_target_for_view(app: &AppView) -> Option<VoiceTarget> {
     }
 }
 
-/// That keybinding bypasses the slash registry (`/voice` is instead hidden and upsold via the deny list).
-/// Elsewhere (e.g. the welcome screen, which has no agent to host a modal) it is a silent no-op.
-/// Never starts voice; always returns no effects.
-fn open_voice_tier_upsell(app: &mut AppView) -> Vec<Effect> {
-    match app.active_view {
-        ActiveView::Agent(id) => {
-            if let Some(agent) = app.agents.get_mut(&id) {
-                super::billing::open_restricted_command_upsell(agent, None);
-            }
-        }
-        ActiveView::AgentDashboard => {
-            if let Some(d) = app.dashboard.as_mut() {
-                d.set_error_toast(&format!(
-                    "/voice requires SuperCodel: upgrade at {}",
-                    super::billing::UPSELL_URL_UPGRADE
-                ));
-            }
-        }
-        _ => {}
-    }
-    vec![]
-}
-
 /// When the flag is off this is a **silent no-op** with no toast; users who don't have the feature see nothing.
 /// A build without audio capture (only the Bazel test build; every shipped binary compiles `audio` in)
 /// The matching Ctrl+Space release (see [`dispatch_voice_stop`]) then ends *this* session and only this one.
@@ -79,13 +56,7 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) -> 
     if !app.voice_mode_enabled {
         return vec![];
     }
-    // Tier gate: free / X Basic personal users can't use voice (the server zero-limits these tiers)
-    // The Ctrl+Space / F8 keybinding bypasses the slash registry, so this is the enforcement point for it
-    // Show the SuperCodel upsell instead of starting a doomed session (`/voice` itself is separately hidden and upsold via the deny list)
-    if app.is_voice_tier_restricted() {
-        return open_voice_tier_upsell(app);
-    }
-    // Leave home after the flag / tier gates so a disabled or restricted press stays a no-op.
+    // Leave home after the flag gate so a disabled press stays a no-op.
     // Deliberately before the audio gate: the audio-less Bazel build is the only CI that runs
     // these dispatch tests, and it must still cover leave-home (Always isolation) from voice.
     let effects = super::session::lifecycle::leave_welcome_for_session(app);

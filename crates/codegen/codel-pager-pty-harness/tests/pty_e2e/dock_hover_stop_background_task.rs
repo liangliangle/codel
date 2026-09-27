@@ -8,7 +8,7 @@ async fn dock_hover_reveals_and_dispatches_stop() {
     let content = ContentController::start().await.expect("start content");
     content
         .server()
-        .set_settings(json!({ "allow_access": true, "dock_enabled": true }));
+        .set_settings(json!({ "dock_enabled": true }));
     std::fs::write(
         content.sandbox().codel_home().join("requirements.toml"),
         "[features]\ndock = true\n",

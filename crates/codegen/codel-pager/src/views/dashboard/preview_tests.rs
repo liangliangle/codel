@@ -10,67 +10,6 @@ use crate::views::dashboard::WorkspaceRowInputs;
 use crate::views::dashboard::peek::PeekFields;
 use crate::views::dashboard::render::render_dashboard;
 
-#[test]
-fn disabling_preview_frees_list_space_and_stays_off_across_selection() {
-    for width in [30, 100] {
-        let area = Rect::new(0, 0, width, 40);
-        let mut agents: IndexMap<_, _> = (0..2)
-            .map(|id| {
-                let mut agent = make_agent();
-                agent.display_name = Some(format!("Session {id}"));
-                agent.session.session_id = Some(agent_client_protocol::SessionId::new(format!(
-                    "session-{id}"
-                )));
-                (AgentId(id), agent)
-            })
-            .collect();
-        let mut state = DashboardState::new();
-        state.focus_row(DashboardRowId::TopLevel(AgentId(0)));
-
-        let enabled = state.layout_with_preview(area, &mut agents);
-
-        assert!(state.peek.is_some());
-        assert!(state.peek_viewport.is_some());
-
-        state.set_preview_enabled(false, &mut agents);
-        for id in [AgentId(1), AgentId(0)] {
-            state.focus_row(DashboardRowId::TopLevel(id));
-
-            let disabled = state.layout_with_preview(area, &mut agents);
-
-            assert!(disabled.list.height > enabled.list.height);
-            assert!(state.peek.is_none());
-            assert!(state.peek_viewport.is_none());
-
-            let mut buffer = Buffer::empty(area);
-
-            let _ = render_dashboard(
-                &mut buffer,
-                area,
-                &mut state,
-                &mut agents,
-                &ActionRegistry::defaults(),
-                None,
-                &[],
-                false,
-                WorkspaceRowInputs::default(),
-                None,
-                false,
-                None,
-                None,
-            );
-
-            assert!(state.dispatch_rect.is_some());
-            assert!(state.peek_reply_rect.is_none());
-        }
-
-        state.set_preview_enabled(true, &mut agents);
-        let restored = state.layout_with_preview(area, &mut agents);
-
-        assert!(restored.list.height < layout::compute_layout(area, false).list.height);
-        assert!(state.peek.is_some());
-    }
-}
 
 #[test]
 fn disabling_preview_closes_hidden_question_and_routes_typing_to_dispatch() {

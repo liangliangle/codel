@@ -58,8 +58,6 @@ pub(crate) fn render_dashboard(
     // That way a fresh open doesn't flash an empty-looking screen
     dashboard_sessions_loading: bool,
     upgrade_cta: Option<HeaderUpgradeCta<'_>>,
-    // App-level billing mirror the `/usage` modal renders its allowance from
-    credit_balance: Option<&crate::views::credit_bar::CreditBalance>,
 ) -> Option<(u16, u16)> {
     state.workspace_membership_mode = workspace_dashboard_enabled;
     // Cache whether a pinned (non-dismissible) promo CTA is live so the key handler can steal Ctrl+O for it; the dispatch re-resolves the gate
@@ -351,7 +349,6 @@ pub(crate) fn render_dashboard(
             buf,
             area,
             modal,
-            credit_balance,
             /* compact */ false,
             &theme,
         );
@@ -2124,8 +2121,6 @@ fn paint_dispatch_config_badge(
         model_name: &model_label,
         flags: &flags,
         multiline: state.multiline_mode,
-        usage_warning: None,
-        usage_warning_critical: false,
     };
     // Bottom border row, inside the corners: the same content rect the chat prompt uses for its info line
     let info_rect = Rect {

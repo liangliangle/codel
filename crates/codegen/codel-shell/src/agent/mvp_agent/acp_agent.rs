@@ -173,9 +173,6 @@ impl acp::Agent for MvpAgent {
                 }
             }
         }
-        if !self.tier_allowed.get() {
-            self.spawn_tier_recheck();
-        }
         self.maybe_sync_bundle_in_background(false);
         let mut client_type = arguments
             .meta
@@ -1864,10 +1861,6 @@ impl acp::Agent for MvpAgent {
                             .data(format!("Failed to delete environment: {e}"))
                     })?;
                 crate::extensions::to_raw_response(&serde_json::json!({ "ok": true }))
-            }
-            "codel/billing" => crate::extensions::billing::handle(self, &args).await,
-            "codel/auto-topup-rule" => {
-                crate::extensions::billing::handle(self, &args).await
             }
             "codel/share_session" => crate::extensions::share::handle(self, &args).await,
             "codel/privacy/setCodingDataRetention" => {

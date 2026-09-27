@@ -118,9 +118,9 @@ impl ContentController {
         let server = MockInferenceServer::start_with_models(models)
             .await
             .context("start mock inference server")?;
-        // Two defaults PTY tests depend on: settings must be 200 `{"allow_access": true}`, and the response must be a fixed text
-        // The shared server defaults to 404-until-set settings (which strands the pager on the upsell screen) and echo responses
-        server.preset_allow_access();
+        // Two defaults PTY tests depend on: settings must return 200, and the response must be a fixed text.
+        // The shared server defaults to 404-until-set settings and echo responses.
+        server.set_settings(serde_json::json!({}));
         server.set_response(default_response_text());
 
         let mut sandbox = TestSandbox::builder().mock_url(server.url()).build();
@@ -364,10 +364,10 @@ mod tests {
             .expect("read direct foreground response")
     }
 
-    /// This harness's old private mock always served 200 `{"allow_access": true}`; the shared server defaults to 404-until-set.
-    /// A 404 strands the pager on the SuperCodel upsell screen and breaks every PTY test.
+    /// This harness's old private mock always served 200 settings; the shared server defaults to 404-until-set,
+    /// which leaves the pager without remote settings and breaks every PTY test.
     #[tokio::test]
-    async fn settings_endpoint_allows_access_by_default() {
+    async fn settings_endpoint_serves_remote_settings_by_default() {
         let content = ContentController::start().await.unwrap();
 
         let resp = reqwest::get(format!("{}/settings", content.url()))
@@ -375,7 +375,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), 200);
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body, serde_json::json!({ "allow_access": true }));
+        assert_eq!(body, serde_json::json!({}));
     }
 
     /// This harness's old private mock streamed a fixed default text to every request; the shared server defaults to echo.

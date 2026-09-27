@@ -48,7 +48,6 @@ pub mod session;
 pub use codel_shell_terminal as terminal;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod tier;
 pub mod tools;
 pub mod upload;
 pub mod util;

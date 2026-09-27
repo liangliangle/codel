@@ -19,9 +19,7 @@ async fn campaign_remote_settings_nudge_and_dismiss() {
     .expect("start content with two models");
 
     // Serve the campaign from the settings endpoint
-    // This replaces the preset settings, so `allow_access` must be restated or the pager parks on the upsell screen
     content.server().set_settings(json!({
-        "allow_access": true,
         "campaigns": [
             { "id": CAMPAIGN_ID, "models": { "default": CAMPAIGN_MODEL } }
         ]

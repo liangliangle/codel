@@ -42,7 +42,6 @@ pub struct TelemetryClient {
     shell_version: String,
     client_type: Option<String>,
     client_version: Option<String>,
-    subscription_tier: Option<String>,
     http_client: reqwest::Client,
 }
 impl std::fmt::Debug for TelemetryClient {
@@ -70,7 +69,6 @@ impl TelemetryClient {
         deployment_key: Option<String>,
         origin_client: Option<OriginClientInfo>,
         shell_version: String,
-        subscription_tier: Option<String>,
         http_client: reqwest::Client,
     ) -> Self {
         if codel_version::IS_DEV_BUILD
@@ -110,7 +108,6 @@ impl TelemetryClient {
             shell_version,
             client_type,
             client_version,
-            subscription_tier,
             http_client,
         }
     }
@@ -281,9 +278,6 @@ pub async fn track(event_name: &str, request_id: &str, ctx: &UserContext, mut me
     if let Some(ref client_version) = client.client_version {
         metadata.insert("client_version".into(), json!(client_version));
     }
-    if let Some(ref subscription_tier) = client.subscription_tier {
-        metadata.insert("subscription_tier".into(), json!(subscription_tier));
-    }
     if let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(EventEnrichment::capture())
     {
         for (key, value) in fields {
@@ -390,9 +384,6 @@ pub fn sync_profile() {
         if let Some(ref team_id) = client.team_id {
             props.insert("team_id".into(), json!(team_id));
         }
-        if let Some(ref subscription_tier) = client.subscription_tier {
-            props.insert("subscription_tier".into(), json!(subscription_tier));
-        }
         let _ = mixpanel.engage(&user_id, props).await;
     });
 }
@@ -407,7 +398,6 @@ pub fn init(
     deployment_key: Option<String>,
     origin_client: Option<OriginClientInfo>,
     shell_version: String,
-    subscription_tier: Option<String>,
     http_client: reqwest::Client,
 ) {
     // Product telemetry transport has been removed from the fork: no client is
@@ -420,7 +410,6 @@ pub fn init(
         deployment_key,
         origin_client,
         shell_version,
-        subscription_tier,
         http_client,
     );
 }
@@ -434,7 +423,6 @@ pub fn init_if_needed(
     deployment_key: Option<String>,
     origin_client: Option<OriginClientInfo>,
     shell_version: String,
-    subscription_tier: Option<String>,
     http_client: reqwest::Client,
 ) {
     // Transport removed: nothing to initialise.
@@ -446,7 +434,6 @@ pub fn init_if_needed(
         deployment_key,
         origin_client,
         shell_version,
-        subscription_tier,
         http_client,
     );
     return;
@@ -468,7 +455,6 @@ pub fn init_if_needed(
             deployment_key,
             origin_client,
             shell_version,
-            subscription_tier,
             http_client,
         ));
         drop(guard);
@@ -493,13 +479,10 @@ mod tests {
     fn event_value_strips_workspace_prefix() {
         assert_eq!(event_value("codel-workspace-turn"), "turn");
     }
-    /// SessionMetrics must not attempt Mixpanel profile engage; sync_profile is a no-op unless mode is fully Enabled.
+    /// The fork builds no telemetry client at all: `init` is a no-op, so neither product
+    /// analytics nor session metrics can ever turn on, whatever the config or mode says.
     #[test]
-    fn sync_profile_is_noop_in_session_metrics_mode() {
-        assert!(
-            tokio::runtime::Handle::try_current().is_err(),
-            "this test must run without a tokio runtime"
-        );
+    fn init_never_builds_a_client() {
         struct ClearClient;
         impl Drop for ClearClient {
             fn drop(&mut self) {
@@ -511,11 +494,22 @@ mod tests {
         let cfg = TelemetryConfig {
             mixpanel_enabled: true,
             mixpanel_token: Some("test-token".into()),
-            events_url: None,
-            events_api_key: None,
+            events_url: Some("http://127.0.0.1:1/events".into()),
+            events_api_key: Some("test-key".into()),
             ..TelemetryConfig::default()
         };
         init(
+            cfg.clone(),
+            TelemetryMode::Enabled,
+            Some("user-1".into()),
+            None,
+            None,
+            None,
+            "0.0.0-test".into(),
+            reqwest::Client::new(),
+        );
+        sync_profile();
+        init_if_needed(
             cfg,
             TelemetryMode::SessionMetrics,
             Some("user-1".into()),
@@ -523,16 +517,12 @@ mod tests {
             None,
             None,
             "0.0.0-test".into(),
-            None,
             reqwest::Client::new(),
         );
-        sync_profile();
-        assert!(
-            is_session_metrics_enabled(),
-            "client must be live for session metrics"
-        );
         assert!(!is_enabled(), "product analytics must stay off");
+        assert!(!is_session_metrics_enabled(), "session metrics must stay off");
     }
+
     /// Names without a known emitter prefix pass through unchanged.
     #[test]
     fn event_value_passes_through_unprefixed() {
@@ -551,24 +541,6 @@ mod tests {
             let name = format!("{}my_event", origin.event_prefix());
             assert_eq!(event_value(&name), "my_event");
         }
-    }
-    /// Mixpanel `subscription_tier` must be a stable snake_case key.
-    /// Free users arrive as CCP display `"Free"` or JWT-fallback `"free"`; both must land as `"free"`.
-    #[test]
-    fn normalize_tier_maps_display_and_claim_names() {
-        assert_eq!(normalize_tier("Free"), "free");
-        assert_eq!(normalize_tier("free"), "free");
-        assert_eq!(normalize_tier("SuperCodel"), "supercodel");
-        assert_eq!(normalize_tier("SuperCodel Heavy"), "supercodel_heavy");
-        assert_eq!(normalize_tier("supercodel_heavy"), "supercodel_heavy");
-        assert_eq!(normalize_tier("X Basic"), "x_basic");
-        assert_eq!(normalize_tier("X Premium+"), "x_premium_plus");
-        assert_eq!(normalize_tier("X Premium"), "x_premium");
-        assert_eq!(normalize_tier("SuperCodel Lite"), "supercodel_lite");
-        assert_eq!(normalize_tier("SuperCodel Plus"), "supercodel_plus");
-        assert_eq!(normalize_tier("supercodel_plus"), "supercodel_plus");
-        assert_eq!(normalize_tier("API Key"), "api_key");
-        assert_eq!(normalize_tier("api_key"), "api_key");
     }
     /// Enrichment and session keys derive from the struct that owns them;
     /// activity-gauge keys are defined in their domain crates and enumerated at

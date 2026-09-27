@@ -104,44 +104,6 @@ pub(crate) fn reject_direct_hub_cloud_meta(
     }
     Ok(())
 }
-/// Extract the numeric `tier` claim from a JWT access token (no signature verification).
-/// Maps subscription-tier enum values to display strings the telemetry crate canonicalizes.
-pub(crate) fn jwt_tier_claim(jwt: &str) -> Option<String> {
-    use base64::Engine;
-    let payload_b64 = jwt.split('.').nth(1)?;
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload_b64)
-        .ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    let tier = claims.get("tier")?.as_u64()?;
-    Some(tier.to_string())
-}
-/// Resolve telemetry / AuthMeta `subscription_tier`.
-/// Precedence: CCP `/settings` `subscription_tier_display` (when present and non-empty) [`AuthMode::ApiKey`] resolves to `"api_key"` (never free)
-/// JWT `tier` claim via [`jwt_tier_claim`] (OAuth free resolves to `"free"`)
-pub(crate) fn resolve_subscription_tier_for_telemetry(
-    display: Option<String>,
-    auth: Option<&codel_login::CodelAuth>,
-) -> Option<String> {
-    if let Some(t) = display.filter(|s| !s.trim().is_empty()) {
-        return Some(t);
-    }
-    let auth = auth?;
-    if auth.auth_mode == codel_login::AuthMode::ApiKey {
-        return Some("api_key".into());
-    }
-    jwt_tier_claim(&auth.key)
-}
-/// Whether a JWT `tier` claim (from [`jwt_tier_claim`]) reflects the live `/user?include=subscription` tier string. That string comes from the subscription API (QUALIFYING_TIERS).
-/// The post-unblock catalog refresh must not treat *any* present claim as enough.
-/// An older paid claim (e.g. `x_basic`) can remain on the access token while `/user` already reports a newly qualifying tier (e.g. `SuperCodelPro`). In that case `/v1/models` would still be targeted at the stale level (the "stale JWT tier skips retry" bug).
-pub(crate) fn jwt_claim_matches_user_subscription_tier(
-    jwt_claim: &str,
-    user_subscription_tier: &str,
-) -> bool {
-    let _ = user_subscription_tier;
-    jwt_claim.parse::<u64>().is_ok_and(|n| n != 0)
-}
 /// ACP `_meta` key for the intent to run a chat session on a local workspace (pager stamps it on chat create).
 #[cfg(feature = "local-workspace")]
 const LOCAL_WORKSPACE_META_KEY: &str = "codel/local_workspace";
@@ -524,19 +486,13 @@ struct SettingsUpdateNotification {
     /// `None` when the agent has no settings yet, which clients treat as "leave the cache alone". In leader mode this push is the only path that seeds the TUI process.
     /// So a `/model` pick can record a remote campaign's dismissal even when the TUI's own startup prefetch missed.
     campaigns: Option<Vec<crate::util::config::CampaignOverride>>,
-    gate_message: Option<String>,
-    gate_url: Option<String>,
-    gate_label: Option<String>,
-    allow_access: Option<bool>,
     consent_gate: Option<crate::util::config::ConsentGate>,
-    subscription_tier_display: Option<String>,
     auto_permission_mode_enabled: Option<bool>,
     prompt_suggestions_enabled: Option<bool>,
     /// Soft-default permission mode for the pager (post-auth / `/new` refresh).
     permission_mode: Option<String>,
     group_tool_verbs: Option<bool>,
     collapsed_edit_blocks: Option<bool>,
-    subscription_watch_interval_secs: Option<u64>,
     dock_enabled: Option<bool>,
     terminal_theme_enabled: Option<bool>,
     /// The remote tier the pager's settings row shows beside the saved `[features]` key.
@@ -678,13 +634,6 @@ pub struct MvpAgent {
     /// Workspaces (canonical `workspace_key`) already prompted/decided for the interactive folder-trust round-trip this process. Dedups re-prompts on `load_session` reconnect and concurrent same-workspace sessions.
     /// Agent-owned (mirrors the `DECISIONS` cache, but not a process global) and captured into the detached prompt task. Cleared for a workspace on GUI untrust (`execute_hooks_action`) so a later re-open can re-prompt.
     interactive_trust_prompted: Rc<RefCell<std::collections::HashSet<PathBuf>>>,
-    /// Whether the user's subscription tier is in the remote settings `allowed_tiers` list.
-    /// Set by `enforce_codel_code_access`; defaults to `true` (API-key and external-auth users bypass the check).
-    /// When `false`, the pager shows a gate CTA instead of the prompt.
-    tier_allowed: std::cell::Cell<bool>,
-    /// The `user_id` the current `tier_allowed` verdict was resolved for.
-    /// `cfg.remote_settings` isn't reset on account switch, so a mismatch means "unknown" (provisional open), like `OtelGate::rearm_on_switch`.
-    allow_access_resolved_for: std::cell::RefCell<Option<String>>,
     /// In-flight official-marketplace auto-register; the agent owns the handle. Replacing the slot
     /// aborts a still-queued task; a running one finishes its short register-or-no-op.
     official_marketplace_register: std::cell::RefCell<
@@ -775,14 +724,6 @@ pub struct MvpAgent {
     /// A rapid reconnect can fire all three within the TTL window. The non-atomic per-file writes and prunes in `bundle::extract_bundle_archive` make that race observable as a partially-written cache.
     /// We use an `Arc<AtomicBool>` so the spawned task can clear the flag on completion without re-borrowing `&self`. `Send` is required because the inner `sync_bundle_to_root` now uses `spawn_blocking`.
     bundle_sync_in_flight: Arc<std::sync::atomic::AtomicBool>,
-    /// Single-flight guard for [`spawn_post_unblock_jwt_and_catalog_retry`]. After a free-to-paid unblock the JWT may still lack a `tier` claim for several seconds.
-    /// Overlapping `CheckSubscription` RPCs come from the watch debounce, paywall ticks, and concurrent in-flight checks.
-    /// Each would otherwise spawn another five-attempt `refresh_chain` backoff loop, multiplying IdP traffic and redundant catalog work. Cleared by [`PostUnblockJwtRetryInFlightGuard`] on task exit (including panic/abort), not only on the normal post-backoff path.
-    post_unblock_jwt_retry_in_flight: Arc<std::sync::atomic::AtomicBool>,
-    /// Single-flight claim for [`MvpAgent::retry_subscription_check`], the tier re-check work itself.
-    /// The detached initialize re-check, the awaited authenticate-path checks, and the pager's 5s poll can never run it concurrently.
-    /// A second concurrent check would double IdP/HTTP traffic for the same verdict and race the gate writes. Cleared by [`TierRecheckInFlightGuard`] on exit (including panic/abort).
-    tier_recheck_in_flight: Arc<std::sync::atomic::AtomicBool>,
     /// Local workspace ops, built lazily via [`Self::ensure_local_workspace_ops`].
     /// The agent never opens Computer Hub as a harness/client; remote cloud sandboxes are gateway-owned (`gateway_bridge` / `computer_sessions`).
     workspace_ops: RefCell<Option<codel_workspace::WorkspaceOps>>,
@@ -853,9 +794,6 @@ pub struct MvpAgent {
     /// Test-only: counts `spawn_post_auth_settings` tasks spawned past its own guard.
     #[cfg(test)]
     post_auth_settings_spawn_count: std::cell::Cell<usize>,
-    /// Test-only: counts tier re-checks that claimed the single-flight flag (i.e. `retry_subscription_check` bodies that actually ran).
-    #[cfg(test)]
-    tier_recheck_run_count: std::cell::Cell<usize>,
 }
 /// Spawn a thread to warm the shared async HTTP client (`OnceLock`-cached).
 /// Loading TLS root certs takes about 95ms; doing it here avoids a cold-start hit on the first request.
@@ -1399,253 +1337,17 @@ impl MvpAgent {
         }
         result
     }
-    /// Check whether the user has access via remote settings `allow_access`. Non-Codel auth (API keys, enterprise) always passes.
-    /// For Codel OAuth2 users, reads `allow_access` from remote settings (explicit `false` blocks; absent field fails open). When settings have not arrived yet the gate is provisionally open and re-resolved on arrival.
-    pub(super) async fn enforce_codel_code_access(
-        &self,
-        auth: &codel_login::CodelAuth,
-    ) {
-        if !auth.is_codel_auth() {
-            self.tier_allowed.set(true);
-            return;
-        }
-        let settings_for_this_identity = self.cfg.borrow().remote_settings.is_some()
-            && self.allow_access_resolved_for.borrow().as_deref()
-                == Some(auth.user_id.as_str());
-        if !settings_for_this_identity
-            && crate::util::config::resolve_remote_fetch_enabled()
-        {
-            self.tier_allowed.set(true);
-            return;
-        }
-        let allow = settings_allow_access(self.cfg.borrow().remote_settings.as_ref());
-        self.tier_allowed.set(allow);
-        *self.allow_access_resolved_for.borrow_mut() = Some(auth.user_id.clone());
-        if !allow {
-            tracing::info!(
-                "auth: user blocked by allow_access (remote settings codel_build_access_gate)"
-            );
-            self.retry_subscription_check().await;
-        }
-    }
-    /// Single-shot subscription check called by the pager's "Check subscription" button (`codel/auth/check_subscription`). The pager calls this every 5s while the paywall is shown, acting as the poller.
-    /// Queries `/user?include=subscription` for the live tier from the subscription API. If a qualifying tier is found, does a best-effort JWT refresh and settings re-fetch, then lifts the gate.
-    /// The match test is [`jwt_claim_matches_user_subscription_tier`]; a bare `refresh_chain` Ok or any older paid claim is not enough. Catalog refresh is not awaited so gate lift / auth meta are not blocked on `/v1/models`.
-    pub(crate) async fn retry_subscription_check(&self) {
-        use std::sync::atomic::Ordering;
-        if self
-            .tier_recheck_in_flight
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            tracing::debug!("tier re-check already in flight, skipping duplicate check");
-            return;
-        }
-        let _in_flight_guard = TierRecheckInFlightGuard {
-            flag: self.tier_recheck_in_flight.clone(),
-        };
-        #[cfg(test)]
-        self.tier_recheck_run_count.set(self.tier_recheck_run_count.get() + 1);
-        let (proxy_base_url, alpha_test_key) = {
-            let cfg = self.cfg.borrow();
-            (cfg.endpoints.proxy_url(), cfg.endpoints.alpha_test_key.clone())
-        };
-        let user_id = self
-            .auth_manager
-            .current_or_expired()
-            .map(|a| a.user_id.clone())
-            .unwrap_or_default();
-        let result = super::subscription_check::single_check(
-                self.auth_manager.clone(),
-                &proxy_base_url,
-                alpha_test_key.as_deref(),
-                &user_id,
-            )
-            .await;
-        let canonical_user_id = result
-            .as_ref()
-            .map(|u| u.canonical_user_id.clone())
-            .filter(|c| !c.is_empty());
-        if self.tier_recheck_identity_changed(&user_id, canonical_user_id.as_deref()) {
-            return;
-        }
-        if let Some(unblocked) = result {
-            tracing::info!(
-                new_tier = %unblocked.new_tier,
-                "subscription detected, lifting gate"
-            );
-            codel_logging::unified_log::info(
-                "paywall_check_gate_lifting",
-                None,
-                Some(
-                    serde_json::json!({
-                    "user_id": user_id,
-                    "new_tier": unblocked.new_tier,
-                }),
-                ),
-            );
-            let remote_was_absent = self.cfg.borrow().remote_settings.is_none();
-            if crate::util::config::resolve_remote_fetch_enabled()
-                && let Some(auth) = self.auth_manager.current()
-                && let Some(settings) = self.fetch_settings_resolving_gate(&auth).await
-            {
-                if self
-                    .tier_recheck_identity_changed(
-                        &user_id,
-                        canonical_user_id.as_deref(),
-                    )
-                {
-                    return;
-                }
-                self.install_remote_settings(settings);
-                if remote_was_absent {
-                    self.run_deferred_remote_work();
-                }
-            }
-            if self.tier_recheck_identity_changed(&user_id, canonical_user_id.as_deref())
-            {
-                return;
-            }
-            if crate::util::config::resolve_remote_fetch_enabled()
-                && !settings_allow_access(self.cfg.borrow().remote_settings.as_ref())
-            {
-                tracing::info!(
-                    new_tier = %unblocked.new_tier,
-                    "subscription detected but allow_access still false, keeping gate"
-                );
-                codel_logging::unified_log::warn(
-                    "paywall_check_gate_kept_allow_access_false",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "user_id": user_id,
-                        "new_tier": unblocked.new_tier,
-                    }),
-                    ),
-                );
-                return;
-            }
-            let claim_already_current = self
-                .auth_manager
-                .current_or_expired()
-                .and_then(|auth| jwt_tier_claim(&auth.key))
-                .is_some_and(|claim| jwt_claim_matches_user_subscription_tier(
-                    &claim,
-                    &unblocked.new_tier,
-                ));
-            let refresh_ok = if claim_already_current {
-                true
-            } else if unblocked.refresh_deadline_hit {
-                tracing::info!(
-                    "post-unblock: skipping forced mint, single_check's bounded refresh still in flight"
-                );
-                codel_logging::unified_log::info(
-                    "paywall_check_skip_redundant_mint",
-                    None,
-                    Some(serde_json::json!({ "user_id": user_id })),
-                );
-                false
-            } else {
-                // An API key cannot be refreshed, so the tier claim cannot change.
-                false
-            };
-            if self.tier_recheck_identity_changed(&user_id, canonical_user_id.as_deref())
-            {
-                return;
-            }
-            self.tier_allowed.set(true);
-            let jwt_claim = self
-                .auth_manager
-                .current_or_expired()
-                .and_then(|auth| jwt_tier_claim(&auth.key));
-            let jwt_matches_new_tier = jwt_claim
-                .as_ref()
-                .is_some_and(|claim| jwt_claim_matches_user_subscription_tier(
-                    claim,
-                    &unblocked.new_tier,
-                ));
-            if jwt_matches_new_tier {
-                let models_manager = self.models_manager.clone();
-                let user_id_log = user_id.clone();
-                let new_tier = unblocked.new_tier.clone();
-                let jwt_claim_log = jwt_claim.clone();
-                tokio::task::spawn(async move {
-                    codel_logging::unified_log::info(
-                        "model catalog: post_subscription_unblock refresh",
-                        None,
-                        Some(
-                            serde_json::json!({
-                            "user_id": user_id_log,
-                            "new_tier": new_tier,
-                            "refresh_ok": refresh_ok,
-                            "jwt_claim": jwt_claim_log,
-                            "jwt_matches_new_tier": true,
-                        }),
-                        ),
-                    );
-                    models_manager.on_auth_changed().await;
-                });
-            } else {
-                tracing::warn!(
-                    refresh_ok,
-                    jwt_claim = ?jwt_claim,
-                    new_tier = %unblocked.new_tier,
-                    "post-unblock: JWT tier claim missing or stale vs live tier; deferring model catalog refresh with retry"
-                );
-                codel_logging::unified_log::warn(
-                    "model catalog: post_subscription_unblock deferred (jwt tier missing or stale)",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "user_id": user_id,
-                        "new_tier": unblocked.new_tier,
-                        "refresh_ok": refresh_ok,
-                        "jwt_claim": jwt_claim,
-                    }),
-                    ),
-                );
-                spawn_post_unblock_jwt_and_catalog_retry(
-                    self.auth_manager.clone(),
-                    self.models_manager.clone(),
-                    self.post_unblock_jwt_retry_in_flight.clone(),
-                    user_id.clone(),
-                    unblocked.new_tier.clone(),
-                );
-            }
-        } else {
-            codel_logging::unified_log::info(
-                "paywall_check_no_subscription",
-                None,
-                Some(serde_json::json!({
-                    "user_id": user_id,
-                })),
-            );
-        }
-    }
     pub(crate) fn auth_response_with_meta(&self) -> AuthenticateResponse {
-        let (show_resolved_model, gate, subscription_tier) = {
-            let cfg = self.cfg.borrow();
-            let rs = cfg.remote_settings.as_ref();
-            let gate = rs
-                .and_then(|s| s.gate_message.as_ref())
-                .filter(|m| !m.is_empty())
-                .map(|message| codel_login::GateInfo {
-                    message: message.clone(),
-                    url: rs.and_then(|s| s.gate_url.clone()),
-                    label: rs.and_then(|s| s.gate_label.clone()),
-                });
-            let subscription_tier = rs.and_then(|s| s.subscription_tier_display.clone());
-            (rs.and_then(|s| s.show_resolved_model), gate, subscription_tier)
-        };
-        let subscription_tier = resolve_subscription_tier_for_telemetry(
-            subscription_tier,
-            self.auth_manager.current_or_expired().as_ref(),
-        );
+        let show_resolved_model = self
+            .cfg
+            .borrow()
+            .remote_settings
+            .as_ref()
+            .and_then(|s| s.show_resolved_model);
         let meta = self
             .auth_manager
             .current()
             .map(|auth| {
-                let gate = if self.tier_allowed.get() { None } else { gate };
                 let auth_meta = codel_login::AuthMeta {
                     email: auth.email.clone(),
                     auth_mode: Some(format!("{:?}", auth.auth_mode)),
@@ -1657,8 +1359,6 @@ impl MvpAgent {
                     coding_data_retention_opt_out: auth.coding_data_retention_opt_out,
                     can_administer_team: auth.can_administer_team,
                     show_resolved_model,
-                    gate,
-                    subscription_tier,
                     feedback_trace_offer: self.feedback_trace_offer(),
                     backend_billed: !codel_login::backend::ActiveAuthBackend::default()
                         .is_codel_authority(),
@@ -1782,13 +1482,7 @@ impl MvpAgent {
                 slash_command_tags: rs.and_then(|s| s.slash_command_tags.clone()),
                 announcements: rs.and_then(|s| s.announcements.clone()),
                 campaigns: rs.map(|s| s.campaigns.clone()),
-                gate_message: rs.and_then(|s| s.gate_message.clone()),
-                gate_url: rs.and_then(|s| s.gate_url.clone()),
-                gate_label: rs.and_then(|s| s.gate_label.clone()),
-                allow_access: rs.and_then(|s| s.allow_access),
                 consent_gate: rs.and_then(|s| s.consent_gate.clone()),
-                subscription_tier_display: rs
-                    .and_then(|s| s.subscription_tier_display.clone()),
                 auto_permission_mode_enabled: crate::util::config::remote_auto_mode_enabled(
                     rs,
                 ),
@@ -1798,8 +1492,6 @@ impl MvpAgent {
                 permission_mode: rs.and_then(|s| s.permission_mode.clone()),
                 group_tool_verbs: rs.and_then(|s| s.group_tool_verbs),
                 collapsed_edit_blocks: rs.and_then(|s| s.collapsed_edit_blocks),
-                subscription_watch_interval_secs: rs
-                    .and_then(|s| s.subscription_watch_interval_secs),
                 dock_enabled: rs.and_then(|s| s.dock_enabled),
                 terminal_theme_enabled: rs.and_then(|s| s.terminal_theme_enabled),
                 subagent_model_inheritance_enabled: rs
@@ -1867,48 +1559,6 @@ impl MvpAgent {
                     registry,
                 });
         }
-    }
-    /// True when the live credential no longer belongs to the identity a tier re-check started with. Every post-await write in [`Self::retry_subscription_check`] runs behind this.
-    /// So a detached check that outlives an account switch discards its result instead of gating/ungating the successor identity.
-    /// `canonical_user_id` is the `/user` `userId` the check itself resolved with the live bearer (see `UnblockResult`). The check's own mint spawns a `/user` enrichment that can rewrite a seeded/stale user_id to that canonical value mid-check. That normalization is the same account, not a switch. A real switch matches neither id.
-    fn tier_recheck_identity_changed(
-        &self,
-        started_user_id: &str,
-        canonical_user_id: Option<&str>,
-    ) -> bool {
-        let live = self.auth_manager.current_or_expired().map(|a| a.user_id);
-        if live.as_deref() == Some(started_user_id) {
-            return false;
-        }
-        if let Some(canonical) = canonical_user_id.filter(|c| !c.is_empty())
-            && live.as_deref() == Some(canonical)
-        {
-            return false;
-        }
-        codel_logging::unified_log::info(
-            "tier re-check identity changed, discarding result",
-            None,
-            Some(
-                serde_json::json!({
-                "started_user_id": started_user_id,
-                "canonical_user_id": canonical_user_id,
-                "live_user_id": live,
-            }),
-            ),
-        );
-        true
-    }
-    /// Background the reconnect tier re-check so a gated initialize answers immediately. The re-check can block for tens of seconds on the subscription endpoint plus a refresh.
-    /// The pager already polls "Check subscription" every 5s while the paywall shows, so a background lift lands within one poll.
-    /// No outer timeout: every await inside is bounded (HTTP, bounded refresh), and a drop-at-deadline would abandon an in-flight IdP exchange. So this spawn, the awaited authenticate-path checks, and the pager's poll can never run the re-check concurrently. That is because `tier_allowed` is set only after that refresh returns and is identity-revalidated.
-    pub(super) fn spawn_tier_recheck(&self) {
-        let agent_ref = LocalRef::new(self);
-        tokio::task::spawn_local(async move {
-            let Some(auth) = agent_ref.get().auth_manager.current() else {
-                return;
-            };
-            agent_ref.get().enforce_codel_code_access(&auth).await;
-        });
     }
     /// Spawn a best-effort bundle sync. Re-fires on every call site (init, cached_token, codel.dev/oidc); the cheap pre-checks below absorb repeats so reconnects are cheap.
     /// Pre-spawn gating order (cheapest first, all synchronous): Auth gate: avoid spawning a no-op task on every init.
@@ -2215,163 +1865,6 @@ async fn handle_synthetic_turn_trace(
             }
         },
     );
-}
-/// Clears [`MvpAgent::post_unblock_jwt_retry_in_flight`] on scope exit (success, exhaustion, cancel/abort, or panic).
-/// So the single-flight flag cannot wedge `true` for the rest of the process.
-struct PostUnblockJwtRetryInFlightGuard {
-    flag: Arc<std::sync::atomic::AtomicBool>,
-}
-impl Drop for PostUnblockJwtRetryInFlightGuard {
-    fn drop(&mut self) {
-        self.flag.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
-/// Clears [`MvpAgent::tier_recheck_in_flight`] on scope exit (completion, early identity-changed bail, cancel/abort, or panic).
-/// So the single-flight flag cannot wedge `true` for the rest of the process.
-struct TierRecheckInFlightGuard {
-    flag: Arc<std::sync::atomic::AtomicBool>,
-}
-impl Drop for TierRecheckInFlightGuard {
-    fn drop(&mut self) {
-        self.flag.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
-/// Background retry when post-unblock JWT lacks a tier claim that matches the live `/user` tier. Each attempt first re-checks the current JWT (the bounded refresh's detached mint may have landed a matching claim already).
-/// Only then does it re-attempt `refresh_chain`. An attempt succeeds only when [`jwt_claim_matches_user_subscription_tier`] holds. Bare refresh Ok, a free token, or a *stale older* paid claim are all misses.
-/// Then refreshes the model catalog. Gate lift already happened; this only recovers the tier-targeted catalog. The flag is released by [`PostUnblockJwtRetryInFlightGuard`] (Drop), not only on the happy path after `execute_with_backoff`.
-fn spawn_post_unblock_jwt_and_catalog_retry(
-    auth_manager: std::sync::Arc<codel_login::AuthManager>,
-    models_manager: crate::agent::remote_config::ModelsManager,
-    in_flight: Arc<std::sync::atomic::AtomicBool>,
-    user_id: String,
-    new_tier: String,
-) {
-    use std::sync::atomic::Ordering;
-    if in_flight
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        tracing::debug!(
-            "post-unblock JWT/catalog retry already in flight, skipping duplicate spawn"
-        );
-        codel_logging::unified_log::info(
-            "model catalog: post_subscription_unblock jwt retry skipped (already in flight)",
-            None,
-            Some(serde_json::json!({
-                "user_id": user_id,
-                "new_tier": new_tier,
-            })),
-        );
-        return;
-    }
-    tokio::task::spawn(async move {
-        let _in_flight_guard = PostUnblockJwtRetryInFlightGuard {
-            flag: in_flight,
-        };
-        let backoff = crate::tools::retry::BackoffConfig::new(5, 2_000, 30_000);
-        let result = crate::tools::retry::execute_with_backoff(
-                &backoff,
-                || {
-                    let auth_manager = auth_manager.clone();
-                    let new_tier = new_tier.clone();
-                    async move {
-                        let pre_refresh_claim = auth_manager
-                            .current_or_expired()
-                            .and_then(|auth| jwt_tier_claim(&auth.key));
-                        let already_current = pre_refresh_claim
-                            .as_ref()
-                            .is_some_and(|claim| jwt_claim_matches_user_subscription_tier(
-                                claim,
-                                &new_tier,
-                            ));
-                        if already_current {
-                            return Ok(());
-                        }
-                        // An API key cannot be refreshed; the claim is whatever
-                        // the configured key carries.
-                        let refresh_result: Result<(), String> = Ok(());
-                        let jwt_claim = auth_manager
-                            .current_or_expired()
-                            .and_then(|auth| jwt_tier_claim(&auth.key));
-                        let matches = jwt_claim
-                            .as_ref()
-                            .is_some_and(|claim| jwt_claim_matches_user_subscription_tier(
-                                claim,
-                                &new_tier,
-                            ));
-                        if matches {
-                            Ok(())
-                        } else {
-                            let detail = match (&refresh_result, &jwt_claim) {
-                                (Ok(_), None) => "refresh_ok but no tier claim".to_string(),
-                                (Ok(_), Some(c)) => {
-                                    format!("refresh_ok but stale tier claim={c} (want {new_tier})")
-                                }
-                                (Err(e), Some(c)) => {
-                                    format!("refresh_err={e}; stale tier claim={c} (want {new_tier})")
-                                }
-                                (Err(e), None) => e.to_string(),
-                            };
-                            Err(format!("jwt tier not current: {detail}"))
-                        }
-                    }
-                },
-                |attempt, max_retries, delay| {
-                    let user_id = user_id.clone();
-                    let new_tier = new_tier.clone();
-                    async move {
-                        codel_logging::unified_log::warn(
-                            "model catalog: post_subscription_unblock jwt retry scheduled",
-                            None,
-                            Some(
-                                serde_json::json!({
-                            "user_id": user_id,
-                            "new_tier": new_tier,
-                            "attempt": attempt,
-                            "max_retries": max_retries,
-                            "delay_ms": delay.as_millis() as u64,
-                        }),
-                            ),
-                        );
-                    }
-                },
-            )
-            .await;
-        match result {
-            Ok(()) => {
-                codel_logging::unified_log::info(
-                    "model catalog: post_subscription_unblock refresh (after jwt retry)",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "user_id": user_id,
-                        "new_tier": new_tier,
-                    }),
-                    ),
-                );
-                models_manager.on_auth_changed().await;
-            }
-            Err(e) => {
-                codel_logging::unified_log::warn(
-                    "model catalog: post_subscription_unblock jwt retry exhausted",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "user_id": user_id,
-                        "new_tier": new_tier,
-                        "error": e.to_string(),
-                    }),
-                    ),
-                );
-            }
-        }
-    });
-}
-/// `allow_access` from remote settings. Fail-open unless explicitly `false`.
-pub(crate) fn settings_allow_access(
-    rs: Option<&crate::util::config::RemoteSettings>,
-) -> bool {
-    !matches!(rs.and_then(|s| s.allow_access), Some(false))
 }
 mod replay;
 #[cfg(test)]

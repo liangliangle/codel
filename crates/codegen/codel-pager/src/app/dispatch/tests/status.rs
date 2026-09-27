@@ -827,39 +827,6 @@ fn hydration_answer_for_another_account_is_dropped() {
     }
 }
 
-/// A re-check snapshot built before hydration must not clear the capability for the same account and must replace it for another, or a personal account would inherit a team denial.
-#[test]
-fn recheck_keeps_hydrated_capability_only_for_the_same_account() {
-    let team = codel_login::AuthMeta {
-        email: Some("a@acme.test".into()),
-        team_id: Some("team-a".into()),
-        is_team_principal: true,
-        ..codel_login::AuthMeta::default()
-    };
-    let personal = codel_login::AuthMeta {
-        is_team_principal: false,
-        ..team.clone()
-    };
-    for (snapshot, expected) in [(team, Some(false)), (personal, None)] {
-        let mut app = test_app_with_agent();
-        app.account_email = Some("a@acme.test".into());
-        app.team_id = Some("team-a".into());
-        app.is_team_principal = true;
-        app.can_administer_team = Some(false);
-        let _ = dispatch(
-            Action::TaskComplete(TaskResult::CheckSubscriptionComplete {
-                verify: None,
-                meta: Some(serde_json::to_value(&snapshot).unwrap()),
-            }),
-            &mut app,
-        );
-        assert_eq!(
-            app.can_administer_team, expected,
-            "team_principal={}",
-            snapshot.is_team_principal
-        );
-    }
-}
 
 /// `[Opt in]` success: ACP confirmation acks the banner.
 #[test]
@@ -966,55 +933,6 @@ fn privacy_banner_opt_out_noop_while_opt_in_inflight() {
     );
 }
 
-/// Coalescing and the idle opt-in shortcut key on the pending write's choice, not the mirror a subscription check can
-/// rewrite mid-flight. Otherwise a pending opt-in lands as the answer to Opt out, or Opt in acks with nothing sent.
-#[test]
-fn stale_mirror_does_not_coalesce_an_opposite_choice() {
-    for pending in [true, false] {
-        let mut app = privacy_banner_ready_app();
-        app.coding_data_retention_opt_out = pending;
-        let _ = dispatch(Action::SetCodingDataSharing { opted_in: pending }, &mut app);
-
-        // Background refresh still carries the pre-write value
-        let meta = serde_json::to_value(codel_login::AuthMeta {
-            coding_data_retention_opt_out: pending,
-            ..Default::default()
-        })
-        .unwrap();
-        let _ = dispatch(
-            Action::TaskComplete(TaskResult::CheckSubscriptionComplete {
-                verify: None,
-                meta: Some(meta),
-            }),
-            &mut app,
-        );
-        assert_eq!(
-            app.coding_data_retention_opt_out, pending,
-            "mirror rewritten"
-        );
-        assert_eq!(
-            app.coding_data_pending_opted_in(),
-            Some(pending),
-            "pending untouched"
-        );
-
-        let effects = dispatch(
-            Action::SetCodingDataSharing { opted_in: !pending },
-            &mut app,
-        );
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [Effect::SetCodingDataSharing { opted_in, seq: 2, .. }] if *opted_in != pending
-            ),
-            "pending={pending}: the opposite choice must write: {effects:?}"
-        );
-        assert!(
-            app.privacy_banner_acked.is_none(),
-            "pending={pending}: no local ack"
-        );
-    }
-}
 
 /// Already-out opt-out, from the banner or Settings, still writes: the local "out" may be the unconfirmed fail-safe default.
 #[test]
@@ -1875,59 +1793,9 @@ fn stale_context_info_results_do_not_update_replaced_session() {
     assert_eq!(agent_scrollback_len(&app), before);
 }
 
-#[test]
-fn session_usage_page_flips_info_to_top() {
-    crate::appearance::cache::set_page_flip_on_send(true);
-    let mut app = test_app_with_agent();
-    // Scrollback flow is minimal-only.
-    app.screen_mode = crate::app::ScreenMode::Minimal;
-    app.usage_visible = false;
-    seed_scrolled_up(&mut app);
-    complete_session_usage(&mut app);
-    let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
-    sb.prepare_layout(80, 8);
-    assert!(sb.is_follow_preserve_scroll());
-    let pinned = sb.scroll_offset();
-    sb.scroll_to_entry_top(sb.len() - 1);
-    assert_eq!(sb.scroll_offset(), pinned);
-}
-
-#[test]
-fn session_usage_keeps_scroll_when_page_flip_off() {
-    let prev = crate::appearance::cache::load_page_flip_on_send();
-    crate::appearance::cache::set_page_flip_on_send(false);
-    let mut app = test_app_with_agent();
-    app.screen_mode = crate::app::ScreenMode::Minimal;
-    app.usage_visible = false;
-    seed_scrolled_up(&mut app);
-    complete_session_usage(&mut app);
-    assert_eq!(
-        app.agents
-            .get(&AgentId(0))
-            .map(|a| a.scrollback.scroll_offset()),
-        Some(0)
-    );
-    crate::appearance::cache::set_page_flip_on_send(prev);
-}
 
 
-#[test]
-fn show_usage_with_redirect_url_fetches_session_only() {
-    // Redirect link is deferred until SessionUsageComplete (see billing tests).
-    let mut app = test_app_with_agent();
-    app.screen_mode = crate::app::ScreenMode::Minimal;
-    app.usage_billing_redirect_url = Some("https://billing.example.com/me".to_string());
-    let before = agent_scrollback_len(&app);
-    let effects = dispatch(Action::ShowUsage, &mut app);
-    assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::FetchSessionUsage { agent_id, .. }] if *agent_id == AgentId(0)
-        ),
-        "got: {effects:?}"
-    );
-    assert_eq!(agent_scrollback_len(&app), before);
-}
+
 
 #[test]
 fn minimal_update_notice_commits_a_system_block() {
@@ -1953,52 +1821,8 @@ fn usage_modal_state(app: &AppView) -> &crate::views::usage_modal::UsageInfoModa
     }
 }
 
-#[test]
-fn show_usage_opens_modal_on_usage_limit_tab_with_fetches() {
-    let mut app = test_app_with_agent();
-    let effects = dispatch(Action::ShowUsage, &mut app);
-    let state = usage_modal_state(&app);
-    assert_eq!(
-        state.active_tab,
-        crate::views::usage_modal::UsageInfoTab::UsageLimit
-    );
-    assert_eq!(state.ctx.session_id.as_deref(), Some("test-session"));
-    assert!(state.billing_loading);
-    assert!(
-        matches!(
-            effects.as_slice(),
-            [
-                Effect::ShowContextInfo { .. },
-                Effect::ShowSessionInfo { .. },
-                Effect::FetchSessionUsage { .. },
-                Effect::FetchBilling { silent: true, .. },
-            ]
-        ),
-        "got: {effects:?}"
-    );
-}
 
-#[test]
-fn show_context_info_retabs_open_modal_without_refetching() {
-    let mut app = test_app_with_agent();
-    dispatch(Action::ShowUsage, &mut app);
-    let effects = dispatch(Action::ShowContextInfo, &mut app);
-    assert!(effects.is_empty(), "got: {effects:?}");
-    assert_eq!(
-        usage_modal_state(&app).active_tab,
-        crate::views::usage_modal::UsageInfoTab::ContextUsage
-    );
-}
 
-#[test]
-fn show_session_info_opens_modal_on_session_tab() {
-    let mut app = test_app_with_agent();
-    dispatch(Action::ShowSessionInfo, &mut app);
-    assert_eq!(
-        usage_modal_state(&app).active_tab,
-        crate::views::usage_modal::UsageInfoTab::SessionInfo
-    );
-}
 
 #[test]
 fn usage_results_populate_open_modal_not_scrollback() {

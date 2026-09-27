@@ -171,8 +171,6 @@ pub(crate) fn handle_ask_user_question(
                     let cmd = match kind {
                         LocalQuestionKind::Fork { .. } => "/fork",
                         LocalQuestionKind::NewSession => "/new",
-                        LocalQuestionKind::CreditLimitUpsell { .. } => "credit-limit upsell",
-                        LocalQuestionKind::FreeUsageUpsell { .. } => "SuperCodel upsell",
                         LocalQuestionKind::AgentTypeMismatch { .. } => "model switch",
                         LocalQuestionKind::DeleteCurrentSession => "/delete",
                         LocalQuestionKind::DoctorFix { .. } => "/doctor fix",

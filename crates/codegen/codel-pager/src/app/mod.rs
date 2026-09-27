@@ -46,7 +46,6 @@ pub mod status_blocks;
 pub(crate) mod status_line;
 mod status_line_policy;
 pub mod subagent;
-pub mod subscription;
 pub(crate) mod worktree_session;
 pub(crate) use dispatch::dashboard_stop_readiness;
 /// Display-refresh probe + motion cadence + terminal telemetry at startup.

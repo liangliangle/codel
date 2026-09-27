@@ -354,9 +354,7 @@ pub struct SlashController {
     /// Offer `/announcements` when session announcements (critical or promo) exist.
     has_session_announcements: bool,
     /// Consumer billing surface; gates `/usage` subcommands. Default `true`.
-    billing_surface_visible: bool,
     /// Whether `/usage` is offered. Default `true`; cleared for external auth.
-    usage_command_visible: bool,
     workflows_available: bool,
     /// Session run handles for `/workflow` manage-verb autocomplete.
     workflow_runs: Vec<crate::slash::command::WorkflowRunChoice>,
@@ -398,8 +396,6 @@ impl SlashController {
             cwd,
             hide_session_scoped: false,
             has_session_announcements: false,
-            billing_surface_visible: true,
-            usage_command_visible: true,
             workflows_available: false,
             workflow_runs: Vec::new(),
             screen_mode: crate::app::ScreenMode::Fullscreen,
@@ -433,22 +429,6 @@ impl SlashController {
 
     pub fn has_session_announcements(&self) -> bool {
         self.has_session_announcements
-    }
-
-    pub fn set_billing_surface_visible(&mut self, visible: bool) {
-        self.billing_surface_visible = visible;
-    }
-
-    pub fn billing_surface_visible(&self) -> bool {
-        self.billing_surface_visible
-    }
-
-    pub fn set_usage_command_visible(&mut self, visible: bool) {
-        self.usage_command_visible = visible;
-    }
-
-    pub fn usage_command_visible(&self) -> bool {
-        self.usage_command_visible
     }
 
     pub fn set_workflows_available(&mut self, available: bool) {
@@ -493,8 +473,6 @@ impl SlashController {
             models,
             cwd: &self.cwd,
             has_session_announcements: self.has_session_announcements,
-            billing_surface_visible: self.billing_surface_visible,
-            usage_command_visible: self.usage_command_visible,
             workflows_available: self.workflows_available,
             saved_workflows: self.registry.saved_workflows(),
             workflow_runs: &self.workflow_runs,

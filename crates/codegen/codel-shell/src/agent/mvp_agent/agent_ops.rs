@@ -608,13 +608,6 @@ impl MvpAgent {
                 }) else {
                 return;
             };
-            let subscription_tier = resolve_subscription_tier_for_telemetry(
-                cfg
-                    .remote_settings
-                    .as_ref()
-                    .and_then(|rs| rs.subscription_tier_display.clone()),
-                Some(&auth),
-            );
             let (user_id, team_id) = if auth.is_codel_auth() {
                 (Some(auth.user_id), auth.team_id)
             } else {
@@ -628,7 +621,6 @@ impl MvpAgent {
                 cfg.endpoints.deployment_key.clone(),
                 self.origin_client_info_from_meta(None),
                 codel_version::VERSION.to_owned(),
-                subscription_tier,
                 crate::http::shared_client(),
             );
         }
@@ -1476,20 +1468,6 @@ impl MvpAgent {
                 &cfg.endpoints.proxy_url(),
             );
         }
-        if let Some(identity) = self
-            .auth_manager
-            .current_or_expired()
-            .filter(|a| a.is_codel_auth())
-            .map(|a| a.user_id)
-        {
-            self.tier_allowed
-                .set(
-                    super::settings_allow_access(
-                        self.cfg.borrow().remote_settings.as_ref(),
-                    ),
-                );
-            *self.allow_access_resolved_for.borrow_mut() = Some(identity);
-        }
         self.reapply_storage_mode();
         self.reapply_official_marketplace();
         {
@@ -1669,7 +1647,6 @@ impl MvpAgent {
             codel_user_id,
             codel_team_id,
             deployment_key,
-            subscription_tier,
         ) = {
             let cfg = self.cfg.borrow();
             crate::util::config::cache_remote_mcp_startup_timeout_secs(
@@ -1686,23 +1663,14 @@ impl MvpAgent {
             let codel_team_id = is_codel.then(|| team_id.clone()).flatten();
             let telemetry_config = cfg.telemetry.clone();
             let deployment_key = cfg.endpoints.deployment_key.clone();
-            let subscription_tier_display = cfg
-                .remote_settings
-                .as_ref()
-                .and_then(|rs| rs.subscription_tier_display.clone());
             (
                 telemetry_config,
                 telemetry_mode.value,
                 codel_user_id,
                 codel_team_id,
                 deployment_key,
-                subscription_tier_display,
             )
         };
-        let subscription_tier = resolve_subscription_tier_for_telemetry(
-            subscription_tier,
-            self.auth_manager.current_or_expired().as_ref(),
-        );
         codel_logging::client::init(
             telemetry_config,
             telemetry_mode,
@@ -1711,7 +1679,6 @@ impl MvpAgent {
             deployment_key,
             self.origin_client_info_from_meta(None),
             codel_version::VERSION.to_owned(),
-            subscription_tier,
             crate::http::shared_client(),
         );
         codel_login::credential_provider::sync_external_otel_identity();
@@ -2137,25 +2104,6 @@ impl MvpAgent {
         );
         (id.clone(), new_config)
     }
-    /// Whether the current session is a personal codel.dev account on a gated tier (free / X Basic). The Imagine tools stay advertised to the model but are flagged tier-restricted.
-    /// They then short-circuit at call time with the SuperCodel upsell prose (see `ImageGenConfig`/`VideoGenConfig`'s `tier_restricted`).
-    /// Fails **open** (returns `false`) whenever we can't positively confirm a restricted personal tier. So this client gate is a UX optimization (a clean in-chat upsell instead of a doomed request), never the security boundary. The only difference is the absent-tier policy (the pager hides on `None`, we fail open on `None`).
-    fn is_tier_restricted_capability(&self) -> bool {
-        let Some(auth) = self.auth_manager.current() else {
-            return false;
-        };
-        if !auth.is_codel_auth() || auth.team_id.is_some() {
-            return false;
-        }
-        let tier = self
-            .cfg
-            .borrow()
-            .remote_settings
-            .as_ref()
-            .and_then(|rs| rs.subscription_tier_display.clone())
-            .or_else(|| jwt_tier_claim(&auth.key));
-        tier.as_deref().is_some_and(crate::tier::is_restricted_tier_name)
-    }
     /// Direct to `codel_api_base_url` so IC authenticates and meters Imagine per user; the bearer rule lives in
     /// `media_tool_config`.
     pub(super) fn prepare_image_gen_config(
@@ -2369,8 +2317,6 @@ impl MvpAgent {
             interactive_trust_prompted: Rc::new(
                 RefCell::new(std::collections::HashSet::new()),
             ),
-            tier_allowed: std::cell::Cell::new(true),
-            allow_access_resolved_for: std::cell::RefCell::new(None),
             official_marketplace_register: std::cell::RefCell::new(None),
             storage_mode: std::cell::Cell::new(storage_mode),
             otel_gate: crate::agent::otel_gate::OtelGate::default(),
@@ -2408,10 +2354,6 @@ impl MvpAgent {
             ),
             monitor_event_buffer: codel_tools::implementations::codel_build::monitor::types::MonitorEventBuffer::default(),
             bundle_sync_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            post_unblock_jwt_retry_in_flight: Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
-            tier_recheck_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_ops: RefCell::new(None),
             #[cfg(all(feature = "local-workspace", unix))]
             local_workspace_supervisors: Rc::new(RefCell::new(HashMap::new())),
@@ -2448,8 +2390,6 @@ impl MvpAgent {
             auto_gc_spawn_count: std::cell::Cell::new(0),
             #[cfg(test)]
             post_auth_settings_spawn_count: std::cell::Cell::new(0),
-            #[cfg(test)]
-            tier_recheck_run_count: std::cell::Cell::new(0),
         };
         codel_login::credential_provider::wire_otel_auth_manager(
             instance.auth_manager.clone(),

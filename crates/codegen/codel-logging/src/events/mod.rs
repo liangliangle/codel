@@ -347,8 +347,6 @@ telemetry_event!(PlanSubmit, "plan_submit");
 telemetry_event!(EventLoopStall, "event_loop_stall");
 telemetry_event!(TermWriterBlocked, "term_writer_blocked");
 telemetry_event!(PromptAckTimeoutFired, "prompt_ack_timeout_fired");
-telemetry_event!(SuperCodelUpsellShown, "supercodel_upsell_shown");
-telemetry_event!(SuperCodelUpsellClicked, "supercodel_upsell_clicked");
 telemetry_event!(AnnouncementCtaShown, "announcement_cta_shown");
 telemetry_event!(AnnouncementCtaClicked, "announcement_cta_clicked");
 telemetry_event!(CodingDataConsentSelected, "coding_data_consent_selected");
@@ -377,10 +375,6 @@ telemetry_event!(
     "rate_limit_hit",
     external = crate::external::schema::map_rate_limit_hit
 );
-telemetry_event!(CreditLimitHit, "credit_limit_hit");
-telemetry_event!(CreditLimitUpsellShown, "credit_limit_upsell_shown");
-telemetry_event!(CreditLimitUpsellClicked, "credit_limit_upsell_clicked");
-telemetry_event!(SubscriptionActivated, "subscription_activated");
 telemetry_event!(StatusLineConfigured, "status_line_configured");
 telemetry_event!(StatusLineHealth, "status_line_health");
 telemetry_event!(

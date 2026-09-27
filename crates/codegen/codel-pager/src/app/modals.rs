@@ -64,8 +64,6 @@ impl AgentView {
             models,
             cwd,
             has_session_announcements: slash_controller.has_session_announcements(),
-            billing_surface_visible: slash_controller.billing_surface_visible(),
-            usage_command_visible: slash_controller.usage_command_visible(),
             workflows_available: slash_controller.workflows_available(),
             saved_workflows: slash_controller.registry().saved_workflows(),
             workflow_runs: slash_controller.workflow_runs(),
@@ -2356,7 +2354,6 @@ impl AgentView {
                     buf,
                     area,
                     state,
-                    self.credit_balance.as_ref(),
                     compact,
                     &theme,
                 );

@@ -136,31 +136,6 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
                 .unwrap_or(v),
         );
     }
-    // Tier before voice: the same payload may set "API Key" and voice_mode_enabled=false
-    // Always recompute is_api_key_auth from the tier so a later Free/SuperCodel stamp does not leave the API-key bypass or a hidden billing surface stuck
-    if let Some(v) = update.subscription_tier_display {
-        let was_api_key = app.is_api_key_auth;
-        let is_key = super::super::app_view::is_api_key_label(&v);
-        app.is_api_key_auth = is_key;
-        app.usage_visible = app.team_name.is_none() && app.consumer_account();
-        app.sync_billing_surface_to_agents();
-        app.subscription_tier = Some(v);
-        app.apply_tier_restrictions();
-        // Leaving API Key for free/X Basic without a voice field drops the forced-on voice
-        // Paid tiers keep voice; remote settings may send voice_mode_enabled later.
-        if was_api_key
-            && !is_key
-            && update.voice_mode_enabled.is_none()
-            && app
-                .subscription_tier
-                .as_deref()
-                .is_some_and(codel_shell::tier::is_restricted_tier_name)
-        {
-            app.voice_reset();
-            app.voice_ui_active = false;
-            app.apply_voice_mode_enabled(false);
-        }
-    }
     if let Some(remote_v) = update.dock_enabled {
         crate::views::dock::set_enabled(crate::app::resolve_dock_enabled(Some(remote_v)));
     }
@@ -192,8 +167,6 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
             app.voice_ui_active = false;
         }
         app.apply_voice_mode_enabled(v);
-    } else {
-        app.ensure_voice_for_api_key();
     }
     // TODO: extract resolve_session_picker_grouped helper (duplicates event_loop.rs:143-160)
     // The env var beats config, which beats remote (mirrors event_loop.rs startup)
@@ -213,14 +186,6 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
             .unwrap_or(remote_val);
         app.session_picker_grouped = resolved;
     }
-    if let Some(v) = update.subscription_watch_interval_secs {
-        app.subscription_watch_interval_secs = Some(v);
-    }
-
-    // Neither condition met: don't touch the gate
-    // In particular, allow_access=Some(false) without a gate_message must NOT clear the gate
-    // (gate_from_settings returns None when gate_message is absent, which would incorrectly lift an existing gate.)
-
     // A fresh machine has no auth at startup, so the prefetch never runs and the startup seed sees no settings
     // Welcome only: seeding the gate behind a session would block new sessions on an unseen screen
     if let Some(gate) = update.consent_gate.as_ref()
@@ -238,21 +203,6 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
             let abandoned = crate::app::dispatch::abandon_unused_home_session(app);
             app.pending_effects.extend(abandoned);
         }
-    }
-
-    if update.allow_access == Some(true) {
-        let effs = app.lift_gate();
-        app.pending_effects.extend(effs);
-    } else if let Some(msg) = update.gate_message.as_ref()
-        && !msg.is_empty()
-    {
-        // (An empty gate_message would only clear the gate message text, NOT access, so it does not touch the gate here.)
-        let effs = app.impose_gate(codel_login::GateInfo {
-            message: msg.clone(),
-            url: update.gate_url.clone(),
-            label: update.gate_label.clone(),
-        });
-        app.pending_effects.extend(effs);
     }
 
     // Load config layers once for the tips, group_tool_verbs, and collapsed_edit_blocks resolution
@@ -553,16 +503,6 @@ pub(super) struct PagerSettingsUpdate {
     #[serde(default)]
     campaigns: Option<Vec<codel_shell::util::config::CampaignOverride>>,
     #[serde(default)]
-    gate_message: Option<String>,
-    #[serde(default)]
-    gate_url: Option<String>,
-    #[serde(default)]
-    gate_label: Option<String>,
-    #[serde(default)]
-    allow_access: Option<bool>,
-    #[serde(default)]
-    subscription_tier_display: Option<String>,
-    #[serde(default)]
     auto_permission_mode_enabled: Option<bool>,
     #[serde(default)]
     prompt_suggestions_enabled: Option<bool>,
@@ -575,8 +515,6 @@ pub(super) struct PagerSettingsUpdate {
     group_tool_verbs: Option<bool>,
     #[serde(default)]
     collapsed_edit_blocks: Option<bool>,
-    #[serde(default)]
-    subscription_watch_interval_secs: Option<u64>,
     /// Tolerant for the same reason as the settings response it mirrors.
     /// A malformed gate must not discard the tier, permission mode, and campaigns that arrive with it.
     #[serde(

@@ -146,10 +146,8 @@ pub struct AppCtx<'a> {
     /// Whether any session announcement (critical or promo) exists; gates `/announcements` visibility.
     pub has_session_announcements: bool,
     /// Whether the consumer billing surface is visible (`AppView::usage_visible`); gates `/usage` subcommands.
-    pub billing_surface_visible: bool,
     /// Whether `/usage` is offered and executable.
     /// False for external-auth deployments with no codel.dev billing session.
-    pub usage_command_visible: bool,
     pub workflows_available: bool,
     /// Saved or built-in workflow definitions advertised by the shell (`_meta.workflowSource`).
     /// Backs `/workflow` argument suggestions.
@@ -174,10 +172,8 @@ pub struct CommandExecCtx<'a> {
     pub bundle_state: &'a BundleState,
     pub(crate) screen_mode: crate::app::ScreenMode,
     /// Whether the consumer billing surface is visible (`AppView::usage_visible`); gates `/usage` subcommands.
-    pub billing_surface_visible: bool,
     /// Whether `/usage` is offered and executable.
     /// False for external-auth deployments with no codel.dev billing session.
-    pub usage_command_visible: bool,
     /// Snapshot of the active agent's PAGER-owned settings, built by the dispatcher when it builds the command.
     /// Slash commands like `/multiline` read this to compute `!current` and dispatch a typed `Action::SetX(new)`.
     /// The dispatcher remains the single source of truth for the actual state mutation.

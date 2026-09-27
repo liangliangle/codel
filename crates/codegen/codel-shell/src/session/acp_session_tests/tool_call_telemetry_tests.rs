@@ -162,7 +162,6 @@ impl Drop for ResetTelemetry {
             None,
             None,
             "test".into(),
-            None,
             crate::http::shared_client(),
         );
     }

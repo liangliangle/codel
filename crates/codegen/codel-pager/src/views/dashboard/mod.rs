@@ -5,6 +5,7 @@
 //!
 //! ## Module layout
 //!
+//! - [`usage_modal`]: input routing for the dashboard-hosted `/usage` modal.
 //! - [`state`]: public `DashboardState`, `DashboardRowId`, `RowState`, `Grouping`, `Filter`, `FilterValue`, `PersistedDashboard`.
 //! - [`row`]: `DashboardRow`, `build_rows_with_roster()`, classifiers, sort.
 //! - [`row_activity`]: parent activity, secondary-line text, and live-work badge counts.
@@ -14,7 +15,6 @@
 //! - [`chrome`]: the header row and the primary actions row above the list.
 //! - [`actions_focus`]: the keyboard cursor on the actions row and its `←`/`→` walk.
 //! - [`peek`]: peek panel state and rendering.
-//! - [`usage_modal`]: input routing for the dashboard-hosted `/usage` modal.
 //!
 //! ## Lifetime
 //!
@@ -34,9 +34,9 @@ mod row_activity;
 mod row_title;
 mod search;
 pub mod state;
+mod usage_modal;
 #[cfg(test)]
 mod test_support;
-mod usage_modal;
 
 pub use chrome::HeaderUpgradeCta;
 pub(crate) use render::render_dashboard;

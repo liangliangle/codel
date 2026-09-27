@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source *)",
+      "Bash(cargo build *)",
+      "Bash(ulimit *)",
+      "Bash(sysctl *)",
+      "Bash(vm_stat)"
+    ]
+  },
+  "$version": 4
+}

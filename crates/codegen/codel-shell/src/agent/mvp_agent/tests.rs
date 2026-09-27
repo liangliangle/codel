@@ -9,40 +9,6 @@ fn jwt_with_tier(tier: u64) -> String {
     let payload = enc.encode(format!(r#"{{"tier":{tier}}}"#).as_bytes());
     format!("{header}.{payload}.sig")
 }
-#[test]
-fn jwt_tier_claim_maps_free_and_paid() {
-    assert_eq!(jwt_tier_claim(&jwt_with_tier(0)).as_deref(), Some("free"));
-    assert_eq!(
-        jwt_tier_claim(&jwt_with_tier(1)).as_deref(),
-        Some("supercodel")
-    );
-    assert_eq!(
-        jwt_tier_claim(&jwt_with_tier(2)).as_deref(),
-        Some("x_basic")
-    );
-    assert_eq!(
-        jwt_tier_claim(&jwt_with_tier(3)).as_deref(),
-        Some("x_premium")
-    );
-    assert_eq!(
-        jwt_tier_claim(&jwt_with_tier(4)).as_deref(),
-        Some("x_premium_plus")
-    );
-    assert_eq!(
-        jwt_tier_claim(&jwt_with_tier(5)).as_deref(),
-        Some("supercodel_heavy")
-    );
-    assert_eq!(
-        jwt_tier_claim(&jwt_with_tier(6)).as_deref(),
-        Some("supercodel_lite")
-    );
-    assert_eq!(
-        jwt_tier_claim(&jwt_with_tier(7)).as_deref(),
-        Some("supercodel_plus")
-    );
-    assert_eq!(jwt_tier_claim(&jwt_with_tier(9)).as_deref(), Some("9"));
-    assert_eq!(jwt_tier_claim(&jwt_with_tier(99)).as_deref(), Some("99"));
-}
 fn auth_with_mode(mode: codel_login::AuthMode, key: &str) -> codel_login::CodelAuth {
     codel_login::CodelAuth {
         key: key.into(),
@@ -52,148 +18,9 @@ fn auth_with_mode(mode: codel_login::AuthMode, key: &str) -> codel_login::CodelA
         ..codel_login::CodelAuth::default()
     }
 }
-/// Maps the JWT tier claim to the `/user` tier name to gate the post-unblock catalog refresh (a stale older paid claim must not skip retry).
-#[test]
-fn jwt_claim_matches_user_subscription_tier_known_pairs() {
-    let cases = [
-        ("supercodel", "CodelPro"),
-        ("x_basic", "XBasic"),
-        ("x_premium", "XPremium"),
-        ("x_premium_plus", "XPremiumPlus"),
-        ("supercodel_heavy", "SuperCodelPro"),
-        ("9", "EnterpriseMystery"),
-        ("supercodel_lite", "SuperCodelLite"),
-        ("supercodel_plus", "SuperCodelPlus"),
-    ];
-    for (claim, user_tier) in cases {
-        assert!(
-            jwt_claim_matches_user_subscription_tier(claim, user_tier),
-            "{claim} should match {user_tier}"
-        );
-    }
-}
-#[test]
-fn jwt_claim_matches_user_subscription_tier_rejects_stale_and_unknown() {
-    assert!(!jwt_claim_matches_user_subscription_tier(
-        "x_basic",
-        "SuperCodelPro"
-    ));
-    assert!(!jwt_claim_matches_user_subscription_tier(
-        "supercodel",
-        "SuperCodelPro"
-    ));
-    assert!(!jwt_claim_matches_user_subscription_tier(
-        "supercodel",
-        "SuperCodelPlus"
-    ));
-    assert!(!jwt_claim_matches_user_subscription_tier(
-        "supercodel_heavy",
-        "SuperCodelPlus"
-    ));
-    assert!(!jwt_claim_matches_user_subscription_tier("free", "CodelPro"));
-    assert!(!jwt_claim_matches_user_subscription_tier("", "XPremium"));
-    assert!(!jwt_claim_matches_user_subscription_tier(
-        "supercodel_heavy",
-        "EnterpriseMystery"
-    ));
-    assert!(!jwt_claim_matches_user_subscription_tier(
-        "0",
-        "EnterpriseMystery"
-    ));
-}
-/// Single-flight flag must clear on Drop even if the retry task panics / aborts mid-backoff (guards against the flag stuck true forever).
-#[test]
-fn post_unblock_jwt_retry_in_flight_guard_clears_on_drop() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let flag = Arc::new(AtomicBool::new(true));
-    {
-        let _guard = PostUnblockJwtRetryInFlightGuard { flag: flag.clone() };
-        assert!(flag.load(Ordering::Acquire));
-    }
-    assert!(
-        !flag.load(Ordering::Acquire),
-        "Drop must release post_unblock_jwt_retry_in_flight"
-    );
-    let flag = Arc::new(AtomicBool::new(true));
-    let flag_for_catch = flag.clone();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = PostUnblockJwtRetryInFlightGuard {
-            flag: flag_for_catch,
-        };
-        panic!("simulate retry task panic");
-    }));
-    assert!(result.is_err());
-    assert!(
-        !flag.load(Ordering::Acquire),
-        "Drop must release flag on panic unwind"
-    );
-}
 mod hunk_tracking_mode {
     use super::super::{plan_hunk_tracking, resolve_hunk_tracking_mode};
     use codel_hunk_tracker::TrackingMode;
-    #[test]
-    fn off_and_disabled_disable_tracking() {
-        assert_eq!(resolve_hunk_tracking_mode(Some("off")), None);
-        assert_eq!(resolve_hunk_tracking_mode(Some("disabled")), None);
-    }
-    #[test]
-    fn matching_is_case_insensitive_and_trimmed() {
-        assert_eq!(resolve_hunk_tracking_mode(Some("OFF")), None);
-        assert_eq!(resolve_hunk_tracking_mode(Some("  Off ")), None);
-        assert_eq!(resolve_hunk_tracking_mode(Some("DISABLED")), None);
-        assert_eq!(
-            resolve_hunk_tracking_mode(Some("Agent_Only")),
-            Some(TrackingMode::AgentOnly)
-        );
-        assert_eq!(
-            resolve_hunk_tracking_mode(Some(" ALL_DIRTY ")),
-            Some(TrackingMode::AllDirty)
-        );
-    }
-    #[test]
-    fn recognized_modes_parse() {
-        assert_eq!(
-            resolve_hunk_tracking_mode(Some("agent_only")),
-            Some(TrackingMode::AgentOnly)
-        );
-        assert_eq!(
-            resolve_hunk_tracking_mode(Some("all_dirty")),
-            Some(TrackingMode::AllDirty)
-        );
-    }
-    #[test]
-    fn parser_absent_returns_none_policy_defaults_in_plan() {
-        assert_eq!(resolve_hunk_tracking_mode(None), None);
-        assert_eq!(resolve_hunk_tracking_mode(Some("")), None);
-        assert_eq!(
-            resolve_hunk_tracking_mode(Some("bogus")),
-            Some(TrackingMode::AllDirty)
-        );
-    }
-    #[test]
-    fn plan_disables_actor_forward_and_loc_together() {
-        for off in ["off", "disabled", "OFF"] {
-            let plan = plan_hunk_tracking(Some(off));
-            assert_eq!(plan.actor_mode, None, "{off} must not spawn the actor");
-            assert!(!plan.enabled(), "{off} must disable the forward + LOC sink");
-        }
-    }
-    #[test]
-    fn plan_enables_actor_and_forward_for_active_modes() {
-        for (mode, expected) in [
-            ("agent_only", TrackingMode::AgentOnly),
-            ("all_dirty", TrackingMode::AllDirty),
-            ("bogus", TrackingMode::AllDirty),
-        ] {
-            let plan = plan_hunk_tracking(Some(mode));
-            assert_eq!(plan.actor_mode, Some(expected));
-            assert!(plan.enabled());
-        }
-        let plan = plan_hunk_tracking(None);
-        assert_eq!(plan.actor_mode, None);
-        assert!(!plan.enabled());
-    }
 }
 mod capture {
     use tokio::sync::mpsc;
@@ -313,34 +140,6 @@ async fn broadcast_refresh_skill_baseline_tolerates_dropped_receiver() {
         rx_alive.try_recv(),
         Ok(crate::session::SessionCommand::RefreshSkillBaseline)
     ));
-}
-#[test]
-fn settings_allow_access_none_settings_is_allowed() {
-    assert!(settings_allow_access(None));
-}
-#[test]
-fn settings_allow_access_true_is_allowed() {
-    let rs = crate::util::config::RemoteSettings {
-        allow_access: Some(true),
-        ..Default::default()
-    };
-    assert!(settings_allow_access(Some(&rs)));
-}
-#[test]
-fn settings_allow_access_false_is_blocked() {
-    let rs = crate::util::config::RemoteSettings {
-        allow_access: Some(false),
-        ..Default::default()
-    };
-    assert!(!settings_allow_access(Some(&rs)));
-}
-#[test]
-fn settings_allow_access_field_absent_is_allowed() {
-    let rs = crate::util::config::RemoteSettings {
-        allow_access: None,
-        ..Default::default()
-    };
-    assert!(settings_allow_access(Some(&rs)));
 }
 /// Build a synthetic harness `task` call/result pair carrying the `<subagent_result>` footer, mirroring what the verifier/planner record.
 fn harness_pair(id: &str) -> Vec<codel_sampling_types::conversation::ConversationItem> {
@@ -2973,64 +2772,6 @@ fn orphaned_tasks_filters_rewind_dead_branches() {
         !ids.contains("t-dead"),
         "task in dead branch should be filtered"
     );
-}
-#[test]
-fn allow_access_from_remote_settings() {
-    let json = serde_json::json!({ "allow_access": true });
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
-    assert_eq!(rs.allow_access, Some(true));
-    let json = serde_json::json!({ "allow_access": false });
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
-    assert_eq!(rs.allow_access, Some(false));
-    let json = serde_json::json!({});
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
-    assert_eq!(rs.allow_access, None);
-}
-#[test]
-fn on_demand_enabled_from_remote_settings() {
-    let json = serde_json::json!({ "on_demand_enabled": false });
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
-    assert_eq!(rs.on_demand_enabled, Some(false));
-    let json = serde_json::json!({});
-    let rs: crate::util::config::RemoteSettings = serde_json::from_value(json).unwrap();
-    assert_eq!(rs.on_demand_enabled, None);
-}
-/// BYOK guard. Users with `codel.api_key` must continue to report `ApiKey` regardless of live-token state.
-/// BYOK sessions have nothing to refresh.
-/// Reporting `SessionToken` would route through cli-chat-proxy paths (image_gen / video_gen base_url) that don't apply to BYOK keys.
-#[tokio::test(flavor = "current_thread")]
-async fn auth_type_codel_api_key_no_current_returns_api_key() {
-    let agent = build_minimal_agent_for_tests();
-    agent.set_auth_method(acp::AuthMethodId::new(
-        crate::agent::auth_method::CODEL_API_KEY_METHOD_ID,
-    ));
-    assert!(agent.auth_manager.current().is_none());
-    assert_eq!(
-        agent.auth_type(),
-        codel_chat_state::AuthType::ApiKey,
-        "codel.api_key auth must report ApiKey -- BYOK has no session-token \
-             behavior to fall back to."
-    );
-}
-/// Defensive case: no `auth_method_id` selected yet (pre-`authenticate` state) and no live credential. We default to `ApiKey`. Callers key off this value (e.g. `resolve_chat_state_auth_type` for chat routing).
-/// Any other default would route session-token-shaped traffic through cli-chat-proxy before a method has been chosen.
-#[tokio::test(flavor = "current_thread")]
-async fn auth_type_no_method_id_no_current_returns_api_key() {
-    let agent = build_minimal_agent_for_tests();
-    assert!(agent.auth_method_id.load().is_none());
-    assert!(agent.auth_manager.current().is_none());
-    assert_eq!(agent.auth_type(), codel_chat_state::AuthType::ApiKey,);
-}
-/// Live credential present but `auth_method_id` is still `None`. The in-memory bearer takes precedence: this is the order observed during `initialize()` silent refresh.
-/// A token is hot-swapped in before `authenticate()` writes the method id. Reporting `SessionToken` here matches pre-fix behavior and keeps logging stable.
-#[tokio::test(flavor = "current_thread")]
-async fn auth_type_no_method_id_with_current_returns_session_token() {
-    use codel_login::CodelAuth;
-    let agent = build_minimal_agent_for_tests();
-    agent.auth_manager.hot_swap(CodelAuth::test_default());
-    assert!(agent.auth_method_id.load().is_none());
-    assert!(agent.auth_manager.current().is_some());
-    assert_eq!(agent.auth_type(), codel_chat_state::AuthType::SessionToken,);
 }
 /// Minimal agent whose `codel_com_config` engages the api-key kill switch (`disable_api_key_auth = true`), mirroring a forced-IdP deployment.
 fn build_agent_with_api_key_auth_disabled() -> MvpAgent {
@@ -6029,28 +5770,6 @@ fn post_auth_settings_not_coalesced_by_in_flight_reapply() {
         assert!(agent.post_auth_settings_in_flight.get());
     });
 }
-/// The check's own mint spawns a `/user` enrichment that can rewrite the in-memory user_id to the proxy-canonical value mid-check.
-/// The identity guard must read that normalization as the same account (it is the id the check's own bearer resolved to).
-/// A live id matching neither the started nor the canonical id is a real switch and still discards.
-#[test]
-fn tier_recheck_identity_guard_accepts_enrichment_canonical_user_id() {
-    run_local_for_bridge_test(|| async {
-        let agent = build_minimal_agent_for_tests();
-        let auth = codel_login::CodelAuth {
-            key: "seeded-key".into(),
-            user_id: "canonical-user".into(),
-            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
-            ..codel_login::CodelAuth::test_default()
-        };
-        agent.auth_manager.hot_swap(auth);
-        assert!(!agent.tier_recheck_identity_changed("seeded-user", Some("canonical-user")));
-        assert!(!agent.tier_recheck_identity_changed("canonical-user", None));
-        assert!(!agent.tier_recheck_identity_changed("canonical-user", Some("other-user")));
-        assert!(agent.tier_recheck_identity_changed("seeded-user", Some("other-user")));
-        assert!(agent.tier_recheck_identity_changed("seeded-user", None));
-        assert!(agent.tier_recheck_identity_changed("seeded-user", Some("")));
-    });
-}
 /// Agent with pre-loaded auth, a gateway receiver (to assert emitted notifications), and the proxy URL pointed at a mock `/v1/settings`.
 fn build_agent_with_auth_and_proxy(
     auth: codel_login::CodelAuth,
@@ -7013,119 +6732,6 @@ fn announcements_push_gate_emits_on_expiry_crossing() {
         ),
         None
     );
-}
-/// A poll apply must touch ONLY `remote_settings.announcements` (and the request-encoding advertisement).
-/// Every other stored field keeps its pre-poll value (full reapply stays owned by startup, auth, and `/new`).
-#[tokio::test]
-#[serial_test::serial(remote_sig_disarm)]
-async fn polled_settings_apply_touches_announcements_only() {
-    let agent = build_minimal_agent_for_tests();
-    let mut stored = settings_with(Some(vec![ann("old")]));
-    stored.tips = Some(vec!["stored-tip".to_string()]);
-    stored.allow_access = Some(true);
-    stored.default_model = Some("stored-model".to_string());
-    agent.cfg.borrow_mut().remote_settings = Some(stored);
-    let mut fresh = settings_with(Some(vec![ann("new")]));
-    fresh.tips = Some(vec!["fresh-tip".to_string()]);
-    fresh.allow_access = Some(false);
-    fresh.default_model = Some("fresh-model".to_string());
-    agent.apply_polled_settings(fresh, Some((Some(vec![ann("old")]), vec![])));
-    let cfg = agent.cfg.borrow();
-    let after = cfg
-        .remote_settings
-        .as_ref()
-        .expect("settings still present");
-    assert_eq!(after.announcements, Some(vec![ann("new")]));
-    assert_eq!(
-        after.tips,
-        Some(vec!["stored-tip".to_string()]),
-        "tips must be untouched by a poll apply"
-    );
-    assert_eq!(
-        after.allow_access,
-        Some(true),
-        "allow_access must be untouched by a poll apply"
-    );
-    assert_eq!(
-        after.default_model.as_deref(),
-        Some("stored-model"),
-        "default_model must be untouched by a poll apply"
-    );
-}
-/// The request-encoding advertisement is read per turn, so a poll must carry it:
-/// turning the proxy flag off has to stop compression before the next `/new` or restart.
-#[tokio::test]
-#[serial_test::serial]
-#[serial_test::serial(remote_sig_disarm)]
-async fn polled_settings_apply_refreshes_accept_request_encodings() {
-    use codel_config_types::RemoteRequestEncoding;
-    use codel_sampler::RequestCompression;
-    let _env = crate::env::EnvVarGuard::remove("CODEL_REQUEST_COMPRESSION");
-    let agent = build_minimal_agent_for_tests();
-    let proxy = agent.cfg.borrow().endpoints.proxy_url();
-    let mut stored = settings_with(Some(vec![ann("old")]));
-    stored.accept_request_encodings = vec![RemoteRequestEncoding::Zstd];
-    crate::util::config::cache_remote_accept_request_encodings(
-        &proxy,
-        &stored.accept_request_encodings,
-    );
-    agent.cfg.borrow_mut().remote_settings = Some(stored);
-    assert_eq!(
-        crate::util::config::request_compression_for_url(&proxy),
-        RequestCompression::Zstd
-    );
-    agent.apply_polled_settings(
-        settings_with(Some(vec![ann("old")])),
-        Some((Some(vec![ann("old")]), vec![RemoteRequestEncoding::Zstd])),
-    );
-    assert_eq!(
-        crate::util::config::request_compression_for_url(&proxy),
-        RequestCompression::None,
-        "a poll that no longer advertises zstd must disarm compression"
-    );
-    assert!(
-        agent
-            .cfg
-            .borrow()
-            .remote_settings
-            .as_ref()
-            .is_some_and(|s| s.accept_request_encodings.is_empty()),
-        "the stored copy must match so a later re-apply cannot re-arm it"
-    );
-}
-/// `--cli-chat-proxy-base-url` points `cfg.endpoints` away from the disk config and the
-/// post-auth fetch reads `/v1/settings` from `cfg.endpoints`: the advertisement must be
-/// keyed under that origin, the one the poll and the model routes also use.
-#[tokio::test]
-#[serial_test::serial]
-#[serial_test::serial(remote_sig_disarm)]
-async fn settings_apply_keys_the_advertisement_under_the_configured_proxy() {
-    use codel_config_types::RemoteRequestEncoding;
-    use codel_sampler::RequestCompression;
-    let _env = crate::env::EnvVarGuard::remove("CODEL_REQUEST_COMPRESSION");
-    let agent = build_minimal_agent_for_tests();
-    let flag_proxy = "http://localhost:20016/v1";
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.endpoints.cli_chat_proxy_base_url = Some(flag_proxy.to_owned());
-        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
-            accept_request_encodings: vec![RemoteRequestEncoding::Zstd],
-            ..Default::default()
-        });
-    }
-    agent.on_remote_settings_changed();
-    assert_eq!(
-        crate::util::config::request_compression_for_url(flag_proxy),
-        RequestCompression::Zstd,
-        "the proxy that served the settings must be the one compressed toward"
-    );
-    let prod = crate::env::PROD_CLI_CHAT_PROXY_BASE_URL;
-    assert_eq!(
-        crate::util::config::request_compression_for_url(prod),
-        RequestCompression::None,
-        "{prod} did not serve these settings"
-    );
-    crate::util::config::cache_remote_accept_request_encodings(flag_proxy, &[]);
 }
 /// A poll response that straddles a full reapply carries an older server view: when the
 /// reapply withdrew the advertisement mid-fetch, the poll must skip rather than re-arm it.

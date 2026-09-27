@@ -443,12 +443,6 @@ impl MockInferenceServer {
         *guard = Some(value);
     }
 
-    /// The smallest settings payload that opens the subscription gate.
-    /// Without it a client sits on the upsell screen.
-    pub fn preset_allow_access(&self) {
-        self.set_settings(json!({ "allow_access": true }));
-    }
-
     /// Stand in for a black-holed backend.
     pub fn set_hang(&self, hang: bool) {
         *self.state.startup_fetch_stall.write().unwrap() = if hang {

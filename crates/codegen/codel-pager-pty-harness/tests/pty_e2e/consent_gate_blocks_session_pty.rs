@@ -8,7 +8,6 @@ const ACCEPT_LABEL: &str = "ZZACCEPT";
 
 fn consent_settings() -> serde_json::Value {
     serde_json::json!({
-        "allow_access": true,
         "consent_gate": {
             "id": "pty-consent",
             "version": 1,
@@ -87,7 +86,7 @@ async fn absent_consent_gate_shows_no_notice() {
     let mut harness = spawn_serving(
         &content,
         "pty-consent-absent",
-        serde_json::json!({ "allow_access": true }),
+        serde_json::json!({}),
     );
 
     harness

@@ -149,26 +149,16 @@ pub(crate) fn is_session_based_method(_method_id: &acp::AuthMethodId) -> bool {
     false
 }
 
-/// Whether a model entry carries its own credential, so no session bearer is needed for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Per-model BYOK status: whether the selected model carries its own `[model.*]` `api_key`/`env_key`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub(crate) enum ModelByok {
-    /// The model declares its own `api_key` / `env_key`.
+    /// Model has its own per-model key (not refreshable).
     Byok,
-    /// The model is in the catalog and declares no credential of its own.
+    /// Model has no per-model key (session auth governs).
     NotByok,
-    /// The catalog could not be read, so the answer is unknown.
+    /// Config couldn't be loaded/parsed; BYOK status indeterminate.
     Unknown,
-}
-
-impl ModelByok {
-    /// Stable label for logs.
-    pub fn as_ref(&self) -> &'static str {
-        match self {
-            Self::Byok => "byok",
-            Self::NotByok => "not_byok",
-            Self::Unknown => "unknown",
-        }
-    }
 }
 
 #[cfg(test)]

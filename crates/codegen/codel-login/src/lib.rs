@@ -47,7 +47,7 @@ pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration, parse_jwt_subject};
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::AuthManager;
 pub use manager::{AuthRemedy, CachedTokenState};
-pub use meta::{AuthMeta, GateInfo};
+pub use meta::AuthMeta;
 pub use model::{AuthMode, CodelAuth, lookup_auth};
 pub use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};
 pub use side_call_bearer::{SharedAuthKeyProvider, shared_api_key_provider};

@@ -40,8 +40,6 @@ mod tests {
             session_id: None,
             bundle_state: &bundle,
             screen_mode: mode,
-            billing_surface_visible: true,
-            usage_command_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot::default(),
         };
         PrivacyCommand.run(&mut ctx, args)

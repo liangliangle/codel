@@ -398,7 +398,6 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
             restore_degree: None,
             rate_limited: false,
             model_incompatible: false,
-            credit_limit_blocked: false,
             free_usage_blocked: false,
             available_commands: app.bootstrap_acp_commands.clone(),
             available_commands_generation: 1,
@@ -422,7 +421,6 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
     configure_agent_composer(app, agent_id);
     {
         let agent = app.agents.get_mut(&agent_id).unwrap();
-        agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         agent.active_pane = ActivePane::Prompt;
     }
     if stay_on_welcome {
@@ -463,7 +461,6 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
             agent.workspace_mode = mode;
             agent.workspace_mode_cli_locked = locked;
         }
-        agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         agent.session_starting_since = Some(Instant::now());
         agent.session.prompt_history_loading = true;
     }
@@ -777,12 +774,9 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
     let recap = app.session_recap_available;
     let voice = app.voice_mode_enabled;
     let sharing_enabled = app.sharing_enabled;
-    let usage_visible = app.usage_visible;
-    let usage_command_visible = !app.has_external_auth_provider;
     let chat_mode = app.chat_mode;
     let screen_mode = app.screen_mode;
     let announcements = app.active_announcements.clone();
-    let restricted = app.tier_restricted_commands.clone();
     let plugins_visible = !app.appearance.disable_plugins;
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return;
@@ -795,12 +789,9 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
     agent.set_voice_mode_available(voice);
     agent.apply_app_scoped_gates(
         sharing_enabled,
-        usage_visible,
-        usage_command_visible,
         chat_mode,
         screen_mode,
         &announcements,
-        &restricted,
     );
     agent
         .prompt
@@ -1212,7 +1203,6 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
             restore_degree: None,
             rate_limited: false,
             model_incompatible: false,
-            credit_limit_blocked: false,
             free_usage_blocked: false,
             available_commands: app.bootstrap_acp_commands.clone(),
             available_commands_generation: 1,
@@ -1257,12 +1247,9 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(
             app.sharing_enabled,
-            app.usage_visible,
-            !app.has_external_auth_provider,
             app.chat_mode,
             app.screen_mode,
             &app.active_announcements,
-            &app.tier_restricted_commands,
         );
         agent.chat_kind = chat_kind;
         agent.conversation_entry = chat_kind;
@@ -1286,7 +1273,6 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
             agent.workspace_mode = mode;
             agent.workspace_mode_cli_locked = locked;
         }
-        agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         agent
             .prompt
             .slash_controller
@@ -1443,11 +1429,6 @@ pub(in crate::app::dispatch) fn handle_session_created(
                 session_id: session_id_clone.clone(),
             });
         }
-        effects.push(Effect::FetchBilling {
-            agent_id,
-            silent: true,
-            nonce: Default::default(),
-        });
         if let Some(switch) = deferred {
             effects.push(Effect::SwitchModel {
                 agent_id,
@@ -1589,11 +1570,6 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
                 session_id: session_id_clone.clone(),
             });
         }
-        effects.push(Effect::FetchBilling {
-            agent_id,
-            silent: true,
-            nonce: Default::default(),
-        });
         if let Some(switch) = deferred {
             effects.push(Effect::SwitchModel {
                 agent_id,

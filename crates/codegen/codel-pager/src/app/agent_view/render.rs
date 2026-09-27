@@ -2280,17 +2280,6 @@ impl AgentView {
         let flags: Vec<PromptFlag> =
             mode_flags(plan_label, self.session.permission_label(), &theme);
         let multiline = self.multiline_mode;
-        let warning = self.credit_balance.as_ref().and_then(|bal| {
-            crate::views::credit_bar::usage_warning_for_session(
-                bal,
-                self.auto_topup.as_ref(),
-                self.billing_surface_visible,
-                self.chat_kind,
-            )
-        });
-        let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
-        let usage_warning = usage_warning_text.as_deref();
-        let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
         let model_label = match self.session.models.reasoning_effort {
             Some(eff) => format!("{model_id} ({eff})"),
             None => model_id,
@@ -2300,8 +2289,6 @@ impl AgentView {
                 model_name: &model_label,
                 flags: &flags,
                 multiline,
-                usage_warning,
-                usage_warning_critical,
             },
             PromptMode::EditingQueued { id, .. } => {
                 let pos = self.session.queue_position(*id).map(|i| i + 1).unwrap_or(1);
@@ -2310,8 +2297,6 @@ impl AgentView {
                     model_name: &editing_label,
                     flags: &flags,
                     multiline,
-                    usage_warning,
-                    usage_warning_critical,
                 }
             }
         };
@@ -2320,8 +2305,6 @@ impl AgentView {
                 model_name: label,
                 flags: &[],
                 multiline: false,
-                usage_warning,
-                usage_warning_critical,
             }
         } else {
             info

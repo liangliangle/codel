@@ -1,15 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Access gate from `codel_build_access_gate`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GateInfo {
-    pub message: String,
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub label: Option<String>,
-}
-
 /// Typed auth metadata passed from the shell to the pager via ACP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthMeta {
@@ -36,12 +26,6 @@ pub struct AuthMeta {
     pub can_administer_team: Option<bool>,
     #[serde(default)]
     pub show_resolved_model: Option<bool>,
-    /// `Some` means the user is blocked; `None` means the user has access.
-    #[serde(default)]
-    pub gate: Option<GateInfo>,
-    /// Display name for the current subscription tier (e.g. "SuperCodel Heavy", "X Premium", "Free"), from CCP `/settings`.
-    #[serde(default)]
-    pub subscription_tier: Option<String>,
     /// Whether `/feedback` may offer a one-shot trace upload; it lives on auth meta so it refreshes with auth changes.
     #[serde(default)]
     pub feedback_trace_offer: bool,
@@ -63,8 +47,6 @@ impl Default for AuthMeta {
             coding_data_retention_opt_out: crate::default_coding_data_retention_opt_out(),
             can_administer_team: None,
             show_resolved_model: None,
-            gate: None,
-            subscription_tier: None,
             feedback_trace_offer: false,
             backend_billed: false,
         }

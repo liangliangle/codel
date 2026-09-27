@@ -4,7 +4,6 @@ use super::auth::{
     scrollback_has_recent_context_too_large, scrollback_has_recent_disk_full,
     scrollback_has_recent_reauth_prompt, scrollback_has_recent_request_failed,
 };
-use super::billing::is_credit_limit_error;
 use super::ctx::{get_active_agent_mut, visible_agent_mut, with_active_agent};
 use super::interject;
 use super::queue::{
@@ -771,32 +770,6 @@ pub(super) fn dispatch_send_prompt_submission(
     let mut effects = prelude;
     let mut tip_send_now_after_queue = false;
 
-    // Tier restricted command upsell
-    // A typed invocation would otherwise fall through the unknown-command path below and leak to the model as a raw prompt
-    // Upsell instead; genuinely unknown commands still pass through (shell/ACP commands depend on that)
-    if !literal
-        && trimmed.starts_with('/')
-        && let Some(invocation) = crate::slash::parse_invocation(trimmed)
-        && agent
-            .prompt
-            .slash_controller
-            .registry()
-            .is_restricted(invocation.token)
-    {
-        // Only consume the composer when the upsell can actually open
-        // With another question modal already up, `open_supercodel_upsell` would no-op and wiping the composer here would silently drop the typed text
-        // Keep it instead so the user can resubmit after closing the modal, and never fall through to passthrough for restricted commands
-        if agent.question_view.is_none() {
-            if consume_input {
-                agent.prompt.set_text("");
-            }
-            let opened =
-                super::billing::open_restricted_command_upsell(agent, None);
-            debug_assert!(opened, "no modal was open, so the upsell must open");
-        }
-        return effects;
-    }
-
     // Registry based slash command execution
     // If the text starts with `/`, run it through the slash registry.
     // `literal` (chip click) skips this so chip text is never a command.
@@ -811,8 +784,6 @@ pub(super) fn dispatch_send_prompt_submission(
                 session_id: agent.session.session_id.as_ref(),
                 bundle_state: &app.bundle_state,
                 screen_mode: app.screen_mode,
-                billing_surface_visible: app.usage_visible,
-                usage_command_visible: !app.has_external_auth_provider,
                 // PAGER-owned snapshot for slash commands.
                 pager_state: crate::settings::PagerLocalSnapshot {
                     multiline_mode: agent.multiline_mode,
@@ -1087,7 +1058,6 @@ pub(super) fn dispatch_send_prompt_submission(
         }
         // Reaching here means the command queued or passed text through, a real submission
         // Local-UI commands returned above and must keep the hook-block hold
-        agent.credit_limit_stashed_prompt = None;
         agent.release_hook_block_hold();
         let mut untaken = attach_prompt_state_to_last_queued(
             agent,
@@ -1201,7 +1171,6 @@ pub(super) fn dispatch_send_prompt_submission(
             // This immediate-send path returns early, so it must clear them here too (notably a chip click, which submits while a turn is running)
             // `clear_follow_ups` keeps `follow_up_seen` (it marks the turn boundary) so a stale re-delivery stays rejected
             agent.clear_follow_ups();
-            agent.credit_limit_stashed_prompt = None;
 
             // `agent` borrow ends here; push the optimistic echo via `app`.
             let sid_str = session_id.0.to_string();
@@ -1230,7 +1199,6 @@ pub(super) fn dispatch_send_prompt_submission(
         agent
             .session
             .enqueue_prompt_with_skill_tokens(text.clone(), skill_token_ranges);
-        agent.credit_limit_stashed_prompt = None;
         if consume_input {
             app.pending_image_notices
                 .extend(agent.unbound_image_placeholder_notice());
@@ -1555,15 +1523,6 @@ pub(super) fn handle_prompt_response(
                 .push_block(RenderBlock::session_event(SessionEvent::DiskFull));
         }
         let disk_full = disk_full_from_error || scrollback_has_recent_disk_full(&agent.scrollback);
-        // Fallback for when the retry notification didn't set the flag
-        // Detect credit-limit denials (legacy 403 or pool 402) from the PromptResponse error and HTTP status
-        // The error text is already banner-formatted ("Request failed (402): …"), so recover the status from it when the field is absent
-        let credit_limit_blocked = agent.session.credit_limit_blocked
-            || result.as_ref().err().is_some_and(|e| {
-                let status =
-                    http_status.or_else(|| crate::app::error_display::parse_http_status(e));
-                is_credit_limit_error(status, e)
-            });
         // A 401/auth failure already showed an actionable `ReAuthRequired` prompt via the RetryState handler (which runs before this PromptResponse)
         // Suppress the redundant "Turn failed" block and error toast so only the prompt shows
         // The needle matches both the raw "Unauthorized (401)" dump and the banner-formatted "Request failed (401): …" text
@@ -1574,12 +1533,11 @@ pub(super) fn handle_prompt_response(
                 }));
         let request_failed_shown = scrollback_has_recent_request_failed(&agent.scrollback);
         // A dedicated prompt/modal/banner replaces the generic TurnFailed marker and error toast
-        // The cases: rate limit, free-usage paywall, model incompatibility, credit 402/403, 401 re-auth, context overflow, and disk-full
+        // The cases: rate limit, free-usage paywall, model incompatibility, 401 re-auth, context overflow, and disk-full
         // A formatted RequestFailed banner from RetryState also counts
         let dedicated_ux_shown = rate_limited
             || free_usage_blocked
             || model_incompatible
-            || credit_limit_blocked
             || reauth_prompted
             || context_overflow
             || disk_full
@@ -1603,11 +1561,6 @@ pub(super) fn handle_prompt_response(
             );
         }
 
-        // Stash the complete in-flight prompt before finish_turn clears it.
-        // Used by CreditLimitRecheckComplete to retry after a tier upgrade.
-        if credit_limit_blocked && let Some(prompt) = agent.session.in_flight_prompt.clone() {
-            agent.credit_limit_stashed_prompt = Some(prompt);
-        }
         // Stash for AuthComplete after 401
         // Prefer in_flight; fall back to compact_held (cleared for cancel-rewind during auto-compact)
         // Skip if both None
@@ -1793,38 +1746,10 @@ pub(super) fn handle_prompt_response(
             return vec![];
         }
 
-        // Credit-limit (403 legacy / 402 pool): strip stale error blocks, then do a one-shot subscription re-check
-        // If the tier changed (user upgraded mid-session), the stashed prompt is retried automatically; otherwise the upsell is shown
-        if credit_limit_blocked {
-            // Strip stale error blocks that were pushed before the credit-limit was detected
-            let to_remove: Vec<usize> = super::auth::trailing_session_events(&agent.scrollback)
-                .filter(|(_, ev)| {
-                    matches!(
-                        ev,
-                        SessionEvent::RequestFailed { .. }
-                            | SessionEvent::RetryFailed { .. }
-                            | SessionEvent::TurnFailed { .. }
-                    )
-                })
-                .map(|(idx, _)| idx)
-                .collect();
-            for idx in to_remove {
-                agent.scrollback.remove_from(idx);
-            }
-
-            // Defer the upsell until the subscription re-check completes
-            // Queue drain and billing fetch happen in the CreditLimitRecheckComplete handler
-            if let Some(p) = pending_adoption {
-                agent.discard_pending_adoption_updates(&p.prompt_id);
-            }
-            return vec![Effect::CreditLimitRecheck { agent_id }];
-        }
-
         // Free-usage paywall (a 429 with subscription:free-usage-exhausted)
         // Driver-only by construction: viewers never receive a PromptResponse
         // No queue drain: queued prompts would fail on the same exhausted quota
         if free_usage_blocked {
-            super::billing::open_free_usage_upsell(agent, None);
             if let Some(p) = pending_adoption {
                 agent.discard_pending_adoption_updates(&p.prompt_id);
             }
@@ -1876,11 +1801,6 @@ pub(super) fn handle_prompt_response(
             });
         }
 
-        effects.push(Effect::FetchBilling {
-            agent_id,
-            silent: true,
-            nonce: Default::default(),
-        });
         note_peek_page_flip(app, agent_id, page_flip_entry);
         return effects;
     }

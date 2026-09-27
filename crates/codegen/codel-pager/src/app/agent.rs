@@ -713,7 +713,6 @@ pub struct AgentSession {
     pub model_incompatible: bool,
     /// Set when a `RetryState::Failed` carries a 403 credit-limit error, so the error message is suppressed in favour of the upsell modal.
     /// Cleared on `finish_turn`.
-    pub credit_limit_blocked: bool,
     /// Set when a rate-limit `RetryState::Exhausted` carries the `subscription:free-usage-exhausted` code.
     /// The PromptResponse handler then shows the free-usage paywall instead of the generic rate-limit message.
     /// Always set together with [`Self::rate_limited`]. Cleared on `finish_turn`.
@@ -873,7 +872,6 @@ impl AgentSession {
         self.state = AgentState::Idle;
         self.rate_limited = false;
         self.model_incompatible = false;
-        self.credit_limit_blocked = false;
         self.free_usage_blocked = false;
         self.in_flight_prompt = None;
         self.compact_held_prompt = None;
@@ -1117,7 +1115,6 @@ mod tests {
             restore_degree: None,
             rate_limited: false,
             model_incompatible: false,
-            credit_limit_blocked: false,
             free_usage_blocked: false,
             available_commands: Vec::new(),
             available_commands_generation: 0,
