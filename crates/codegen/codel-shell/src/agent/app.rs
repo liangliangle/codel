@@ -149,7 +149,7 @@ fn spawn_agent_local(
     });
     tokio::task::spawn_local(
         GatewayReceiver::new(gw_rx, conn)
-            .with_on_meta(codel_otel::span_from_meta_traceparent)
+            .with_on_meta(codel_trace_context::span_from_meta_traceparent)
             .run(),
     );
     handle_io
@@ -285,7 +285,6 @@ pub async fn run_stdio_agent(
                 auth_manager.current(),
             )
             .await?;
-            apply_otel_config(&auth_manager, &agent_config.codel_com_config);
             let handle_io = spawn_agent_local(
                 agent_config,
                 auth_manager,
@@ -430,7 +429,7 @@ pub async fn run_headless(
                 );
                 tokio::task::spawn_local(
                     GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(codel_otel::span_from_meta_traceparent)
+                        .with_on_meta(codel_trace_context::span_from_meta_traceparent)
                         .run(),
                 );
                 if let Err(e) = handle_io.await {
@@ -598,22 +597,6 @@ impl DeferredRelayArm {
             self.cancel,
         );
         None
-    }
-}
-/// Close the external-OTEL gate before telemetry init; see [`crate::agent::otel_gate`].
-pub fn suppress_otel() {
-    crate::agent::otel_gate::suppress();
-}
-/// Startup external-OTEL gate for an in-process (embedded) agent.
-/// Mirrors the leader startup gate so the pager process is fail-closed by construction at the agent boundary.
-pub fn apply_otel_config(auth_manager: &AuthManager, codel_com_config: &CodelComConfig) {
-    suppress_otel();
-    let has_session = auth_manager.current().is_some() || auth_manager.read_disk_auth().is_some();
-    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
-        channel: crate::agent::otel_gate::resolved_policy_channel(),
-        has_session,
-    }) {
-        crate::agent::otel_gate::open_at_startup();
     }
 }
 /// Boot-time switches of [`run_leader`], set by `codel agent leader` flags.
@@ -794,28 +777,10 @@ pub async fn run_leader(
     debug!("IPC socket created");
     let _lock = lock;
     let ctx = &agent_config.codel_com_config;
-    suppress_otel();
     let auth: Option<CodelAuth> =
         codel_login::try_noninteractive_auth_no_mint(ctx, agent_config.endpoints.proxy_url())
             .await;
-    let has_session = auth.is_some()
-        || agent_config
-            .create_auth_manager()
-            .read_disk_auth()
-            .is_some();
-    let policy_channel =
-        crate::agent::otel_gate::policy_channel_for(&agent_config.endpoints.proxy_url());
-    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
-        channel: policy_channel,
-        has_session,
-    }) {
-        info!(
-            channel = ?policy_channel,
-            has_session,
-            "Opening external-OTEL gate at startup: no fleet policy is pending for this leader"
-        );
-        crate::agent::otel_gate::open_at_startup();
-    }
+    let _ = auth;
     let _ = ready_tx.send(true);
     info!(
         "Leader ready: local-only boot (model/settings refresh runs in background), ACP forwarding enabled"
@@ -911,7 +876,7 @@ pub async fn run_leader(
                 );
                 tokio::task::spawn_local(
                     GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(codel_otel::span_from_meta_traceparent)
+                        .with_on_meta(codel_trace_context::span_from_meta_traceparent)
                         .run(),
                 );
                 if let Err(e) = handle_io.await {

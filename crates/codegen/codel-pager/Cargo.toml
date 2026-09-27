@@ -124,7 +124,7 @@ codel-workspace = { workspace = true }
 codel-foreign-sessions = { workspace = true }
 codel-token-estimation = { workspace = true }
 codel-logging = { workspace = true }
-codel-otel = { workspace = true }
+codel-trace-context = { workspace = true }
 codel-fast-worktree = { path = "../codel-fast-worktree", features = ["metadata"] }
 gethostname = { workspace = true, optional = true }
 backon = { workspace = true }

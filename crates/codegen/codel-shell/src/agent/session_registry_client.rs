@@ -195,7 +195,7 @@ impl SessionRegistryClient {
         reqwest::Response,
         Option<codel_auth::StampedBearerSuffix>,
     )> {
-        let builder = codel_otel::inject_trace_context_into_request(builder);
+        let builder = codel_trace_context::inject_trace_context_into_request(builder);
         let request = builder.build().context(op)?;
         codel_auth::execute_with_stamp(&self.client, request)
             .await

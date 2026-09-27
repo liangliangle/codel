@@ -1,34 +1,31 @@
 [package]
 license = "Apache-2.0"
-name = "codel-otel"
+name = "codel-trace-context"
 version = "0.1.0"
 edition.workspace = true
-description = "Trace-context propagation (W3C traceparent), OTLP client plumbing and redaction helpers shared by Codel crates. The span provider is inert: no exporter is built."
+description = "W3C trace-context propagation and shared redaction helpers. Installs no exporter and sends nothing off-box."
 authors = ["Codel"]
 
 [features]
 default-bazel = []
+env = ["dep:codel-env"]
 
 [dependencies]
-async-trait = { workspace = true }
-bytes = { workspace = true }
 http = { workspace = true }
 opentelemetry = { workspace = true }
-opentelemetry-http = { workspace = true }
 opentelemetry_sdk = { workspace = true }
-reqwest = { workspace = true, features = ["blocking"] }
+reqwest = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url = { workspace = true }
-codel-auth = { workspace = true }
-codel-extra-ca = { workspace = true }
 codel-env = { workspace = true, optional = true }
 codel-secrets = { workspace = true }
 
-opentelemetry-otlp = { workspace = true }
-parking_lot = { workspace = true }
+[dev-dependencies]
+# `InMemorySpanExporter` backs the trace-context unit tests; nothing is exported in production.
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+
 [lints]
 workspace = true

@@ -17,7 +17,7 @@ fn sampling_request_header_carries_the_turn_trace_id() {
     on_session_stack(|| {
         run_paused(|| async {
             // Thread-local, so it must be installed on the session-stack thread the turn runs on.
-            let _trace = codel_otel::set_local_trace_subscriber();
+            let _trace = codel_trace_context::set_local_trace_subscriber();
             let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
                 .await
                 .expect("mock inference server");
@@ -26,7 +26,7 @@ fn sampling_request_header_carries_the_turn_trace_id() {
 
             let turn_root = tracing::info_span!("test.turn_root");
             let root_traceparent =
-                codel_otel::span_traceparent(&turn_root).expect("root span has a trace id");
+                codel_trace_context::span_traceparent(&turn_root).expect("root span has a trace id");
             let outcome = tokio::time::timeout(
                 Duration::from_secs(300),
                 actor

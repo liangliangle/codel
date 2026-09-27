@@ -39,7 +39,7 @@ prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" 
 async-compression = { workspace = true, features = ["tokio"] }
 gcloud-storage = { workspace = true }
 reflink-copy = { workspace = true }
-codel-otel = { workspace = true }
+codel-trace-context = { workspace = true }
 url = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["io"] }

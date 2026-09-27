@@ -273,8 +273,6 @@ pub async fn spawn_codel_shell(
     // guard cancels the prewarm and the refresh loop instead.
     let cancel_auth_tasks_unless_spawned = agent_cancel.clone().drop_guard();
 
-    codel_shell::agent::app::apply_otel_config(&auth_manager, &agent_config.codel_com_config);
-
     // Policy repair must finish before any authenticated settings load.
     codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
     // This worker is a current-thread runtime. Resolve settings here so the

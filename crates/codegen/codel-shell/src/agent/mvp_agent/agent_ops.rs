@@ -596,7 +596,6 @@ impl MvpAgent {
         Some((base_url, user_token, alpha_test_key, deployment_key))
     }
     pub(super) fn ensure_telemetry_client(&self) {
-        codel_login::credential_provider::sync_external_otel_identity();
         let cfg = self.cfg.borrow();
         let mode = cfg.resolve_telemetry_mode().value;
         if !mode.is_disabled() {
@@ -1553,26 +1552,25 @@ impl MvpAgent {
         );
         crate::agent::remote_config::settings_get::fetch_settings_live(query).await
     }
-    /// Fetch remote settings for `auth` and drive the external-OTEL gate from the outcome. Re-closes the gate first only on an account switch, then hands the outcome to [`OtelGate::resolve`].
-    /// That returns the settings only on a successful fetch for the still-live identity. Both post-auth callers funnel through here. [`OtelGate::resolve`]: crate::agent::otel_gate::OtelGate::resolve
-    pub(super) async fn fetch_settings_resolving_gate(
+    /// Fetch remote settings for `auth`, returning them only while `auth` is still the
+    /// live identity: a fetch that lost an account switch must not install the old
+    /// account's settings. Both post-auth callers funnel through here.
+    pub(super) async fn fetch_settings_for_live_identity(
         &self,
         auth: &codel_login::CodelAuth,
     ) -> Option<crate::util::config::RemoteSettings> {
         let identity = auth.user_id.clone();
-        let channel = {
-            let proxy_url = self.cfg.borrow().endpoints.proxy_url();
-            crate::agent::otel_gate::policy_channel_for(&proxy_url)
-        };
-        self.otel_gate.rearm_on_switch(&identity, channel);
         let outcome = self
             .settings_refresh
             .refresh(auth, || self.fetch_settings_self_healing_401(auth))
-            .await;
+            .await?;
         let live = self.auth_manager.current_or_expired().map(|a| a.user_id);
+        if live.as_deref() != Some(identity.as_str()) {
+            return None;
+        }
         match outcome {
-            Some(outcome) => self.otel_gate.resolve(&identity, outcome, live.as_deref()),
-            None => None,
+            crate::remote::SettingsFetch::Fetched(settings) => Some(*settings),
+            crate::remote::SettingsFetch::Rejected | crate::remote::SettingsFetch::Retry => None,
         }
     }
     /// Fetch settings; on a `401` try one self-healing [`AuthManager::auth`] refresh and re-fetch if it yields a *different* token. This recovers a 401 from a token that expired mid-fetch.
@@ -1633,7 +1631,7 @@ impl MvpAgent {
         let user_id = auth.user_id.clone();
         let team_id = auth.team_id.clone();
         let remote_was_absent = self.cfg.borrow().remote_settings.is_none();
-        let Some(settings) = self.fetch_settings_resolving_gate(auth).await else {
+        let Some(settings) = self.fetch_settings_for_live_identity(auth).await else {
             if remote_was_absent {
                 self.run_deferred_remote_work();
             }
@@ -1681,7 +1679,6 @@ impl MvpAgent {
             codel_version::VERSION.to_owned(),
             crate::http::shared_client(),
         );
-        codel_login::credential_provider::sync_external_otel_identity();
         self.on_remote_settings_changed();
         if remote_was_absent {
             self.run_deferred_remote_work();
@@ -2319,7 +2316,6 @@ impl MvpAgent {
             ),
             official_marketplace_register: std::cell::RefCell::new(None),
             storage_mode: std::cell::Cell::new(storage_mode),
-            otel_gate: crate::agent::otel_gate::OtelGate::default(),
             default_yolo_mode,
             default_auto_mode,
             trace_upload_live: Arc::new(
@@ -2391,12 +2387,6 @@ impl MvpAgent {
             #[cfg(test)]
             post_auth_settings_spawn_count: std::cell::Cell::new(0),
         };
-        codel_login::credential_provider::wire_otel_auth_manager(
-            instance.auth_manager.clone(),
-        );
-        if let Some(ref dk) = instance.cfg.borrow().endpoints.deployment_key {
-            codel_login::credential_provider::wire_otel_deployment_key(dk.clone());
-        }
         instance
     }
     /// Client disconnect: keep working sessions resident, idle-unload the rest (never destroy).

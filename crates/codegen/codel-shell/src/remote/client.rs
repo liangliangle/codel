@@ -80,7 +80,7 @@ async fn add_bundle_fetch_headers(
             crate::http::CLIENT_MODE_HEADER,
             crate::http::process_client_mode(),
         );
-    codel_otel::inject_trace_context_into_request(builder)
+    codel_trace_context::inject_trace_context_into_request(builder)
 }
 /// Fetch the bundled subagent cache payload from cli-chat-proxy `GET /v1/subagents/bundle`.
 ///
@@ -412,7 +412,7 @@ impl BackendClient {
         builder: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, BackendError> {
         let headers = self.auth_header_map().await?;
-        let builder = codel_otel::inject_trace_context_into_request(
+        let builder = codel_trace_context::inject_trace_context_into_request(
             builder.timeout(DEFAULT_TIMEOUT).headers(headers),
         );
         let request = builder.build()?;

@@ -334,15 +334,6 @@ pub fn init_tracing() -> TracingHandle {
         .with_target(true)
         .with_ansi(true)
         .with_writer(make_writer);
-    let otel_layer = codel_logging::otel_layer::build_otel_layer(
-        codel_logging::otel_layer::OtelClientInfo {
-            client_name: "codel-pager",
-            client_version: codel_version::VERSION,
-            service_version: codel_version::full_version(),
-            app_entrypoint: "tui",
-        },
-        codel_shell::agent::init::build_default_otel_layer_config(),
-    );
     let instrumentation_layer = codel_logging::instrumentation::layer();
     let sampling_log_layer = codel_logging::sampling_log::layer();
     let hooks_log_layer = codel_logging::hooks_log::layer();
@@ -351,18 +342,8 @@ pub fn init_tracing() -> TracingHandle {
         .with(instrumentation_layer)
         .with(sampling_log_layer)
         .with(codel_logging::span_profile::layer("tui"))
-        .with(hooks_log_layer)
-        .with(otel_layer);
+        .with(hooks_log_layer);
     codel_logging::debug_log::install_firehose(registry, "tui");
-    codel_logging::external::init(
-        codel_shell::agent::config::resolve_external_otel_config(
-            codel_logging::external::config::ExternalClientInfo {
-                service_version: codel_version::full_version().to_owned(),
-                client_version: codel_version::VERSION.to_owned(),
-                app_entrypoint: "tui".to_owned(),
-            },
-        ),
-    );
     TracingHandle { rx }
 }
 /// Curated per-crate directives for the TUI subscriber.

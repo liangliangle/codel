@@ -22,8 +22,7 @@ fn live_fetch_with_unpersisted_session_is_served() {
         // session that has not been persisted.
         let fresh: codel_login::CodelAuth = serde_json::from_value(serde_json::json!({
             "key": "fresh-session-token",
-            "auth_mode": "oidc",
-            "oidc_issuer": codel_login::codel_oauth2_issuer(),
+            "auth_mode": "api_key",
             "create_time": "2026-01-01T00:00:00Z",
             "expires_at": "2099-01-01T00:00:00Z",
             "user_id": "fresh-user",

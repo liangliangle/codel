@@ -539,7 +539,7 @@ impl SessionActor {
         struct TraceContextInjector;
         impl codel_sampler::HeaderInjector for TraceContextInjector {
             fn inject(&self, headers: &mut reqwest::header::HeaderMap) {
-                if let Some(tp) = codel_otel::current_traceparent()
+                if let Some(tp) = codel_trace_context::current_traceparent()
                     && let Ok(v) = reqwest::header::HeaderValue::from_str(&tp)
                 {
                     headers.insert("traceparent", v);
@@ -547,7 +547,7 @@ impl SessionActor {
             }
 
             fn set_span_parent(&self, span: &tracing::Span, traceparent: &str) {
-                if !codel_otel::set_parent_from_traceparent(span, traceparent) {
+                if !codel_trace_context::set_parent_from_traceparent(span, traceparent) {
                     tracing::debug!(
                         traceparent = %traceparent,
                         "HTTP span did not adopt its trace parent"
@@ -1625,7 +1625,7 @@ impl SessionActor {
             let sampling_span = region!("turn.sampling", Parent::Inherit);
             // The sampler task has no tracing ancestor; this parents its HTTP span under the region
             // without holding it open.
-            request.traceparent = codel_otel::span_traceparent(sampling_span.span());
+            request.traceparent = codel_trace_context::span_traceparent(sampling_span.span());
             self.sampler_handle
                 .submit_and_collect_with_metadata(request_id.clone(), request)
                 .await

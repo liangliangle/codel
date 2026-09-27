@@ -5849,53 +5849,6 @@ fn drained_settings_update(
     }
     found
 }
-/// Re-open the process-global external-OTEL gate on drop so a closed gate never leaks into another test.
-struct RestoreOtelGate;
-impl Drop for RestoreOtelGate {
-    fn drop(&mut self) {
-        codel_logging::external::mark_external_otel_settings_resolved();
-    }
-}
-/// BYOK auth must not be upgraded to `Writeback` even when the server advertises it; the push and gate still fire.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial]
-async fn post_auth_settings_non_codel_keeps_local_but_still_emits() {
-    use crate::agent::config::AgentMode;
-    use codel_login::{AuthMode, CodelAuth};
-    let _restore = RestoreOtelGate;
-    let server = codel_test_support::MockInferenceServer::start()
-        .await
-        .unwrap();
-    server.set_settings(serde_json::json!({
-        "writeback_enabled": true,
-        "allow_access": true,
-    }));
-    let api_auth = CodelAuth {
-        auth_mode: AuthMode::ApiKey,
-        ..CodelAuth::test_default()
-    };
-    assert!(
-        !api_auth.is_codel_auth(),
-        "precondition: non-first-party auth"
-    );
-    let (agent, mut rx) =
-        build_agent_with_auth_and_proxy(api_auth, server.url(), AgentMode::Leader);
-    codel_logging::external::suppress_external_otel_until_settings();
-    agent.maybe_fetch_post_auth_settings().await;
-    assert_eq!(
-        agent.storage_mode(),
-        StorageMode::Local,
-        "non-codel auth must stay Local even when writeback is advertised remotely"
-    );
-    assert!(
-        codel_logging::external::is_settings_gate_open(),
-        "a settings response must open the gate regardless of auth kind"
-    );
-    assert!(
-        drained_settings_update(&mut rx),
-        "settings arrival must push codel/settings/update for non-codel auth too"
-    );
-}
 /// `ensure_session_supervisor` is idempotent: calling it repeatedly spawns the sweeper loop exactly once.
 #[test]
 fn ensure_session_supervisor_is_idempotent() {
@@ -5911,36 +5864,6 @@ fn ensure_session_supervisor_is_idempotent() {
             "the supervisor task must be spawned at most once"
         );
         assert!(agent.supervisor_started.get());
-    });
-}
-/// After a terminal removal (reap/close drops the live-state entry), a later reload of the same SessionId starts clean at `IdleResident`.
-/// No stale terminal state leaks in (ties to the bounded-map fix).
-#[test]
-fn reload_after_terminal_removal_starts_clean() {
-    run_local_for_bridge_test(|| async {
-        let agent = build_minimal_agent_for_tests();
-        let sid = acp::SessionId::new("sess-reload");
-        let (handle, _tx, rx) = make_live_session_handle(&sid, Some("turn-1"));
-        agent.insert_resident(&sid, handle);
-        let _observed = spawn_fake_actor(rx, true);
-        assert_eq!(
-            agent.close_active_session(&sid).await,
-            crate::agent::mvp_agent::session_lifecycle::CloseOutcome::Closed,
-            "the reload below is only meaningful after a close that happened"
-        );
-        assert_eq!(
-            agent.session_live_state_for(&sid),
-            None,
-            "terminal removal must leave no stale state"
-        );
-        let (handle2, _tx2, _rx2) = make_live_session_handle(&sid, None);
-        agent.insert_resident(&sid, handle2);
-        agent.set_session_live_state(&sid, SessionLiveState::IdleResident);
-        assert_eq!(
-            agent.session_live_state_for(&sid),
-            Some(SessionLiveState::IdleResident),
-            "a reloaded session must start at IdleResident, not a stale terminal state"
-        );
     });
 }
 /// Build an agent whose gateway is wired to a live receiver.

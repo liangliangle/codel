@@ -32,7 +32,6 @@ pub fn finalize_and_exit(code: i32) -> ! {
     if let Some(path) = codel_logging::span_profile::finalize() {
         eprintln!("span profile written to {}", path.display());
     }
-    codel_logging::otel_layer::shutdown_otel();
     // Flush the --debug log stream; exiting via process::exit bypasses main's flush
     codel_logging::debug_log::flush();
     std::process::exit(code);

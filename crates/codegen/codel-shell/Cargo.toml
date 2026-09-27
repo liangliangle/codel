@@ -169,7 +169,7 @@ codel-hooks = { path = "../codel-hooks" }
 codel-hooks-plugins-types = { path = "../codel-hooks-plugins-types" }
 codel-plugin-marketplace = { path = "../codel-plugin-marketplace" }
 codel-file-utils = { path = "../codel-file-utils" }
-codel-otel = { workspace = true }
+codel-trace-context = { workspace = true }
 codel-session-events = { workspace = true }
 codel-auth = { workspace = true, features = ["middleware"] }
 codel-http = { workspace = true }
@@ -331,14 +331,6 @@ required-features = ["test-support"]
 
 [[test]]
 name = "test_startup_prefetch_shared"
-required-features = ["test-support"]
-
-[[test]]
-name = "tool_call_trace"
-required-features = ["test-support"]
-
-[[test]]
-name = "tool_call_trace_off"
 required-features = ["test-support"]
 
 [lints]

@@ -126,7 +126,7 @@ impl Clone for SpawnRootSpan {
 
 impl SpawnRootSpan {
     pub fn new(span: tracing::Span) -> Self {
-        let traceparent = codel_otel::span_traceparent(&span);
+        let traceparent = codel_trace_context::span_traceparent(&span);
         Self {
             span: Some(span),
             traceparent,

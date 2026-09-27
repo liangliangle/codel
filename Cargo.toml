@@ -47,7 +47,7 @@ members = [
     "crates/codegen/codel-mermaid",
     "crates/codegen/codel-models",
     "crates/codegen/codel-logging",
-    "crates/codegen/codel-otel",
+    "crates/codegen/codel-trace-context",
     "crates/codegen/codel-pager",
     "crates/codegen/codel-pager-bin",
     "crates/codegen/codel-pager-diff",
@@ -348,7 +348,7 @@ codel-mcp = { path = "crates/codegen/codel-mcp" }
 codel-memory = { path = "crates/codegen/codel-memory" }
 codel-mermaid = { path = "crates/codegen/codel-mermaid" }
 codel-models = { path = "crates/codegen/codel-models" }
-codel-otel = { path = "crates/codegen/codel-otel" }
+codel-trace-context = { path = "crates/codegen/codel-trace-context" }
 codel-sampler = { path = "crates/codegen/codel-sampler" }
 codel-secrets = { path = "crates/codegen/codel-secrets" }
 codel-session-events = { path = "crates/codegen/codel-session-events" }

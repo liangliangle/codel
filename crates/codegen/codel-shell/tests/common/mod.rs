@@ -319,8 +319,7 @@ pub async fn start_seeded_mock(
     let auth = serde_json::json!({
         scope: {
             "key": "test-session-token",
-            "auth_mode": "oidc",
-            "oidc_issuer": codel_login::codel_oauth2_issuer(),
+            "auth_mode": "api_key",
             "create_time": "2026-01-01T00:00:00Z",
             "expires_at": "2099-01-01T00:00:00Z",
             "user_id": "test-user",

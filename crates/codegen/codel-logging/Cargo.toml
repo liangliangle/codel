@@ -54,52 +54,14 @@ mid = "4.0.0"
 tokio = { workspace = true, features = ["macros", "sync", "rt", "time"] }
 parking_lot = { workspace = true }
 codel-auth = { workspace = true }
-# OTEL foundation: OTLP HTTP client + span layer/provider + trace-context + shared redaction.
-codel-otel = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = [
-    "experimental_logs_batch_log_processor_with_async_runtime",
-    "experimental_metrics_periodicreader_with_async_runtime",
-    "rt-tokio-current-thread",
-] }
-# `tls-aws-lc` compiles opentelemetry-otlp's TLS support for the gRPC
-# transport. The workspace default is only `tls-roots`, which since otlp 0.32
-# no longer implies a TLS provider feature — without one, every `https://`
-# gRPC collector endpoint is rejected at exporter build time (GB-4580).
-# aws-lc matches the TLS backend the workspace `tonic` already uses.
-opentelemetry-otlp = { workspace = true, features = ["tls-aws-lc"] }
-# Embedded Mozilla trust anchors for the gRPC TLS fallback: keeps `https://`
-# collectors working on hosts with no readable system CA store (parity with
-# the HTTP transport's embedded-roots reqwest client in `otlp_http.rs`).
-webpki-roots = { workspace = true }
-# Re-encodes the validated CODEL_EXTRA_CA_BUNDLE DERs as PEM for tonic's
-# `Certificate::from_pem` (the gRPC transport's extra-CA parity with HTTP).
-base64 = { workspace = true }
+# Trace-context propagation (W3C traceparent) and shared redaction helpers.
+codel-trace-context = { workspace = true }
 http = { workspace = true }
-tokio-stream = { workspace = true }
 
 [dev-dependencies]
-# `#[async_trait]` on the in-process OTLP collector test fixture.
-async-trait = { workspace = true }
 # Pre-main unified-log redirect for this crate's own test binary.
 ctor = { workspace = true }
-tonic = { workspace = true, features = ["transport"] }
-# Self-signed CA + server cert for the TLS collector fixture
-# (tests/external_otlp_grpc_tls.rs). `rustls` pins the process-default crypto
-# provider there: the test binary links both ring and aws-lc-rs, so rustls
-# can't auto-select one for the server-side acceptor.
-rcgen = { workspace = true }
-rustls = { workspace = true }
-# In-memory log/metric exporters for the external-stream wire-shape tests.
-opentelemetry_sdk = { workspace = true, features = ["testing"] }
-# The gRPC, TLS, and HTTP over mutual TLS collector transports (tests/otlp_collector/mod.rs).
-axum = { workspace = true }
-axum-server = { workspace = true, features = ["tls-rustls"] }
-opentelemetry-proto = { workspace = true }
-prost = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }
-# The shared OTLP/HTTP collector double and its recorder (tests/external_otlp*.rs).
-codel-test-support = { workspace = true }
 # Sets a symlink's own mtime (std's `set_modified` follows links) for prune tests.
 filetime = { workspace = true }
 tempfile = { workspace = true }

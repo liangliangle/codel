@@ -496,28 +496,6 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
         crate::http::shared_client(),
     );
 }
-/// Assemble the default OTel layer config both `codel-pager` and `codel-tui` need at tracing init time.
-///
-/// Owns the endpoint and exporter assembly here in shell; the bootstrap credential provider comes from auth.
-pub fn build_default_otel_layer_config() -> codel_logging::otel_layer::OtelLayerConfig {
-    let endpoints = crate::agent::config::EndpointsConfig::default();
-    let (credentials, token_header_value) =
-        crate::credential_factory::build_bootstrap_otel_credentials();
-    let exporter = codel_logging::otel_layer::OtelExporterConfig {
-        traces_url: endpoints.resolve_otlp_traces_endpoint(),
-        extra_headers: endpoints.resolve_otlp_headers(),
-        export_interval: endpoints.resolve_otlp_export_interval(),
-        timeout: endpoints.resolve_otlp_timeout(),
-        enabled: endpoints.resolve_traces_export_enabled()
-            && !crate::agent::config::is_telemetry_explicitly_disabled_sync(),
-    };
-    codel_logging::otel_layer::OtelLayerConfig {
-        credentials,
-        token_header_value,
-        alpha_test_key: None,
-        exporter,
-    }
-}
 
 
 #[cfg(test)]

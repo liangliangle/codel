@@ -643,8 +643,6 @@ pub struct MvpAgent {
     /// `Cell` so [`Self::reapply_storage_mode`] can upgrade it when remote settings land; persistence reads the live value.
     /// Authoritative post-construction; `Config.storage_mode` is only the boot seed.
     storage_mode: std::cell::Cell<StorageMode>,
-    /// External-OTEL emission gate; see [`crate::agent::otel_gate`].
-    otel_gate: crate::agent::otel_gate::OtelGate,
     /// Default YOLO mode: when true, sessions start with auto-approve enabled.
     /// Per-session YOLO tracking lives in SessionHandle.yolo_mode.
     default_yolo_mode: bool,
@@ -1383,7 +1381,7 @@ impl MvpAgent {
             self.run_deferred_remote_work();
             return;
         };
-        let Some(settings) = self.fetch_settings_resolving_gate(&auth).await else {
+        let Some(settings) = self.fetch_settings_for_live_identity(&auth).await else {
             self.run_deferred_remote_work();
             return;
         };

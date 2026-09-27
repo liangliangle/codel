@@ -1,5 +1,4 @@
 pub mod activity;
-pub(crate) mod otel_gate;
 pub(crate) mod session_metrics;
 pub mod feedback_client;
 pub mod app;
@@ -9,7 +8,6 @@ pub mod config;
 pub(crate) mod config_model_override_parse;
 pub(crate) mod cursor_worker_config;
 mod ext_parsers;
-pub mod external_otel_pin;
 pub mod folder_trust;
 pub(crate) mod handlers;
 pub mod init;

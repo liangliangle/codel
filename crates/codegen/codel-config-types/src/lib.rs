@@ -545,15 +545,6 @@ pub struct RemoteSettings {
     pub managed_mcps_enabled: Option<bool>,
     #[serde(default)]
     pub managed_mcp_gateway_tools_enabled: Option<bool>,
-    /// Remote-policy disable lever for the external OTEL stream (customer collectors); feeds `ExternalOtelRemotePolicy.force_disable`.
-    /// Tighten-only: there is no `external_otel_enabled` remote field and `apply_remote_policy` never enables, so even a stale disk cache can only restrict.
-    /// Org-wide enable ships via managed config instead.
-    #[serde(default)]
-    pub external_otel_disabled: Option<bool>,
-    /// Force the external stream's content gates (`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`) off regardless of local env/config.
-    /// It is tighten-only, like `external_otel_disabled`.
-    #[serde(default)]
-    pub external_otel_content_gates_locked: Option<bool>,
     /// `Some(false)` disables managed-config signature verification (remote kill-switch).
     #[serde(default)]
     pub managed_config_signature_verification: Option<bool>,

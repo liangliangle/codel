@@ -344,12 +344,6 @@ pub fn install_panic_hook() {
             err_span.record("location", loc);
         }
         err_span.in_scope(|| {});
-        // The external OTEL stream gets the error class only, never the message or location
-        // `emit` is a synchronous queue push and a no-op unless the stream is active
-        // The internal pipelines keep the richer span and event above
-        crate::external::emit(&crate::events::InternalError {
-            error_type: "panic".to_owned(),
-        });
         tracing::error!(
             error_type = "panic",
             panic.message = %message,

@@ -362,7 +362,7 @@ pub(crate) async fn run_shell_child(
     mut spawn_root: Option<tracing::Span>,
 ) -> ChildRunOutput<ShellCompletionData> {
     if let Some(tp) = run.request.spawn_root.traceparent() {
-        codel_otel::link_current_span_to_meta(&serde_json::json!({ "traceparent": tp }));
+        codel_trace_context::link_current_span_to_meta(&serde_json::json!({ "traceparent": tp }));
     }
     let codel_build::task::coordinator::ChildRunRequest {
         mut request,
@@ -1236,7 +1236,7 @@ pub(crate) async fn run_shell_child(
     tool_ctx.subagent_depth = child_depth;
     tool_ctx.lsp = ctx.lsp.clone();
     tool_ctx.process_scope = ctx.process_scope.clone();
-    let parent_traceparent = codel_otel::current_traceparent();
+    let parent_traceparent = codel_trace_context::current_traceparent();
     let tracker_child_cwd = child_session_info.cwd.clone();
     let tracker_model_id = effective_model_id.0.to_string();
     let initial_child_tokens = codel_chat_state::estimate_conversation_tokens(&forked_conversation);

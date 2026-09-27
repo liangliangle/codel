@@ -781,9 +781,10 @@ was introduced upstream in that window and is renamed to the `CODEL_` prefix
 Variables whose names contain `TEST`, `_CHILD`, `_PROBE`, `FUZZ`, `SWEEP` or
 `BENCH` are internal harness knobs and are not part of the user surface.
 
-### 遥测在本分支无效
+### 遥测在本分支已移除
 
-本分支不发送任何遥测：产品事件不再上报（Mixpanel/Sentry 通道已移除），外部 OTEL/OTLP
-导出通道未启用。`CODEL_TELEMETRY`、`CODEL_TELEMETRY_*`、`CODEL_TRACE_UPLOAD*`、
-`CODEL_EXTERNAL_OTEL`、`CODEL_OTEL_*` 等变量仍会被解析，但不产生任何对外发送；
-`telemetry.*` 段同理。本地日志（`~/.codel/logs/`）不受影响，仍是唯一的诊断来源。
+本分支不发送任何遥测：产品事件通道（Mixpanel/Sentry）与外部 OTEL/OTLP 导出通道都已被删除，
+代码中不再有导出器、采集器或凭据提供者。`OTEL_EXPORTER_OTLP_*`、`CODEL_EXTERNAL_OTEL`、
+`CODEL_INTERNAL_OTLP_*` 等变量不再被读取，因此对它们的配置不会产生任何效果；
+`telemetry.*` 段中剩余键也无人读取。W3C traceparent 只在进程内用于本地 span 关联，
+不对外发送。本地日志（`~/.codel/logs/`）仍是唯一的诊断来源。

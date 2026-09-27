@@ -92,7 +92,7 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 codel-sandbox = { path = "../codel-sandbox", default-features = false }
 codel-file-utils = { path = "../codel-file-utils" }
-codel-otel = { workspace = true }
+codel-trace-context = { workspace = true }
 dhat = { workspace = true, optional = true }
 zstd = { workspace = true }
 

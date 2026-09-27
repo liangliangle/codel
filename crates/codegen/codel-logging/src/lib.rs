@@ -11,10 +11,8 @@ pub mod config;
 pub mod context;
 pub mod enums;
 pub mod events;
-pub mod external;
 pub mod http;
 pub mod id;
-pub mod otel_layer;
 pub mod sentry;
 
 // Leaf modules re-exported at crate root below, so the public API stays unchanged.
@@ -24,10 +22,9 @@ mod session;
 mod spans;
 
 // OTLP HTTP client now lives in the low-level foundation crate; re-export keeps `crate::otlp` paths working.
-pub(crate) use codel_otel::otlp;
 // Shared redaction utils now live in the foundation crate; re-export keeps `crate::redact_common` paths working.
-pub(crate) use codel_otel::redact_common;
-pub use codel_otel::redact_common::redact_error_detail;
+pub(crate) use codel_trace_context::redact_common;
+pub use codel_trace_context::redact_common::redact_error_detail;
 
 pub(crate) use logs::appender;
 pub use logs::{debug_log, hooks_log, memory_log, sampling_log, unified_log};

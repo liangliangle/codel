@@ -146,7 +146,7 @@ fn spawn_agent_local(remote: Option<codel_shell::util::config::RemoteSettings>) 
         });
     tokio::task::spawn_local(
         GatewayReceiver::new(gw_rx, agent_conn)
-            .with_on_meta(codel_otel::span_from_meta_traceparent)
+            .with_on_meta(codel_trace_context::span_from_meta_traceparent)
             .run(),
     );
     tokio::task::spawn_local(agent_io);
@@ -327,7 +327,6 @@ impl RestoreProcessGlobals {
         {
             codel_shell::managed_config::clear_startup_profile_for_tests();
         }
-        codel_logging::external::mark_external_otel_settings_resolved();
     }
 }
 

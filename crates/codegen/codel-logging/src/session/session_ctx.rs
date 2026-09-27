@@ -131,9 +131,7 @@ impl EmitterOrigin {
 const _: () = assert!(EmitterOrigin::ALL.len() == <EmitterOrigin as strum::EnumCount>::COUNT);
 
 /// Product analytics event (type-safe). Only fires in `Enabled` mode.
-/// Unconditionally fans out to the external OTEL stream first; that gate is `external::is_active()`, independent of `TelemetryMode`.
 pub fn log_event<T: TelemetryEvent>(data: T) {
-    crate::external::emit(&data);
     if !client::is_enabled() {
         return;
     }
@@ -144,29 +142,23 @@ pub fn log_event<T: TelemetryEvent>(data: T) {
 /// Fire-and-forget posts die with the session runtime on pager/embedded `/exit`, where [`drain_at_session_exit`] is a no-op.
 /// The process-exit drain cannot see this runtime either. Use for the last emit on that path.
 pub async fn log_event_now<T: TelemetryEvent>(data: T) {
-    crate::external::emit(&data);
     if !client::is_enabled() {
         return;
     }
     emit_event_now(T::NAME, data).await;
 }
 
-/// Emit one event to the external stream always and to the product events/Mixpanel funnel only when `internal_enabled`.
 /// Callers use this when their internal sink is gated more strictly than [`log_event`]'s `Enabled` check (the shell's `Enabled && !ZDR`).
 /// [`log_event`] already fans out externally, so the branch keeps the external emit exactly-once and never sends an internal record under ZDR.
 pub fn log_event_dual<T: TelemetryEvent>(internal_enabled: bool, data: T) {
     if internal_enabled {
         log_event(data);
-    } else {
-        crate::external::emit(&data);
     }
 }
 
 /// Session lifecycle event (type-safe). Fires in both `Enabled` and `SessionMetrics` modes.
 /// Emits with the [`EmitterOrigin::Shell`] prefix; workspace-side callers use [`log_session_event_with_origin`].
-/// Unconditionally fans out to the external OTEL stream first (independent gate; see [`log_event`]).
 pub fn log_session_event<T: TelemetryEvent>(data: T) {
-    crate::external::emit(&data);
     if !client::is_session_metrics_enabled() {
         return;
     }
@@ -582,66 +574,4 @@ mod tests {
             .await;
     }
 
-    /// A `TurnCompleted` with no event-carried `session_id` carries one only via the ambient ctx.
-    /// The id is present via the helper and absent from a bare child.
-    #[tokio::test(flavor = "current_thread")]
-    async fn spawn_local_in_session_ctx_puts_session_id_on_work_event() {
-        use crate::external::test_support::{TestStream, build, emit_event_into};
-        use opentelemetry::logs::AnyValue;
-
-        fn work() -> crate::events::TurnCompleted {
-            crate::events::TurnCompleted {
-                outcome: crate::events::Outcome::Completed,
-                duration_ms: 10,
-                tool_call_count: 1,
-                model_id: "codel-4".into(),
-                // Left `None` so this exercises the task-local ctx fallback, not the event field.
-                session_id: None,
-                cancellation_category: None,
-                error_category: None,
-                error_code: None,
-                error_detail: None,
-                context_tokens: None,
-                turn_tokens: None,
-            }
-        }
-        fn session_id(stream: &TestStream) -> Option<String> {
-            let logs = stream.logs.get_emitted_logs().expect("in-memory logs");
-            logs.first()?.record.attributes_iter().find_map(|(k, v)| {
-                (k.as_str() == "session.id").then(|| match v {
-                    AnyValue::String(s) => s.as_str().to_owned(),
-                    other => format!("{other:?}"),
-                })
-            })
-        }
-
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let ctx = TelemetryCtx::new(
-                    "sess-wire".into(),
-                    Arc::new(tokio::sync::Mutex::new(1usize)),
-                );
-                with_session_ctx(ctx, async {
-                    let bare = tokio::task::spawn_local(async {
-                        let s = build(Default::default());
-                        emit_event_into(&s, &work());
-                        session_id(&s)
-                    })
-                    .await
-                    .expect("join");
-                    assert_eq!(bare, None, "bare spawn_local drops session.id");
-
-                    let fixed = spawn_local_in_session_ctx(async {
-                        let s = build(Default::default());
-                        emit_event_into(&s, &work());
-                        session_id(&s)
-                    })
-                    .await
-                    .expect("join");
-                    assert_eq!(fixed.as_deref(), Some("sess-wire"));
-                })
-                .await;
-            })
-            .await;
-    }
 }

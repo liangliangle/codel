@@ -175,45 +175,6 @@ pub struct EndpointsConfig {
     /// Defaults to `{proxy_url()}/deployment/config`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub managed_config_url: Option<String>,
-    /// Env: `OTEL_EXPORTER_OTLP_ENDPOINT`. OTLP collector base; `/v1/traces` is appended.
-    /// Legacy repoint of the INTERNAL trace pipeline, deprecated in favor of `CODEL_INTERNAL_OTLP_TRACES_ENDPOINT`.
-    /// Ignored by the internal pipeline when `CODEL_EXTERNAL_OTEL` is set (the standard `OTEL_*` vars then route the external stream only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_endpoint: Option<String>,
-    /// Env: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
-    /// Full traces endpoint, used verbatim; overrides `otel_exporter_otlp_endpoint`.
-    /// Same legacy/deprecation semantics as `otel_exporter_otlp_endpoint`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_traces_endpoint: Option<String>,
-    /// Env: `OTEL_EXPORTER_OTLP_HEADERS`. `k=v,k2=v2`; merged onto export headers.
-    /// Same legacy/deprecation semantics as `otel_exporter_otlp_endpoint`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_headers: Option<String>,
-    /// Env: `CODEL_INTERNAL_OTLP_TRACES_ENDPOINT`. Full INTERNAL traces endpoint, used verbatim.
-    /// Dev/debug repoint of the internal span firehose (replaces the legacy `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` behavior).
-    /// Used by local-ic-testing / internal dev flows. Wins over the legacy `OTEL_*` vars.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub codel_internal_otlp_traces_endpoint: Option<String>,
-    /// Env: `CODEL_INTERNAL_OTLP_HEADERS`.
-    /// `k=v,k2=v2` extra headers for the internal export (debug).
-    /// Wins over the legacy `OTEL_EXPORTER_OTLP_HEADERS`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub codel_internal_otlp_headers: Option<String>,
-    /// External-OTEL master switch, captured at construction via [`external_otel_master_switch_resolved`].
-    /// That resolver applies requirement pin > `CODEL_EXTERNAL_OTEL` env > `[telemetry].otel_enabled` config, managed layers included. Those are the same layers that activate the external stream.
-    /// When set, the standard `OTEL_EXPORTER_OTLP_*` vars are reserved for the external OTEL stream. The internal trace pipeline then ignores them entirely. An admin who opts in by *any* layer never receives the internally-authed firehose. Held as a field (not re-read in the resolvers) so the resolvers stay pure and testable without env races.
-    #[serde(skip)]
-    pub external_otel_master_switch: bool,
-    /// Env: `OTEL_TRACES_EXPORTER`. `otlp` (default) or `none` to disable spans.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_traces_exporter: Option<String>,
-    /// Env: `OTEL_BSP_SCHEDULE_DELAY` (OTel) or `OTEL_TRACES_EXPORT_INTERVAL` (Claude alias).
-    /// Batch flush interval (ms).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_traces_export_interval: Option<u64>,
-    /// Env: `OTEL_EXPORTER_OTLP_TIMEOUT`. Export HTTP timeout (ms).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub otel_exporter_otlp_timeout: Option<u64>,
     /// Read by `load_management_api_key_sync()`. Declared for `serde_ignored`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management_api_key: Option<String>,
@@ -227,17 +188,6 @@ fn blank_as_unset(opt: &Option<String>) -> Option<String> {
     opt.as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(str::to_owned)
-}
-/// Parse a `k=v,k2=v2` OTLP header list (the `OTEL_EXPORTER_OTLP_HEADERS` format, shared with `CODEL_INTERNAL_OTLP_HEADERS`).
-/// Split on `,`, then `split_once('=')`, trim key/value, skip blank keys, keep empty values.
-fn parse_otlp_header_list(raw: &str) -> Vec<(String, String)> {
-    raw.split(',')
-        .filter_map(|kv| {
-            let (k, v) = kv.split_once('=')?;
-            let k = k.trim();
-            (!k.is_empty()).then(|| (k.to_string(), v.trim().to_string()))
-        })
-        .collect()
 }
 impl EndpointsConfig {
     pub fn has_custom_endpoint(&self) -> bool {
@@ -257,7 +207,6 @@ impl EndpointsConfig {
     /// `pub`: the pager resolves the voice STT base through this same path.
     pub fn from_config_value(config: &toml::Value) -> Self {
         let default = Self::default();
-        let external_otel_master_switch = default.external_otel_master_switch;
         let mut base = match toml::Value::try_from(default) {
             Ok(v) => v,
             Err(_) => return Self::default(),
@@ -265,8 +214,7 @@ impl EndpointsConfig {
         if let Some(endpoints) = config.get("endpoints") {
             crate::config::deep_merge_toml(&mut base, endpoints);
         }
-        let mut resolved: Self = base.try_into().unwrap_or_default();
-        resolved.external_otel_master_switch = external_otel_master_switch;
+        let resolved: Self = base.try_into().unwrap_or_default();
         resolved
     }
     /// The cli-chat-proxy base URL through which all auxiliary services (and OAuth/session inference) resolve.
@@ -298,80 +246,6 @@ impl EndpointsConfig {
                 self.proxy_url().trim_end_matches('/')
             )
         })
-    }
-    /// INTERNAL OTLP traces endpoint. Precedence: `codel_internal_otlp_traces_endpoint` (verbatim) legacy `otel_exporter_otlp_traces_endpoint` (verbatim) > `otel_exporter_otlp_endpoint` + `/v1/traces` (back-compat; deprecated) `proxy_url` + `/traces`.
-    /// The legacy tier applies ONLY when the external-OTEL master switch is unset, keeping the internally-authed firehose off external collectors.
-    /// Uses the proxy default (not the `codel_api_base_url` fallback) so telemetry reports to Codel even when inference is overridden.
-    pub(crate) fn resolve_otlp_traces_endpoint(&self) -> String {
-        if let Some(full) = blank_as_unset(&self.codel_internal_otlp_traces_endpoint) {
-            return full.trim_end_matches('/').to_string();
-        }
-        if !self.external_otel_master_switch
-            && let Some(legacy) = self.legacy_internal_otlp_traces_endpoint()
-        {
-            tracing::warn!(
-                "Repointing the internal trace pipeline via OTEL_EXPORTER_OTLP_ENDPOINT / \
-                 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is deprecated; use \
-                 CODEL_INTERNAL_OTLP_TRACES_ENDPOINT instead — the standard OTEL_* vars will \
-                 route the external OTEL stream only in a future release"
-            );
-            return legacy;
-        }
-        format!("{}/traces", self.proxy_url().trim_end_matches('/'))
-    }
-    /// Legacy (standard-OTEL-var) internal traces endpoint, if any.
-    /// `otel_exporter_otlp_traces_endpoint` verbatim, else `otel_exporter_otlp_endpoint` + `/v1/traces`.
-    /// Ignores the master switch.
-    fn legacy_internal_otlp_traces_endpoint(&self) -> Option<String> {
-        if let Some(full) = blank_as_unset(&self.otel_exporter_otlp_traces_endpoint) {
-            return Some(full.trim_end_matches('/').to_string());
-        }
-        blank_as_unset(&self.otel_exporter_otlp_endpoint)
-            .map(|base| format!("{}/v1/traces", base.trim_end_matches('/')))
-    }
-    /// Extra headers for the INTERNAL export: `codel_internal_otlp_headers` first.
-    /// Legacy fallback to `otel_exporter_otlp_headers` ONLY when the external-OTEL master switch is unset (back-compat for existing users).
-    pub(crate) fn resolve_otlp_headers(&self) -> Vec<(String, String)> {
-        if let Some(headers) = blank_as_unset(&self.codel_internal_otlp_headers) {
-            return parse_otlp_header_list(&headers);
-        }
-        if !self.external_otel_master_switch {
-            return parse_otlp_header_list(
-                self.otel_exporter_otlp_headers.as_deref().unwrap_or(""),
-            );
-        }
-        Vec::new()
-    }
-    /// Whether the legacy fallback actually supplied the internal endpoint OR internal headers from the standard `OTEL_EXPORTER_OTLP_*` vars.
-    /// True when the master switch is unset, the standard var for that half is non-blank, and no `codel_internal_otlp_*` override shadowed it.
-    /// CONTRACT: this flag is passed to the external OTEL stream's init, which MUST refuse to activate when it is true. The same standard vars cannot feed both pipelines (no-double-send invariant, enforced in code).
-    pub(crate) fn internal_otlp_consumed_standard_vars(&self) -> bool {
-        if self.external_otel_master_switch {
-            return false;
-        }
-        let endpoint_consumed = blank_as_unset(&self.codel_internal_otlp_traces_endpoint).is_none()
-            && self.legacy_internal_otlp_traces_endpoint().is_some();
-        let headers_consumed = blank_as_unset(&self.codel_internal_otlp_headers).is_none()
-            && blank_as_unset(&self.otel_exporter_otlp_headers).is_some();
-        endpoint_consumed || headers_consumed
-    }
-    /// Trace export enabled unless `OTEL_TRACES_EXPORTER=none`.
-    /// Deliberately still honored by the internal pipeline even with `CODEL_EXTERNAL_OTEL` set: disabling internal span export is the safe direction.
-    pub(crate) fn resolve_traces_export_enabled(&self) -> bool {
-        !matches!(
-            self.otel_traces_exporter.as_deref().map(str::trim),
-            Some("none")
-        )
-    }
-    /// `OTEL_BSP_SCHEDULE_DELAY` / `OTEL_TRACES_EXPORT_INTERVAL`: tuning-only, deliberately shared between the internal and external pipelines.
-    pub(crate) fn resolve_otlp_export_interval(&self) -> Option<std::time::Duration> {
-        self.otel_traces_export_interval
-            .map(std::time::Duration::from_millis)
-    }
-    /// `OTEL_EXPORTER_OTLP_TIMEOUT`: tuning-only, deliberately shared between the internal and external pipelines.
-    pub(crate) fn resolve_otlp_timeout(&self) -> Option<std::time::Duration> {
-        self.otel_exporter_otlp_timeout
-            .map(std::time::Duration::from_millis)
     }
     /// Resolve trace upload credentials: inline > file > `None` (ambient).
     pub(crate) fn resolve_trace_credentials(&self) -> Option<String> {
@@ -502,18 +376,6 @@ impl Default for EndpointsConfig {
             trace_upload_endpoint_url: env_string("CODEL_TRACE_UPLOAD_ENDPOINT_URL"),
             deployment_key: env_string("CODEL_DEPLOYMENT_KEY"),
             managed_config_url: env_string("CODEL_MANAGED_CONFIG_URL"),
-            otel_exporter_otlp_endpoint: env_string("OTEL_EXPORTER_OTLP_ENDPOINT"),
-            otel_exporter_otlp_traces_endpoint: env_string("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
-            otel_exporter_otlp_headers: env_string("OTEL_EXPORTER_OTLP_HEADERS"),
-            codel_internal_otlp_traces_endpoint: env_string("CODEL_INTERNAL_OTLP_TRACES_ENDPOINT"),
-            codel_internal_otlp_headers: env_string("CODEL_INTERNAL_OTLP_HEADERS"),
-            external_otel_master_switch: external_otel_master_switch_resolved(),
-            otel_traces_exporter: env_string("OTEL_TRACES_EXPORTER"),
-            otel_traces_export_interval: env_string("OTEL_BSP_SCHEDULE_DELAY")
-                .or_else(|| env_string("OTEL_TRACES_EXPORT_INTERVAL"))
-                .and_then(|s| s.parse().ok()),
-            otel_exporter_otlp_timeout: env_string("OTEL_EXPORTER_OTLP_TIMEOUT")
-                .and_then(|s| s.parse().ok()),
             management_api_key: None,
             gcs_service_account_key: None,
         }
@@ -2968,15 +2830,6 @@ pub(crate) fn is_telemetry_disabled_sync() -> bool {
         .enable_env(codel_telemetry_env_enabled)
         .resolve()
 }
-/// Like [`is_telemetry_disabled_sync`] but only `true` when telemetry is *explicitly* off.
-/// Absence is not disabled (`.default(true)`), so remote-only enablement still builds the OTLP exporter (the runtime gate then governs it).
-pub(crate) fn is_telemetry_explicitly_disabled_sync() -> bool {
-    !SyncBoolFlag::new(telemetry_enabled_from_toml)
-        .disable_env("DISABLE_TELEMETRY")
-        .enable_env(codel_telemetry_env_enabled)
-        .default(true)
-        .resolve()
-}
 /// Sync sibling of [`is_telemetry_disabled_sync`] scoped to Sentry.
 /// Inherits from telemetry when no Sentry-specific signal is set.
 pub fn is_error_reporting_disabled_sync() -> bool {
@@ -3017,145 +2870,8 @@ pub(crate) fn read_requirements_toml() -> Option<toml::Value> {
     let content = std::fs::read_to_string(&path).ok()?;
     toml::from_str(&content).ok()
 }
-/// Resolve the external-OTEL master switch exactly the way the external stream's activation does. **Requirement pin > `CODEL_EXTERNAL_OTEL` env > `[telemetry].otel_enabled` config layer (managed config included) > off**.
-/// The internal trace pipeline keys its "ignore `OTEL_EXPORTER_OTLP_*`" behavior off this value ([`EndpointsConfig::external_otel_master_switch`]).
-/// So an org enable distributed via managed config / requirements (no env var) flips **both** sides together. A desync here would leave the internally-authed firehose honoring legacy `OTEL_*` repointing.
-pub(crate) fn external_otel_master_switch_resolved() -> bool {
-    external_otel_master_switch_from(
-        codel_config::load_merged_requirements().as_ref(),
-        env_bool("CODEL_EXTERNAL_OTEL"),
-        crate::config::load_effective_config().ok().as_ref(),
-    )
-}
-/// Testable core of [`external_otel_master_switch_resolved`].
-pub(crate) fn external_otel_master_switch_from(
-    requirements: Option<&toml::Value>,
-    env_switch: Option<bool>,
-    effective_config: Option<&toml::Value>,
-) -> bool {
-    let table_enabled = |v: Option<&toml::Value>| -> Option<bool> {
-        v?.get("telemetry")?.get("otel_enabled")?.as_bool()
-    };
-    if let Some(pinned) = table_enabled(requirements) {
-        return pinned;
-    }
-    if let Some(env) = env_switch {
-        return env;
-    }
-    table_enabled(effective_config).unwrap_or(false)
-}
-fn telemetry_otel_str(t: &toml::Value, key: &str) -> Option<String> {
-    t.get(key).and_then(toml::Value::as_str).map(str::to_owned)
-}
-fn telemetry_otel_ms(t: &toml::Value, key: &str) -> Option<String> {
-    t.get(key).and_then(|v| {
-        v.as_integer()
-            .map(|i| i.to_string())
-            .or_else(|| v.as_str().map(str::to_owned))
-    })
-}
-fn telemetry_otel_file_config(
-    t: &toml::Value,
-) -> codel_logging::external::ExternalOtelFileConfig {
-    codel_logging::external::ExternalOtelFileConfig {
-        enabled: t.get("otel_enabled").and_then(toml::Value::as_bool),
-        metrics_exporter: telemetry_otel_str(t, "otel_metrics_exporter"),
-        logs_exporter: telemetry_otel_str(t, "otel_logs_exporter"),
-        endpoint: telemetry_otel_str(t, "otel_endpoint"),
-        protocol: telemetry_otel_str(t, "otel_protocol")
-            .or_else(|| telemetry_otel_str(t, "otel_transport")),
-        certificate: telemetry_otel_str(t, "otel_certificate"),
-        client_certificate: telemetry_otel_str(t, "otel_client_certificate"),
-        client_key: telemetry_otel_str(t, "otel_client_key"),
-        log_user_prompts: t
-            .get("otel_log_user_prompts")
-            .and_then(toml::Value::as_bool),
-        log_tool_details: t
-            .get("otel_log_tool_details")
-            .and_then(toml::Value::as_bool),
-        log_assistant_responses: t
-            .get("otel_log_assistant_responses")
-            .and_then(toml::Value::as_bool),
-        log_tool_content: t
-            .get("otel_log_tool_content")
-            .and_then(toml::Value::as_bool),
-        timeout: telemetry_otel_ms(t, "otel_timeout"),
-        metric_export_interval: telemetry_otel_ms(t, "otel_metric_export_interval"),
-        logs_endpoint: telemetry_otel_str(t, "otel_logs_endpoint"),
-        metrics_endpoint: telemetry_otel_str(t, "otel_metrics_endpoint"),
-        logs_protocol: telemetry_otel_str(t, "otel_logs_protocol"),
-        metrics_protocol: telemetry_otel_str(t, "otel_metrics_protocol"),
-        logs_certificate: telemetry_otel_str(t, "otel_logs_certificate"),
-        metrics_certificate: telemetry_otel_str(t, "otel_metrics_certificate"),
-        logs_client_certificate: telemetry_otel_str(t, "otel_logs_client_certificate"),
-        logs_client_key: telemetry_otel_str(t, "otel_logs_client_key"),
-        metrics_client_certificate: telemetry_otel_str(t, "otel_metrics_client_certificate"),
-        metrics_client_key: telemetry_otel_str(t, "otel_metrics_client_key"),
-        include_session_id: t
-            .get("otel_metrics_include_session_id")
-            .and_then(toml::Value::as_bool),
-    }
-}
-/// Resolve the external OTEL stream configuration at process startup. Env and local config only: remote settings are not yet available when tracing init runs.
-/// Layering follows `resolve_telemetry_mode`: **requirement > env > config > remote > default**. The `[telemetry]` `otel_*` keys from the effective config sit under the env vars.
-/// That config already includes managed-config layers distributed by `codel setup`. Requirements pins are applied on top, and the remote layer is restrictive-only and asynchronous ([`apply_external_otel_remote_policy`]).
-pub fn resolve_external_otel_config(
-    client: codel_logging::external::config::ExternalClientInfo,
-) -> Option<codel_logging::external::ExternalOtelConfig> {
-    let requirements = codel_config::load_merged_requirements();
-    resolve_external_otel_config_with(
-        crate::config::load_effective_config().ok().as_ref(),
-        requirements.as_ref(),
-        |name| std::env::var(name).ok(),
-        client,
-        EndpointsConfig::default().internal_otlp_consumed_standard_vars(),
-    )
-}
-/// Testable core of [`resolve_external_otel_config`]: all inputs injected so tests don't race on process env / disk.
-pub(crate) fn resolve_external_otel_config_with(
-    effective_config: Option<&toml::Value>,
-    requirements: Option<&toml::Value>,
-    getenv: impl Fn(&str) -> Option<String>,
-    client: codel_logging::external::config::ExternalClientInfo,
-    internal_pipeline_consumed_otel_vars: bool,
-) -> Option<codel_logging::external::ExternalOtelConfig> {
-    let pins =
-        crate::agent::external_otel_pin::RequirementOtelPins::from_requirements(requirements);
-    let file_cfg: Option<codel_logging::external::ExternalOtelFileConfig> = effective_config
-        .and_then(|cfg| cfg.get("telemetry"))
-        .cloned()
-        .map(|mut telemetry| {
-            if let Some(table) = telemetry.as_table_mut() {
-                pins.hide_unlisted_file_siblings(table);
-            }
-            telemetry_otel_file_config(&telemetry)
-        });
-    let getenv_pinned = crate::agent::external_otel_pin::getenv_with_pins(&pins, getenv);
-    let mut resolved = codel_logging::external::ExternalOtelConfig::resolve_with(
-        getenv_pinned,
-        file_cfg.as_ref(),
-    )?;
-    resolved.client = client;
-    resolved.internal_pipeline_consumed_otel_vars = internal_pipeline_consumed_otel_vars;
-    Some(resolved)
-}
-/// Apply the restrictive-only remote-settings policy for the external OTEL stream (fleet kill switch and content-gate lock).
-/// Tighten-only by construction (there is no remote enable direction), so it is safe to call on every settings refresh.
-pub(crate) fn apply_external_otel_remote_policy(
-    settings: Option<&crate::util::config::RemoteSettings>,
-) {
-    let Some(settings) = settings else { return };
-    let policy = codel_logging::external::ExternalOtelRemotePolicy {
-        force_disable: settings.external_otel_disabled.unwrap_or(false),
-        lock_content_gates: settings.external_otel_content_gates_locked.unwrap_or(false),
-    };
-    if policy.force_disable || policy.lock_content_gates {
-        codel_logging::external::apply_remote_policy(policy);
-    }
-}
 /// Seed free-function remote caches after writing `Config.remote_settings`. Called from `init.rs` at boot and from the agent when backgrounded settings arrive later.
-/// So every side effect here must be idempotent and safe to re-apply. The emission-gate flip is owned by [`crate::agent::otel_gate::OtelGate`], not here.
-/// The `force_disable` write here is `Relaxed`; the synchronizing publish is `OtelGate::apply_and_open`. That publish applies the same tighten-only policy and then opens the gate with a `Release` swap. Removing that second application to deduplicate would leave only the `Relaxed` store and reopen an ARM visibility hole.
+/// So every side effect here must be idempotent and safe to re-apply.
 /// `origin` is the cli-chat-proxy base URL `settings` were fetched from; per-origin caches key on it.
 pub fn apply_remote_settings_side_effects(
     settings: Option<&crate::util::config::RemoteSettings>,
@@ -3176,7 +2892,6 @@ pub fn apply_remote_settings_side_effects(
     crate::util::config::cache_remote_remember_tool_approvals(s.remember_tool_approvals);
     crate::util::config::cache_remote_crash_handler_enabled(s.crash_handler_enabled);
     crate::util::config::cache_remote_accept_request_encodings(origin, &s.accept_request_encodings);
-    apply_external_otel_remote_policy(settings);
     crate::session::normalize_cache::NormalizeCache::global()
         .set_enabled(s.image_normalize_cache_enabled.unwrap_or(false));
 }

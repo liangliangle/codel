@@ -225,41 +225,6 @@ fn ext_method_no_client(err: &acp::Error) -> bool {
         Some(codel_acp_lib::AcpChannelFailure::SendFailed)
     )
 }
-/// CONTENT-gated tool bodies for the external stream. Capture-time cap so
-/// multi-MB bodies are not retained; emit still drops them when CONTENT is off.
-fn external_tool_bodies(
-    result: &Result<ToolRunResult, codel_tool_runtime::ToolError>,
-) -> (Option<String>, Option<String>) {
-    match result {
-        Ok(tool_result) if tool_result.output.is_error() => {
-            let body = tool_result.output.to_prompt_format();
-            (
-                Some(codel_logging::external::truncate::cap_bytes(
-                    &body,
-                    codel_logging::external::truncate::MAX_CONTENT_BYTES,
-                )),
-                Some(codel_logging::external::truncate::cap_bytes(
-                    &body,
-                    codel_logging::external::truncate::MAX_TOOL_INPUT_JSON_BYTES,
-                )),
-            )
-        }
-        Ok(tool_result) => (
-            Some(codel_logging::external::truncate::cap_bytes(
-                &tool_result.output.to_prompt_format(),
-                codel_logging::external::truncate::MAX_CONTENT_BYTES,
-            )),
-            None,
-        ),
-        Err(e) => (
-            None,
-            Some(codel_logging::external::truncate::cap_bytes(
-                &e.to_string(),
-                codel_logging::external::truncate::MAX_TOOL_INPUT_JSON_BYTES,
-            )),
-        ),
-    }
-}
 /// Model-facing turn injected after a resumed plan is approved.
 const PLAN_APPROVED_IMPLEMENT_MESSAGE: &str =
     "The user approved the plan. Implement the plan in plan.md.";
@@ -1072,12 +1037,7 @@ impl SessionActor {
                 }
                 Err(_) => true,
             };
-            let (ext_tool_output, ext_error_message) = if codel_logging::external::is_active()
-            {
-                external_tool_bodies(&result)
-            } else {
-                (None, None)
-            };
+            let (ext_tool_output, ext_error_message) = (None, None);
             let tool_loop = match result {
                 Ok(tool_result) => {
                     let effective_tool_name = tool_result
@@ -1242,19 +1202,6 @@ impl SessionActor {
                     },
                 )
                 .await;
-            let (ext_file_path, ext_parameters) = if codel_logging::external::is_active() {
-                let parsed: Option<serde_json::Value> =
-                    serde_json::from_str(&prepared.raw_arguments).ok();
-                let file_path = parsed.as_ref().and_then(|v| {
-                    ["file_path", "target_file", "filePath", "path"]
-                        .iter()
-                        .find_map(|k| v.get(*k).and_then(|p| p.as_str()))
-                        .map(str::to_owned)
-                });
-                (file_path, parsed)
-            } else {
-                (None, None)
-            };
             codel_logging::session_ctx::log_event(crate::session::telemetry::completed_event(
                 crate::session::telemetry::CompletedTool {
                     tool_name: &prepared.tool_name,
@@ -1263,10 +1210,9 @@ impl SessionActor {
                     hook_rewrote,
                     duration_ms,
                     tool_result_size_bytes,
-                    file_path: ext_file_path,
-                    parameters: ext_parameters,
-                    tool_use_id: codel_logging::external::is_active()
-                        .then(|| prepared.call_id.clone()),
+                    file_path: None,
+                    parameters: None,
+                    tool_use_id: None,
                     tool_output: ext_tool_output,
                     error_message: ext_error_message,
                 },
@@ -1906,14 +1852,7 @@ impl SessionActor {
                     manager_event.as_ref(),
                     resolved,
                 );
-                let tool_input = if codel_logging::external::is_active() {
-                    codel_logging::events::ExternalToolInput {
-                        parameters: Some(raw_input.clone()),
-                        tool_use_id: Some(call.id.clone()),
-                    }
-                } else {
-                    codel_logging::events::ExternalToolInput::default()
-                };
+                let tool_input = codel_logging::events::ExternalToolInput::default();
                 codel_logging::events::PermissionDecisionRecord {
                     payload,
                     tool_input,

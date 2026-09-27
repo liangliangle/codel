@@ -1020,15 +1020,6 @@ pub async fn run(
     } else {
         crate::acp::AgentKind::Embedded
     };
-    codel_logging::external::init(
-        codel_shell::agent::config::resolve_external_otel_config(
-            codel_logging::external::config::ExternalClientInfo {
-                service_version: codel_version::full_version().to_owned(),
-                client_version: codel_version::VERSION.to_owned(),
-                app_entrypoint: "tui".to_owned(),
-            },
-        ),
-    );
     let tracing_handle = crate::tracing::init_tracing();
     let pending_startup = codel_logging::startup::PendingStartup::new();
     let timer = codel_logging::startup::begin(crate::acp::Owner::Client);

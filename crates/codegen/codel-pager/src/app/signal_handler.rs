@@ -221,7 +221,6 @@ fn flush_telemetry_and_exit(exit_code: i32) -> ! {
         crate::app::status_line::metrics::global().report_health();
         codel_logging::sentry::flush_on_shutdown();
     }
-    codel_logging::otel_layer::shutdown_otel();
     // Flush the --debug firehose on TUI signal exit (this path bypasses main's flush).
     codel_logging::debug_log::flush();
     if let Some(path) = codel_logging::span_profile::finalize() {

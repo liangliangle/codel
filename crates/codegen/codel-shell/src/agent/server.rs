@@ -480,7 +480,6 @@ async fn run_persistent_agent(
         Err(crate::agent::init::BootstrapError::Cancelled) => return,
         Err(err) => crate::agent::init::exit_on_config_error(err),
     };
-    crate::agent::app::apply_otel_config(&auth_manager, &agent_config.codel_com_config);
     let agent = Rc::new(
         MvpAgent::new(
             gateway,
@@ -547,7 +546,7 @@ fn setup_acp_connection(
     });
     tokio::task::spawn_local(
         GatewayReceiver::new(conn_gw_rx, conn)
-            .with_on_meta(codel_otel::span_from_meta_traceparent)
+            .with_on_meta(codel_trace_context::span_from_meta_traceparent)
             .run(),
     );
 

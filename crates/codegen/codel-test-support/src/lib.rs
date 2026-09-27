@@ -22,7 +22,6 @@
 //! - [`spawn_counting_server`]: Connection-counting HTTP/1.1 server for wire/pooling tests
 //! - [`uds_proxy::UdsProxy`]: Frame-aware fault-injection proxy for leader IPC sockets (unix)
 //! - [`ResourceSnapshot`]: RSS/threads/fds sampling for soak tests
-//! - [`MockOtelServer`]: OTLP/HTTP collector recording the shell's exported logs, metrics, and traces
 //! - [`OtelRecorder`]: the mock OTLP server's log, which a test reads and waits on, or fills from its own OTLP transport
 //! - [`MockManagedConfigServer`]: mock of the server the managed configuration supervisor fetches policy from
 //! - [`ManagedPolicy`]: the configuration row the mock server serves for one principal, signed by a [`TestSigningKey`] or not
@@ -73,7 +72,6 @@ pub mod leader;
 mod loopback;
 #[cfg(test)]
 mod loopback_client;
-mod mock_otel_server;
 pub mod mock_server;
 mod mock_server_tls;
 mod model_reply;
@@ -123,7 +121,6 @@ pub use inference_override::{InferenceExpectation, InferenceRequestMatcher};
 pub use inference_request::{DEFAULT_MODEL, InferenceEndpoint};
 #[cfg(unix)]
 pub use leader::LeaderFixture;
-pub use mock_otel_server::MockOtelServer;
 pub use mock_server::{
     FeedbackPost, GatedUploadProxy, MockCanAdministerTeam, MockInferenceServer, MockModelEntry,
     MockUserTeam, ScriptedResponse, SseEvent, StorageUpload,

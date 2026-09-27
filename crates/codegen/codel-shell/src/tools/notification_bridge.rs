@@ -445,7 +445,7 @@ async fn handle_notification(
                         client_identifier: None,
                         screen_mode: None,
                         verbatim: true,
-                        traceparent: codel_otel::current_traceparent(),
+                        traceparent: codel_trace_context::current_traceparent(),
                         json_schema: None,
                         send_now: false,
                         tool_overrides_update: None,

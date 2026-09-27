@@ -1292,7 +1292,7 @@ pub(crate) async fn spawn_session_actor(
             .await;
         let memory_retrieval_mode = configured_memory_retrieval_mode(memory_config.as_ref());
         let harness_metrics = if !startup_hints.is_subagent
-            && (telemetry_enabled || codel_logging::external::is_active())
+            && telemetry_enabled
         {
             let plugin_names = plugin_registry
                 .as_ref()
@@ -2703,7 +2703,7 @@ pub(crate) async fn spawn_session_on_thread(
                             .as_object()
                             .cloned()
                             .unwrap_or_default();
-                        let span = codel_otel::span_from_meta_traceparent(&meta);
+                        let span = codel_trace_context::span_from_meta_traceparent(&meta);
                         span.entered()
                     });
                 let session_spawn_span = match spawn_trace {

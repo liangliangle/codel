@@ -14,9 +14,7 @@ pub(crate) use codel_logging::unified_log;
 pub use codel_tracing_macros::{teprintln, timed, tprintln};
 pub mod agent;
 pub mod auth {
-    pub use crate::credential_factory::{
-        build_bootstrap_otel_credentials, build_storage_client_for_proxy,
-    };
+    pub use crate::credential_factory::build_storage_client_for_proxy;
     pub use codel_login::*;
 }
 pub mod builtin;

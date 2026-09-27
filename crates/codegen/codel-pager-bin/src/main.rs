@@ -236,26 +236,8 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
         .with(codel_logging::sampling_log::layer())
         .with(codel_logging::span_profile::layer(app_entrypoint))
         .with(codel_logging::instrumentation::layer())
-        .with(codel_logging::hooks_log::layer())
-        .with(codel_logging::otel_layer::build_otel_layer(
-            codel_logging::otel_layer::OtelClientInfo {
-                client_name: "codel-pager",
-                client_version: codel_version::VERSION,
-                service_version: env!("VERSION_WITH_COMMIT"),
-                app_entrypoint,
-            },
-            codel_shell::agent::init::build_default_otel_layer_config(),
-        ));
+        .with(codel_logging::hooks_log::layer());
     codel_logging::debug_log::install_firehose(registry, app_entrypoint);
-    codel_logging::external::init(
-        codel_shell::agent::config::resolve_external_otel_config(
-            codel_logging::external::config::ExternalClientInfo {
-                service_version: env!("VERSION_WITH_COMMIT").to_owned(),
-                client_version: codel_version::VERSION.to_owned(),
-                app_entrypoint: app_entrypoint.to_owned(),
-            },
-        ),
-    );
 }
 /// `codel setup`: rendering and exit codes only; fetch logic lives in `codel_shell::managed_config`.
 /// `json` prints the served configuration instead of installing it.
@@ -1174,7 +1156,6 @@ fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
         let _exit_span = tracing::info_span!("teardown.process_exit").entered();
         codel_logging::sentry::flush_on_shutdown();
     }
-    codel_logging::otel_layer::shutdown_otel();
     codel_logging::debug_log::flush();
     finalize_span_profile();
     std::process::exit(exit_code);
@@ -1229,14 +1210,7 @@ async fn run_agent_command(
     update_config: &UpdateConfig,
 ) -> Result<()> {
     let signal_flush = agent_command::spawn_signal_flush();
-    if matches!(
-        agent_args.mode,
-        Some(AgentCmd::Leader(_) | AgentCmd::Stdio | AgentCmd::Headless(_) | AgentCmd::Serve(_))
-    ) {
-        codel_shell::agent::app::suppress_otel();
-    }
     init_tracing_simple("agent");
-    let _otel_guard = codel_logging::otel_layer::otel_guard();
     codel_logging::instrumentation::install_panic_hook();
     if trust {
         use codel_workspace::folder_trust::{grant_folder_trust, report_cli_trust_grant};
@@ -2056,9 +2030,6 @@ fn main() {
     }
     #[cfg(all(feature = "jemalloc", unix))]
     install_heap_profile_hooks();
-    unsafe {
-        codel_shell::agent::external_otel_pin::strip_conflicting_process_env();
-    }
     let args = configure_process_env(args).unwrap_or_else(|err| {
         eprintln!("codel: {err:#}");
         std::process::exit(1);
@@ -2248,7 +2219,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             }
             Command::Setup { json } => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 run_setup_command(json).await;
                 return Ok(());
             }
@@ -2258,24 +2228,20 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             }
             Command::Plugin(plugin_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 return codel_pager::plugin_cmd::run(plugin_args).await;
             }
             Command::Models => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 let agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return codel_pager::models::list_available_models(&agent_config).await;
             }
             Command::Leader(leader_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 return run_leader_mgmt(leader_args).await;
             }
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 let agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 let result = codel_pager::worktree_cmd::run(worktree_args, &agent_config).await;
@@ -2283,29 +2249,24 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             }
             Command::DiskUsage(disk_usage_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 return codel_pager::disk_usage_cmd::run(disk_usage_args);
             }
             Command::Workspace(workspace_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 return run_workspace_mgmt(workspace_args).await;
             }
             Command::Sessions(sessions_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 let agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return codel_pager::sessions_cmd::run(sessions_args, &agent_config).await;
             }
             Command::Usage(usage_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 return codel_pager::usage_cmd::run(usage_args);
             }
             Command::Share(ref share_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 let agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return codel_pager::share_cmd::run(share_args, &agent_config).await;
@@ -2316,7 +2277,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             }
             Command::Trace(trace_args) => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 let mut agent_config = codel_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 if !trace_args.local {
@@ -2353,7 +2313,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 auto,
             } => {
                 init_tracing_simple("cli");
-                let _otel_guard = codel_logging::otel_layer::otel_guard();
                 let channel_switch = get_channel_switch(alpha, stable, enterprise);
                 let trigger = resolve_update_trigger(trigger.as_deref(), auto);
                 return run_update_command(
@@ -2395,7 +2354,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             anyhow::bail!("--memory-flush without a prompt requires --resume/-r or --continue/-c");
         }
         init_tracing_simple(HEADLESS_ENTRYPOINT);
-        let _otel_guard = codel_logging::otel_layer::otel_guard();
         enforce_version_policy_or_exit();
         let launch_yolo = codel_shell::util::config::effective_yolo_for_launch(
             args.yolo,
@@ -2459,7 +2417,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
         .await;
     }
     enforce_version_policy_or_exit();
-    let _otel_guard = codel_logging::otel_layer::otel_guard();
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));

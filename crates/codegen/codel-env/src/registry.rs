@@ -6,8 +6,6 @@ pub const FIRST_PARTY_CREDENTIAL_ENV_VARS: &[&str] = &[
     "CODEL_CODE_CODEL_API_KEY",
     "CODEL_EXTRA_AUTH_KEY",
     "CODEL_TRACE_UPLOAD_CREDENTIALS_FILE",
-    "OTEL_EXPORTER_OTLP_HEADERS",
-    "CODEL_INTERNAL_OTLP_HEADERS",
 ];
 
 fn parse_bool(value: &str) -> Option<bool> {

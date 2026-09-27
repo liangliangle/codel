@@ -154,7 +154,7 @@ where
                 prompt_id = %prompt_id,
                 session_id = %session_id,
             );
-            codel_otel::link_span_to_current(&root);
+            codel_trace_context::link_span_to_current(&root);
             root
         }
     };

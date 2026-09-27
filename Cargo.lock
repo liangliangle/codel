@@ -2350,8 +2350,8 @@ dependencies = [
  "codel-circuit-breaker",
  "codel-dirs",
  "codel-extra-ca",
- "codel-otel",
  "codel-test-utils",
+ "codel-trace-context",
  "codel-version",
  "dirs 5.0.1",
  "dunce",
@@ -2543,10 +2543,6 @@ name = "codel-logging"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "axum",
- "axum-server",
- "base64 0.22.1",
  "chrono",
  "codel-auth",
  "codel-config",
@@ -2554,12 +2550,11 @@ dependencies = [
  "codel-env",
  "codel-extra-ca",
  "codel-file-utils",
- "codel-otel",
  "codel-sampler",
  "codel-secrets",
  "codel-session-events",
- "codel-test-support",
  "codel-token-estimation",
+ "codel-trace-context",
  "codel-tty-utils",
  "codel-version",
  "ctor",
@@ -2568,28 +2563,18 @@ dependencies = [
  "http 1.4.0",
  "mid",
  "obfstr",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-proto",
- "opentelemetry_sdk",
  "parking_lot",
- "prost",
- "rcgen",
  "reqwest 0.12.24",
- "rustls",
  "serde",
  "serde_json",
  "strum 0.27.2",
  "tempfile",
  "tokio",
- "tokio-stream",
- "tonic",
  "tracing",
  "tracing-appender",
  "tracing-chrome",
  "tracing-subscriber",
  "uuid",
- "webpki-roots 0.26.11",
  "whoami",
 ]
 
@@ -2795,31 +2780,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codel-otel"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "codel-auth",
- "codel-env",
- "codel-extra-ca",
- "codel-secrets",
- "http 1.4.0",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "parking_lot",
- "reqwest 0.12.24",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "codel-pager"
 version = "1.0.41"
 dependencies = [
@@ -2855,7 +2815,6 @@ dependencies = [
  "codel-markdown",
  "codel-mcp",
  "codel-mermaid",
- "codel-otel",
  "codel-pager-diff",
  "codel-pager-render",
  "codel-plugin-marketplace",
@@ -2870,6 +2829,7 @@ dependencies = [
  "codel-token-estimation",
  "codel-tool-types",
  "codel-tools",
+ "codel-trace-context",
  "codel-tty-utils",
  "codel-update",
  "codel-version",
@@ -3368,7 +3328,6 @@ dependencies = [
  "codel-memory",
  "codel-message-delivery-core",
  "codel-models",
- "codel-otel",
  "codel-paths",
  "codel-plugin-marketplace",
  "codel-prompt-queue",
@@ -3390,6 +3349,7 @@ dependencies = [
  "codel-tool-runtime",
  "codel-tool-types",
  "codel-tools",
+ "codel-trace-context",
  "codel-tracing-macros",
  "codel-tty-utils",
  "codel-version",
@@ -3693,7 +3653,6 @@ dependencies = [
  "codel-image",
  "codel-interjection-core",
  "codel-message-delivery-core",
- "codel-otel",
  "codel-sandbox",
  "codel-test-support",
  "codel-test-utils",
@@ -3702,6 +3661,7 @@ dependencies = [
  "codel-tool-runtime",
  "codel-tool-types",
  "codel-tools-api",
+ "codel-trace-context",
  "codel-tty-utils",
  "codel-version",
  "codel-workspace-types",
@@ -3773,6 +3733,23 @@ dependencies = [
  "serde_json",
  "tonic",
  "tonic-prost",
+]
+
+[[package]]
+name = "codel-trace-context"
+version = "0.1.0"
+dependencies = [
+ "codel-env",
+ "codel-secrets",
+ "http 1.4.0",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "reqwest 0.12.24",
+ "serde_json",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -9392,7 +9369,6 @@ dependencies = [
  "rand 0.9.5",
  "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
 ]
 
 [[package]]
