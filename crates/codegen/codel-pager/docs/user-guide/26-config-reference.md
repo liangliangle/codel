@@ -781,11 +781,9 @@ was introduced upstream in that window and is renamed to the `CODEL_` prefix
 Variables whose names contain `TEST`, `_CHILD`, `_PROBE`, `FUZZ`, `SWEEP` or
 `BENCH` are internal harness knobs and are not part of the user surface.
 
-### Removed in this fork
+### 遥测在本分支无效
 
-`CODEL_ENABLE_TELEMETRY`, `CODEL_TELEMETRY_*`, `CODEL_TRACE_UPLOAD*`,
-`CODEL_EXTERNAL_OTEL`, `CODEL_OTEL_*`, `CODEL_INTERNAL_OTLP_*`,
-`CODEL_WORKSPACE_OTLP_ENDPOINT`, `CODEL_MEMTRACE*`, `CODEL_LOG_SAMPLING`,
-`CODEL_ERROR_REPORTING` and the `GROK_*`/`XAI_*` spellings of all of the above
-do not exist here: the fork ships no telemetry transport, so nothing reads or
-honours them.
+本分支不发送任何遥测：产品事件不再上报（Mixpanel/Sentry 通道已移除），外部 OTEL/OTLP
+导出通道未启用。`CODEL_TELEMETRY`、`CODEL_TELEMETRY_*`、`CODEL_TRACE_UPLOAD*`、
+`CODEL_EXTERNAL_OTEL`、`CODEL_OTEL_*` 等变量仍会被解析，但不产生任何对外发送；
+`telemetry.*` 段同理。本地日志（`~/.codel/logs/`）不受影响，仍是唯一的诊断来源。
