@@ -257,10 +257,6 @@ pub(crate) fn boot_auth_manager(
         agent_config.codel_com_config.clone(),
         agent_config.endpoints.proxy_url(),
     ));
-    auth_manager.configure_refresher(
-        agent_config.codel_com_config.auth_provider_command.clone(),
-        None,
-    );
     auth_manager
 }
 
@@ -271,18 +267,8 @@ pub async fn spawn_codel_shell(
     memory_config: Option<codel_shell::config::MemoryConfig>,
 ) -> Result<SpawnedAgent> {
     let auth_manager = boot_auth_manager(&codel_home(), &agent_config);
-    // Pause token refreshes across system sleep so an OIDC refresh can't
-    // straddle a suspend (which can revoke the refresh token and force
-    // re-login). No-op where the OS listener is unavailable.
-    auth_manager.start_system_power_listener();
-
     let agent_cancel = cancel.child_token();
 
-    // With no leader, this process owns token refresh; a turn parked on the uncharged 401 path never drives refreshes
-    // itself and relies on this loop. On `agent_cancel` so the loop dies with the agent instead of surviving a failed
-    // spawn.
-    auth_manager.start_proactive_refresh(agent_cancel.child_token());
-    auth_manager.prewarm_auth_refresh(agent_cancel.child_token());
     // Dropping a token does not cancel it: a `?` exit below creates no SpawnedAgent and no AgentShutdownGuard, so this
     // guard cancels the prewarm and the refresh loop instead.
     let cancel_auth_tasks_unless_spawned = agent_cancel.clone().drop_guard();

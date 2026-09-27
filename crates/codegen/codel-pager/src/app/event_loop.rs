@@ -1278,7 +1278,7 @@ pub(crate) async fn run(
         if connection.auth_methods.is_empty() {
             app.auth_state = super::app_view::AuthState::Pending {
                 error: Some(
-                    codel_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
+                    codel_shell::agent::auth_method::AUTH_ERROR_API_KEY.to_string(),
                 ),
             };
             vec![]

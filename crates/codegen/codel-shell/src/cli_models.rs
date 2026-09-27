@@ -24,7 +24,7 @@ impl AuthStatus {
         }
         if agent_config.create_auth_manager().current().is_some() {
             let backend = codel_login::backend::ActiveAuthBackend::default();
-            return Self::LoggedIn(codel_login::backend::AuthBackend::login_host(
+            return Self::LoggedIn(codel_login::backend::AuthBackend::credential_host(
                 &backend,
                 &agent_config.codel_com_config,
             ));

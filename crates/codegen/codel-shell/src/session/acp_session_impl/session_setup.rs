@@ -12,18 +12,12 @@ impl SessionActor {
     }
     pub(super) fn to_acp_error(&self, err: SamplingError) -> acp::Error {
         if err.is_auth_error() {
-            let method_guard = self.auth_method_id.load();
-            let method = method_guard.as_deref();
-            let msg = if method.is_some_and(crate::agent::auth_method::is_session_based_method) {
-                crate::agent::auth_method::AUTH_ERROR_SESSION_EXPIRED
-            } else {
-                crate::agent::auth_method::AUTH_ERROR_API_KEY
-            };
+            let msg = crate::agent::auth_method::AUTH_ERROR_API_KEY;
             codel_logging::unified_log::error(
                 "sampling auth error",
                 Some(self.session_info.id.0.as_ref()),
                 Some(serde_json::json!({
-                    "method": method.map(|id| id.0.as_ref()),
+                    "method": crate::agent::auth_method::CODEL_API_KEY_METHOD_ID,
                     "error": format!("{err}"),
                 })),
             );

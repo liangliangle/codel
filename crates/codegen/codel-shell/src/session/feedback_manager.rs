@@ -821,13 +821,9 @@ impl FeedbackManager {
         let Some(client) = &self.feedback_client else {
             return SyncAuthOutcome::Unrecoverable;
         };
-        if !client.has_token_refresher() {
-            return SyncAuthOutcome::Unrecoverable;
-        }
-        // 1. Wait briefly for the proactive refresh or main-path recovery to land a fresh token before driving our own ServerRejected.
-        let refreshed = client.wait_for_token_refresh(Duration::from_secs(3)).await;
-        // 2. If nobody refreshed, drive our own recovery as fallback.
-        if !refreshed && !client.try_refresh_credentials().await {
+        // An API key cannot be refreshed, so a 401 is either a verdict from the
+        // server or a transient tick.
+        if !client.try_refresh_credentials().await {
             if client.is_auth_permanently_failed() {
                 return SyncAuthOutcome::Permanent;
             }
@@ -1173,10 +1169,8 @@ where
     match op().await {
         Ok(v) => Ok(v),
         Err(e) if is_auth_error(&e) => {
-            // 1. Wait briefly for the proactive refresh or main-path recovery to land a fresh token.
-            let refreshed = client.wait_for_token_refresh(Duration::from_secs(3)).await;
-            // 2. If nobody refreshed, drive our own recovery as fallback.
-            if refreshed || client.try_refresh_credentials().await {
+            // An API key cannot be refreshed; retry only if the credential changed.
+            if client.try_refresh_credentials().await {
                 op().await
             } else {
                 Err(e)

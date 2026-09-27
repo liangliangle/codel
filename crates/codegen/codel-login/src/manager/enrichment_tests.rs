@@ -6,7 +6,6 @@ const USER_A: &str = "a@acme.test";
 
 fn team_auth() -> CodelAuth {
     CodelAuth {
-        oidc_issuer: Some(crate::CODEL_OAUTH2_ISSUER.to_owned()),
         email: Some(USER_A.to_owned()),
         principal_type: Some(crate::model::TEAM_PRINCIPAL_TYPE.to_owned()),
         team_id: Some("team-a".to_owned()),

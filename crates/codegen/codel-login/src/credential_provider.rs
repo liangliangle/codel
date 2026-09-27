@@ -78,11 +78,9 @@ impl codel_sampler::BearerResolver for WireValidBearerResolver {
                 None,
                 Some(serde_json::json!({ "budget_ms": budget.as_millis() as u64 })),
             );
-            if budget.is_zero() {
-                // Less than the stamp margin left: no time to mint, and `current_bearer` still carries the bearer
-                return;
-            }
-            let _ = self.0.silent_refresh_within(budget).await;
+            // Nothing to mint: an API key does not expire, and `current_bearer`
+            // still carries the configured key.
+            let _ = budget;
         })
     }
 }
@@ -441,13 +439,8 @@ pub fn wire_otel_auth_manager(auth_manager: Arc<AuthManager>) {
 /// Email for the external OTEL stream. OIDC/gateway only; never API-key,
 /// WebLogin, or a blank address. Callers must also skip deployment-key
 /// snapshots — this helper only inspects `CodelAuth`.
-pub fn oauth_gateway_email_from_auth(auth: &crate::CodelAuth) -> Option<String> {
-    match auth.auth_mode {
-        crate::AuthMode::Oidc | crate::AuthMode::External => {
-            auth.email.clone().filter(|e| !e.is_empty())
-        }
-        crate::AuthMode::ApiKey | crate::AuthMode::WebLogin => None,
-    }
+pub fn oauth_gateway_email_from_auth(_auth: &crate::CodelAuth) -> Option<String> {
+    None
 }
 
 /// Push the current identity attributes (never the token) to the external OTEL stream. Reads the same `CredentialSnapshot` the internal layer stamps per export, so both pipelines attribute identically.
@@ -605,92 +598,7 @@ mod tests {
         );
     }
 
-    /// Refresher that mints a long-lived token and counts its runs.
-    struct MintingRefresher(std::sync::atomic::AtomicU32);
 
-    #[async_trait::async_trait]
-    impl crate::refresh::TokenRefresher for MintingRefresher {
-        async fn refresh(
-            &self,
-            _reason: crate::manager::RefreshReason,
-        ) -> crate::refresh::RefreshOutcome {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            crate::refresh::RefreshOutcome::success(CodelAuth {
-                auth_mode: crate::AuthMode::Oidc,
-                refresh_token: Some("rt".into()),
-                ..make_auth("pre-send-minted", ChronoDuration::hours(1))
-            })
-        }
-    }
-
-    /// The pre-send hook closes the pre-flight→send gap.
-    /// A bearer that is still wire-valid but would not outlive the send is refreshed before `current_bearer` reads it, so the request never leaves with no credential.
-    /// A bearer with life to spare is left alone: no refresher run per request.
-    #[tokio::test]
-    async fn prepare_for_send_refreshes_a_bearer_that_would_not_outlive_the_send() {
-        use codel_sampler::BearerResolver;
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(
-            &dir,
-            Some(CodelAuth {
-                auth_mode: crate::AuthMode::Oidc,
-                refresh_token: Some("rt".into()),
-                ..make_auth("dying-token", ChronoDuration::seconds(2))
-            }),
-        );
-        let refresher = Arc::new(MintingRefresher(std::sync::atomic::AtomicU32::new(0)));
-        mgr.set_refresher(refresher.clone());
-        let resolver = WireValidBearerResolver(mgr.clone());
-
-        resolver.prepare_for_send().await;
-        assert_eq!(
-            refresher.0.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "a bearer inside the send horizon must be refreshed before the send"
-        );
-        assert_eq!(
-            resolver.current_bearer().as_deref(),
-            Some("pre-send-minted"),
-            "the request carries the renewed bearer"
-        );
-
-        // Plenty of life left: the hook is a cheap no-op.
-        resolver.prepare_for_send().await;
-        assert_eq!(
-            refresher.0.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "a sendable bearer must not trigger a refresh per request"
-        );
-    }
-
-    /// With no wire-valid bearer the hook does nothing: the pre-flight already refreshed and the 401 arm owns the tokenless case.
-    /// A refresh per send here would let parked, deliberately credential-less resubmits drive the escalation budget.
-    #[tokio::test]
-    async fn prepare_for_send_is_a_no_op_without_a_wire_valid_bearer() {
-        use codel_sampler::BearerResolver;
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(
-            &dir,
-            Some(CodelAuth {
-                auth_mode: crate::AuthMode::Oidc,
-                refresh_token: Some("rt".into()),
-                ..make_auth("hard-expired", ChronoDuration::hours(-1))
-            }),
-        );
-        let refresher = Arc::new(MintingRefresher(std::sync::atomic::AtomicU32::new(0)));
-        mgr.set_refresher(refresher.clone());
-        let resolver = WireValidBearerResolver(mgr.clone());
-
-        resolver.prepare_for_send().await;
-        assert_eq!(
-            refresher.0.load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "a hard-expired credential is the pre-flight's and the 401 arm's problem, not the send hook's"
-        );
-        assert_eq!(resolver.current_bearer(), None);
-    }
 
     /// The wait is bounded by the cached bearer's remaining life, so a slow mint cannot outlive the token it was protecting.
     #[test]
@@ -713,67 +621,6 @@ mod tests {
         );
     }
 
-    /// Refresher that never answers inside any budget.
-    struct StallingRefresher;
-
-    #[async_trait::async_trait]
-    impl crate::refresh::TokenRefresher for StallingRefresher {
-        async fn refresh(
-            &self,
-            _reason: crate::manager::RefreshReason,
-        ) -> crate::refresh::RefreshOutcome {
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            crate::refresh::RefreshOutcome::transient("never")
-        }
-    }
-
-    /// A stalled mint must not consume the bearer it was called to replace.
-    /// The wait ends while the old bearer is still wire-valid, and the request goes out with it rather than with nothing.
-    #[tokio::test(start_paused = true)]
-    async fn prepare_for_send_gives_up_before_the_cached_bearer_dies() {
-        use codel_sampler::BearerResolver;
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(
-            &dir,
-            Some(CodelAuth {
-                auth_mode: crate::AuthMode::Oidc,
-                refresh_token: Some("rt".into()),
-                ..make_auth("dying-token", ChronoDuration::seconds(4))
-            }),
-        );
-        mgr.set_refresher(Arc::new(StallingRefresher));
-        let resolver = WireValidBearerResolver(mgr.clone());
-
-        let started = tokio::time::Instant::now();
-        resolver.prepare_for_send().await;
-        let waited = started.elapsed();
-        assert!(
-            waited <= std::time::Duration::from_millis(3500),
-            "the wait must end before the 4 s bearer dies (waited {waited:?})"
-        );
-        assert_eq!(
-            resolver.current_bearer().as_deref(),
-            Some("dying-token"),
-            "the still wire-valid bearer rides the wire instead of nothing"
-        );
-    }
-
-    /// `apply()` and `snapshot()` agree when the in-memory token is fresh: what snapshot reports is what goes on the wire.
-    #[test]
-    fn apply_and_snapshot_agree_on_live_token() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(
-            &dir,
-            Some(make_auth("live-token", ChronoDuration::hours(1))),
-        );
-        let provider = ShellAuthCredentialProvider::new(mgr, None, None);
-
-        let snap = provider.snapshot();
-        assert_eq!(snap.token.as_deref(), Some("live-token"));
-        assert_eq!(snap.user_id.as_deref(), Some("test-user"));
-    }
 
     /// During the 5-minute pre-refresh buffer window, `auth_manager.current()` returns `None`, but the token is still valid at the proxy. The manager treats such a token as expiring soon for refresh scheduling.
     /// The provider must fall back to `expired_auth()` so the in-memory token gets sent instead of nothing. Sending nothing here caused the bulk of the `POST /v1/storage` 401s observed in production.
@@ -817,63 +664,6 @@ mod tests {
         assert!(snap.user_id.is_none());
     }
 
-    /// 401 recovery routes through `unauthorized_recovery` and actually runs the configured refresher.
-    #[tokio::test]
-    async fn refresh_after_unauthorized_drives_recovery_state_machine() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = Arc::new(AuthManager::new(
-            dir.path(),
-            crate::CodelComConfig::default(),
-        ));
-        mgr.hot_swap(CodelAuth {
-            key: "stale".into(),
-            auth_mode: crate::AuthMode::Oidc,
-            create_time: chrono::Utc::now() - ChronoDuration::hours(2),
-            user_id: "u".into(),
-            refresh_token: Some("rt-stale".into()),
-            expires_at: Some(chrono::Utc::now() - ChronoDuration::hours(1)),
-            ..CodelAuth::test_default()
-        });
-
-        struct OkRefresher {
-            calls: Arc<std::sync::atomic::AtomicU32>,
-        }
-        #[async_trait::async_trait]
-        impl crate::refresh::TokenRefresher for OkRefresher {
-            async fn refresh(
-                &self,
-                _r: crate::manager::RefreshReason,
-            ) -> crate::refresh::RefreshOutcome {
-                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                crate::refresh::RefreshOutcome::Success(Box::new(CodelAuth {
-                    key: "fresh".into(),
-                    auth_mode: crate::AuthMode::Oidc,
-                    create_time: chrono::Utc::now(),
-                    user_id: "u".into(),
-                    refresh_token: Some("rt-new".into()),
-                    expires_at: Some(chrono::Utc::now() + ChronoDuration::hours(1)),
-                    ..CodelAuth::test_default()
-                }))
-            }
-        }
-        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        mgr.set_refresher(Arc::new(OkRefresher {
-            calls: calls.clone(),
-        }));
-
-        let provider = ShellAuthCredentialProvider::new(mgr.clone(), None, None);
-        assert!(provider.refresh_after_unauthorized().await);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(mgr.current().unwrap().key, "fresh");
-
-        // Verify snapshot picks up the refreshed token, keeping the wire and the cache in agreement
-        assert_eq!(
-            provider.snapshot().token.as_deref(),
-            Some("fresh"),
-            "snapshot must reflect refreshed token for subsequent apply() calls"
-        );
-    }
 
     #[test]
     fn embedding_session_credentials_scopes_to_first_party() {
@@ -1041,72 +831,6 @@ mod tests {
         );
     }
 
-    /// `refresh_after_unauthorized` drives recovery when live.
-    #[tokio::test]
-    async fn otel_live_refresh_after_unauthorized_drives_recovery() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let bootstrap_dir = tempfile::tempdir().unwrap();
-        let bootstrap_mgr = make_manager(&bootstrap_dir, None);
-        let provider = OtelAuthCredentialProvider::new(bootstrap_mgr);
-
-        let live_dir = tempfile::tempdir().unwrap();
-        let live_mgr = Arc::new(AuthManager::new(
-            live_dir.path(),
-            crate::CodelComConfig::default(),
-        ));
-        live_mgr.hot_swap(CodelAuth {
-            key: "stale".into(),
-            auth_mode: crate::AuthMode::Oidc,
-            create_time: chrono::Utc::now() - ChronoDuration::hours(2),
-            user_id: "u".into(),
-            refresh_token: Some("rt-stale".into()),
-            expires_at: Some(chrono::Utc::now() - ChronoDuration::hours(1)),
-            ..CodelAuth::test_default()
-        });
-
-        struct OkRefresher;
-        #[async_trait::async_trait]
-        impl crate::refresh::TokenRefresher for OkRefresher {
-            async fn refresh(
-                &self,
-                _r: crate::manager::RefreshReason,
-            ) -> crate::refresh::RefreshOutcome {
-                crate::refresh::RefreshOutcome::Success(Box::new(CodelAuth {
-                    key: "refreshed".into(),
-                    auth_mode: crate::AuthMode::Oidc,
-                    create_time: chrono::Utc::now(),
-                    user_id: "u".into(),
-                    refresh_token: Some("rt-new".into()),
-                    expires_at: Some(chrono::Utc::now() + ChronoDuration::hours(1)),
-                    ..CodelAuth::test_default()
-                }))
-            }
-        }
-        live_mgr.set_refresher(Arc::new(OkRefresher));
-
-        provider.set_live(live_mgr.clone());
-        assert!(
-            provider.refresh_after_unauthorized().await,
-            "live mode must drive recovery"
-        );
-        assert_eq!(live_mgr.current().unwrap().key, "refreshed");
-    }
-
-    #[test]
-    fn otel_deployment_key_sent_when_no_oidc_token() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(&dir, None); // no OIDC token
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        provider.set_deployment_key("enterprise-key".to_string());
-
-        let snap = provider.snapshot();
-        assert_eq!(
-            snap.token.as_deref(),
-            Some("enterprise-key"),
-            "deployment key must be sent when no OIDC token exists"
-        );
-    }
 
     #[test]
     fn otel_deployment_key_wins_over_oidc_token() {
@@ -1178,80 +902,6 @@ mod tests {
         );
     }
 
-    /// A token inside the early-invalidation buffer is still accepted by the proxy. The buffer is a client-side pre-refresh margin, not a wire expiry, and the sender puts the token on the wire via `current_or_expired()`.
-    /// The export gate must therefore keep it usable even though `current()` reports `None`. Regression test: exports used to stop during the buffer window.
-    #[test]
-    fn has_usable_credential_true_inside_early_invalidation_buffer() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(
-            &dir,
-            Some(make_auth("buffered", ChronoDuration::minutes(4))),
-        );
-        assert!(
-            mgr.current().is_none(),
-            "4-min token sits inside the pinned 5-min buffer, so current() is None"
-        );
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        assert!(
-            provider.has_usable_credential(),
-            "a buffer-window token is still wire-valid, so the gate keeps it usable"
-        );
-    }
 
-    /// A configured `deployment_key` always wins over the AuthManager-resolved user token, matching the precedence in `CodelAuthCredentials::apply`.
-    /// The snapshot must report the deployment key so the 401-attribution prefix matches the wire bytes.
-    #[test]
-    fn deployment_key_wins_over_resolved_user_token() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(
-            &dir,
-            Some(make_auth("user-token", ChronoDuration::hours(1))),
-        );
-        let provider =
-            ShellAuthCredentialProvider::new(mgr, Some("deployment-key-12345".to_string()), None);
 
-        let snap = provider.snapshot();
-        assert_eq!(snap.token.as_deref(), Some("deployment-key-12345"));
-        // The deployment-key path returns a `None` user_id per the CredentialSnapshot contract; only user-token resolution carries a user_id
-        assert!(snap.user_id.is_none());
-    }
-
-    #[test]
-    fn oauth_gateway_email_oidc_and_external_only() {
-        let oidc = CodelAuth {
-            auth_mode: crate::AuthMode::Oidc,
-            email: Some("alice@corp.example".into()),
-            ..CodelAuth::test_default()
-        };
-        assert_eq!(
-            oauth_gateway_email_from_auth(&oidc).as_deref(),
-            Some("alice@corp.example")
-        );
-
-        let external = CodelAuth {
-            auth_mode: crate::AuthMode::External,
-            email: Some("bob@gateway.example".into()),
-            ..CodelAuth::test_default()
-        };
-        assert_eq!(
-            oauth_gateway_email_from_auth(&external).as_deref(),
-            Some("bob@gateway.example")
-        );
-
-        let blank = CodelAuth {
-            auth_mode: crate::AuthMode::Oidc,
-            email: Some(String::new()),
-            ..CodelAuth::test_default()
-        };
-        assert_eq!(oauth_gateway_email_from_auth(&blank), None);
-
-        let api = CodelAuth {
-            auth_mode: crate::AuthMode::ApiKey,
-            email: Some("should-not-export@example.com".into()),
-            ..CodelAuth::test_default()
-        };
-        assert_eq!(oauth_gateway_email_from_auth(&api), None);
-    }
 }

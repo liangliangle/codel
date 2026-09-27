@@ -112,13 +112,6 @@ impl FeedbackClient {
     }
 
     /// Whether this client can refresh credentials on a 401.
-    /// Requires both an attached `AuthManager` and a `TokenRefresher`; a static deployment-key session returns false.
-    pub(crate) fn has_token_refresher(&self) -> bool {
-        self.credentials
-            .auth_manager()
-            .is_some_and(|am| am.has_refresher_attached())
-    }
-
     /// Rebuild the middleware-wrapped client from the current credentials.
     /// Called by each builder method so the middleware sees the final state.
     fn rebuild_middleware(&mut self) {
@@ -193,15 +186,6 @@ impl FeedbackClient {
     }
 
     /// Wait for another consumer (proactive refresh, main request path) to refresh the token.
-    /// Returns `true` if the token changed within the timeout.
-    /// Background consumers call this before driving their own `ServerRejected` recovery to avoid amplifying 401 bursts.
-    pub(crate) async fn wait_for_token_refresh(&self, timeout: std::time::Duration) -> bool {
-        let Some(manager) = self.credentials.auth_manager() else {
-            return false;
-        };
-        manager.wait_for_token_refresh(timeout).await
-    }
-
     /// `true` iff the attached `AuthManager` holds a permanent-failure verdict from the IdP that has not aged out.
     pub(crate) fn is_auth_permanently_failed(&self) -> bool {
         self.credentials

@@ -664,9 +664,6 @@ pub struct MvpAgent {
     pub(crate) models_manager: crate::agent::remote_config::ModelsManager,
     /// codel.dev chat-product catalog (`/rest/modes`) for chat sessions; distinct from `models_manager` (the build `/v1/models` catalog).
     pub(crate) chat_modes: crate::agent::chat_modes::ChatModesManager,
-    /// Single-flight guard for interactive login (device poll / loopback wait).
-    /// Owns the active attempt's cancel token and its code/url channels; a new `authenticate` or `codel/auth/cancel` cancels the prior attempt.
-    pub(crate) interactive_auth: codel_login::single_flight::AuthSingleFlight,
     /// Client type. LEADER-SAFE(init-once): set once during `initialize` from `_meta.clientIdentifier` (injected by the IPC server in leader mode).
     /// **Known limitation (leader mode)**: with multiple concurrent clients, the last `initialize` call wins and overwrites the global value.
     /// Per-client telemetry attribution (AB experiments, analytics, worktree-pool eligibility) then uses whichever client most recently initialized. That may not be the client that owns the current session. This is considered acceptable because `client_type` is used only for non-safety-critical telemetry and experiment filtering.
@@ -1033,29 +1030,9 @@ struct AuthRequestMeta {
     headless: bool,
     #[serde(default)]
     reauth: bool,
-    /// `--oauth`: force loopback.
-    /// The only transport override sent over ACP (loopback is the default; device is opt-in via env/config).
-    #[serde(default)]
-    use_oauth: bool,
-    /// When true, skip cached tokens and force the interactive browser login flow.
-    /// Used by the `/login` slash command for mid-session re-auth.
-    /// Unlike `reauth`, this does NOT clear existing credentials: if the user abandons the browser flow, the current session continues.
-    #[serde(default)]
-    force_interactive: bool,
-    /// Pager auth `request_seq` for this attempt.
-    /// Scopes `codel/auth/cancel` so a delayed cancel cannot tear down a successor login.
-    #[serde(default)]
-    request_seq: Option<u64>,
 }
 impl AuthRequestMeta {
-    /// `--oauth` forces loopback; otherwise default (loopback).
-    fn login_override(&self) -> codel_login::LoginTransportOverride {
-        if self.use_oauth {
-            codel_login::LoginTransportOverride::ForceLoopback
-        } else {
-            codel_login::LoginTransportOverride::None
-        }
-    }
+    /// Parse the per-request auth metadata the client sends with `authenticate`.
     fn from_json(meta: Option<&acp::Meta>) -> Self {
         meta.cloned()
             .and_then(|value| {
@@ -1569,40 +1546,8 @@ impl MvpAgent {
                 );
                 false
             } else {
-                match self
-                        .auth_manager
-                        .refresh_chain_bounded(
-                            codel_login::token_type::TokenType::OidcSession,
-                            codel_login::manager::RefreshReason::ServerRejected,
-                            codel_login::manager::BEST_EFFORT_REFRESH_TIMEOUT,
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            tracing::info!("post-unblock: JWT refresh_chain succeeded");
-                            codel_logging::unified_log::info(
-                                "paywall_check_jwt_refreshed",
-                                None,
-                                Some(serde_json::json!({ "user_id": user_id })),
-                            );
-                            true
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "post-unblock: JWT refresh failed, user may need to re-login on next restart");
-                            codel_logging::unified_log::warn(
-                                "paywall_check_error",
-                                None,
-                                Some(
-                                    serde_json::json!({
-                                "user_id": user_id,
-                                "kind": "post_unblock_refresh_failed",
-                                "detail": e.to_string(),
-                            }),
-                                ),
-                            );
-                            false
-                        }
-                    }
+                // An API key cannot be refreshed, so the tier claim cannot change.
+                false
             };
             if self.tier_recheck_identity_changed(&user_id, canonical_user_id.as_deref())
             {
@@ -2342,12 +2287,9 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
                         if already_current {
                             return Ok(());
                         }
-                        let refresh_result = auth_manager
-                            .refresh_chain(
-                                codel_login::token_type::TokenType::OidcSession,
-                                codel_login::manager::RefreshReason::ServerRejected,
-                            )
-                            .await;
+                        // An API key cannot be refreshed; the claim is whatever
+                        // the configured key carries.
+                        let refresh_result: Result<(), String> = Ok(());
                         let jwt_claim = auth_manager
                             .current_or_expired()
                             .and_then(|auth| jwt_tier_claim(&auth.key));

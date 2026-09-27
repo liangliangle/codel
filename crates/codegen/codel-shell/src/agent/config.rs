@@ -1,6 +1,6 @@
 use crate::agent::auth_method::ModelByok;
 use crate::agent::model_providers::{
-    ModelProviderConfig, auth_config_issues, model_provider_auth_name, parse_model_providers,
+    ModelProviderConfig, parse_model_providers,
 };
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::{config::StorageMode, sampling::ApiBackend, tools::config::ShellToolsetConfig};
@@ -12,7 +12,7 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
 use codel_agent::prompt::skills::SkillsConfig;
-use codel_login::{AuthManager, CodelComConfig, OidcAuthConfig};
+use codel_login::{AuthManager, CodelComConfig};
 use codel_sampler::{AuthScheme, SamplerConfig};
 use codel_sampling_types::{
     CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
@@ -1226,9 +1226,6 @@ pub struct Config {
     /// Not a `CodelComConfig` field (that struct is public and exhaustive); passed into the login flow by callers.
     #[serde(skip)]
     pub login_device_flow: Option<bool>,
-    /// `[auth_provider.<name>]` tables, populated by [`parse_auth_providers`] from trusted config layers only.
-    #[serde(skip)]
-    pub auth_providers: IndexMap<String, codel_config_types::AuthProviderConfig>,
     #[serde(skip)]
     pub model_providers: IndexMap<String, ModelProviderConfig>,
     /// Written by the client via `config_toml_edit`; absorbed so it isn't flagged as an unrecognized key.
@@ -1609,7 +1606,6 @@ impl Default for Config {
             config_warnings: Vec::new(),
             codel_com_config: CodelComConfig::default(),
             login_device_flow: None,
-            auth_providers: IndexMap::new(),
             model_providers: IndexMap::new(),
             hints: None,
             ui: UiConfig::default(),
@@ -1751,71 +1747,6 @@ fn is_non_serde_config_path(path: &str) -> bool {
             .strip_prefix("features.")
             .is_some_and(|key| UNMIRRORED_BOOLEAN_FEATURES.contains(&key))
 }
-/// Parse `[auth_provider.<name>]` tables leniently: a malformed entry warns (surfaced by `codel inspect`) and is skipped.
-/// Skipping fails closed for the models referencing the entry instead of failing the whole config.
-fn parse_auth_providers(
-    raw_config: &toml::Value,
-) -> (
-    IndexMap<String, codel_config_types::AuthProviderConfig>,
-    Vec<super::config_model_override_parse::ConfigWarning>,
-) {
-    use super::config_model_override_parse::{ConfigWarning, ConfigWarningKind};
-    let mut providers = IndexMap::new();
-    let mut warnings = Vec::new();
-    let Some(section) = raw_config.get("auth_provider") else {
-        return (providers, warnings);
-    };
-    let Some(table) = section.as_table() else {
-        warnings.push(ConfigWarning::auth_provider_section(
-            ConfigWarningKind::NotATable,
-            format!(
-                "`auth_provider` must be a table of [auth_provider.<name>] entries, got {}; \
-                 all auth providers ignored",
-                section.type_str()
-            ),
-        ));
-        return (providers, warnings);
-    };
-    for (name, value) in table {
-        let mut unknown = Vec::new();
-        match serde_ignored::deserialize::<_, _, codel_config_types::AuthProviderConfig>(
-            value.clone(),
-            |path| unknown.push(path.to_string()),
-        ) {
-            Ok(provider) => {
-                for key in unknown {
-                    warnings.push(ConfigWarning::auth_provider(
-                        name,
-                        Some(key.as_str()),
-                        ConfigWarningKind::UnknownField,
-                        "unrecognized key; field ignored".to_owned(),
-                    ));
-                }
-                for (field, kind, reason) in auth_config_issues(&provider) {
-                    warnings.push(ConfigWarning::auth_provider(
-                        name,
-                        Some(field),
-                        kind,
-                        reason,
-                    ));
-                }
-                providers.insert(name.clone(), provider);
-            }
-            Err(error) => {
-                warnings.push(ConfigWarning::auth_provider(
-                    name,
-                    None,
-                    ConfigWarningKind::InvalidValue,
-                    format!(
-                        "failed to parse ({error}); provider skipped, referencing models \
-                         resolve with no credential"
-                    ),
-                ));
-            }
-        }
-    }
-    (providers, warnings)
-}
 impl Config {
     /// Reject invalid glob patterns in the model-filter lists at config load, so a typo fails loudly instead of silently changing availability.
     pub(crate) fn validate_model_filters(&self) -> Result<(), String> {
@@ -1879,7 +1810,6 @@ impl Config {
             models: config_models,
             warnings: config_warnings,
         } = super::config_model_override_parse::parse_model_overrides(raw_config);
-        let (mut auth_providers, auth_provider_warnings) = parse_auth_providers(raw_config);
         let (model_providers, mut model_provider_warnings) = parse_model_providers(raw_config);
         for (model_id, model) in &config_models {
             let Some(cert_dir) = model.mtls_cert_dir.as_deref() else {
@@ -1913,27 +1843,6 @@ impl Config {
                 ));
             }
         }
-        for (id, provider) in &model_providers {
-            if let Some(auth) = &provider.auth {
-                let synthetic = model_provider_auth_name(id);
-                if auth_providers.contains_key(&synthetic) {
-                    model_provider_warnings
-                        .push(
-                            super::config_model_override_parse::ConfigWarning::model_provider(
-                                id,
-                                Some("auth"),
-                                super::config_model_override_parse::ConfigWarningKind::ConflictingFields,
-                                format!(
-                                "inline auth overwrites a hand-written \
-                                 [auth_provider.\"{synthetic}\"]; the `model_provider:` prefix is \
-                                 a reserved namespace"
-                            ),
-                            ),
-                        );
-                }
-                auth_providers.insert(synthetic, auth.clone());
-            }
-        }
         let mut base = toml::Value::try_from(Self::default()).map_err(|e| e.to_string())?;
         if let toml::Value::Table(ref mut t) = base {
             t.remove("model");
@@ -1959,7 +1868,6 @@ impl Config {
         config.mcp_servers = parsed_mcp_servers.into_iter().collect();
         config.config_models = config_models;
         config.config_warnings = config_warnings;
-        config.auth_providers = auth_providers;
         config.model_providers = model_providers;
         for spec in FEATURES {
             let Some(&value) = config.features.entries.flags.get(spec.key) else {
@@ -1967,7 +1875,6 @@ impl Config {
             };
             config.feature_values.insert(spec.id, value);
         }
-        config.config_warnings.extend(auth_provider_warnings);
         config.config_warnings.extend(model_provider_warnings);
         unrecognized_keys.sort();
         for key in unrecognized_keys {
@@ -1979,33 +1886,12 @@ impl Config {
                 ),
             );
         }
-        let declared_provider_names: std::collections::HashSet<&str> = raw_config
-            .get("auth_provider")
-            .and_then(toml::Value::as_table)
-            .map(|t| t.keys().map(String::as_str).collect())
-            .unwrap_or_default();
         let declared_model_provider_names: std::collections::HashSet<&str> = raw_config
             .get("model_providers")
             .and_then(toml::Value::as_table)
             .map(|t| t.keys().map(String::as_str).collect())
             .unwrap_or_default();
         for (model_key, model) in &config.config_models {
-            if let Some(ref name) = model.auth_provider
-                && !config.auth_providers.contains_key(name)
-                && !declared_provider_names.contains(name.as_str())
-            {
-                config.config_warnings.push(
-                    super::config_model_override_parse::ConfigWarning::model(
-                        model_key,
-                        Some("auth_provider"),
-                        super::config_model_override_parse::ConfigWarningKind::InvalidValue,
-                        format!(
-                            "references [auth_provider.{name}], which is not defined; \
-                             the model resolves with no provider credential"
-                        ),
-                    ),
-                );
-            }
             if let Some(ref id) = model.model_provider
                 && !config.model_providers.contains_key(id)
                 && !declared_model_provider_names.contains(id.as_str())
@@ -2024,19 +1910,25 @@ impl Config {
                 );
             }
         }
-        for (id, provider) in &config.model_providers {
-            if let Some(ref name) = provider.auth_provider
-                && !config.auth_providers.contains_key(name)
-                && !declared_provider_names.contains(name.as_str())
+        let declared_model_provider_names: std::collections::HashSet<&str> = raw_config
+            .get("model_providers")
+            .and_then(toml::Value::as_table)
+            .map(|t| t.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        for (model_key, model) in &config.config_models {
+            if let Some(ref id) = model.model_provider
+                && !config.model_providers.contains_key(id)
+                && !declared_model_provider_names.contains(id.as_str())
             {
                 config.config_warnings.push(
-                    super::config_model_override_parse::ConfigWarning::model_provider(
-                        id,
-                        Some("auth_provider"),
+                    super::config_model_override_parse::ConfigWarning::model(
+                        model_key,
+                        Some("model_provider"),
                         super::config_model_override_parse::ConfigWarningKind::InvalidValue,
                         format!(
-                            "references [auth_provider.{name}], which is not defined; \
-                             inheriting models fail closed with no provider credential"
+                            "references [model_providers.{id}], which is not defined; \
+                             provider defaults are not applied — the model uses its own \
+                             credential if set, otherwise fails closed on a custom endpoint"
                         ),
                     ),
                 );
@@ -2061,12 +1953,6 @@ impl Config {
             );
         }
         super::config_model_override_parse::log_config_warnings(&config.config_warnings);
-        if config.codel_com_config.oidc.is_none() {
-            config.codel_com_config.oidc = OidcAuthConfig::from_env();
-        }
-        if config.codel_com_config.oidc.is_none() && config.codel_com_config.oauth2.is_none() {
-            config.codel_com_config.oauth2 = codel_login::OAuth2ProviderConfig::from_env();
-        }
         config.login_device_flow = match raw_config
             .get("codel_com_config")
             .and_then(toml::Value::as_table)
@@ -2318,11 +2204,6 @@ impl Config {
         if let Some(mode) = env_telemetry_mode("CODEL_TELEMETRY_ENABLED") {
             self.features.telemetry = Some(mode);
         }
-        self.codel_com_config.force_login_team_uuid = codel_login::resolve_force_login_team(
-            force_login_team_from_requirements(),
-            codel_login::force_login_team_from_env(),
-            self.codel_com_config.force_login_team_uuid.take(),
-        );
     }
     /// Whether product analytics may run. Every product analytics check calls this.
     pub fn product_analytics_enabled(&self, auth: Option<&codel_login::CodelAuth>) -> bool {
@@ -3398,41 +3279,16 @@ pub(crate) fn resolve_model_list(
                 .api_base_url
                 .as_deref()
                 .is_some_and(|url| !crate::util::is_codel_api_bearer_url(url));
-        if let Some(pid) = model_override.model_provider.as_deref()
-            && entry.auth_provider.is_none()
-            && session_bearer_unsafe
-        {
-            entry.auth_provider = Some(codel_login::AuthProviderRef::fail_closed(format!(
-                "model_provider:{pid} (fail-closed)"
-            )));
-        }
         tracing::debug!(
             model_key = %key,
             base_url = %entry.info.base_url,
             has_api_key = entry.api_key.is_some(),
             env_key = ?entry.env_key,
-            auth_provider = entry.auth_provider.as_ref().map(|p| p.name.as_str()),
             model_provider = model_override.model_provider.as_deref(),
             had_base,
             "config model override applied"
         );
         resolved.insert(key.clone(), entry);
-    }
-    for (key, entry) in resolved.iter_mut() {
-        if let Some(ref mut provider) = entry.auth_provider {
-            if provider.is_fail_closed() {
-                continue;
-            }
-            let config = cfg.auth_providers.get(&provider.name);
-            if config.is_none() {
-                tracing::debug!(
-                    model_key = %key,
-                    provider = %provider.name,
-                    "provider ref has no trusted config; failing closed with an empty command"
-                );
-            }
-            provider.attach_trusted_config(config);
-        }
     }
     {
         let default_cw = DEFAULT_CONTEXT_WINDOW;
@@ -4089,15 +3945,10 @@ impl ConfigModelOverride {
         if self.env_key.is_some() {
             entry.env_key.clone_from(&self.env_key);
         }
-        if let Some(ref name) = self.auth_provider {
-            entry.auth_provider = Some(codel_login::AuthProviderRef::unresolved(name.clone()));
-        }
         if self.api_base_url.is_some() {
             entry.api_base_url.clone_from(&self.api_base_url);
         }
-        if self.supported_in_api.is_none()
-            && (self.api_key.is_some() || self.env_key.is_some() || self.auth_provider.is_some())
-        {
+        if self.supported_in_api.is_none() && (self.api_key.is_some() || self.env_key.is_some()) {
             entry.info.supported_in_api = true;
         }
         entry
@@ -4353,10 +4204,6 @@ pub struct ModelEntry {
     pub mtls_cert_dir: Option<PathBuf>,
     pub api_key: Option<String>,
     pub env_key: Option<EnvKeys>,
-    /// Named credential helper (`[model.<id>] auth_provider = "<name>"`), resolved against `[auth_provider.<name>]` by `resolve_model_list`.
-    /// Config-file models only: the built-in catalog never carries one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_provider: Option<codel_login::AuthProviderRef>,
     /// When set, `base_url` is used for session auth, `api_base_url` for API-key auth.
     pub api_base_url: Option<String>,
 }
@@ -4370,7 +4217,6 @@ impl ModelEntry {
             mtls_cert_dir: None,
             api_key: None,
             env_key: None,
-            auth_provider: None,
             api_base_url: None,
         }
     }
@@ -4383,7 +4229,6 @@ impl ModelEntry {
             mtls_cert_dir: None,
             api_key: entry.api_key.clone(),
             env_key: entry.env_key.clone(),
-            auth_provider: None,
             api_base_url: entry.api_base_url.clone(),
         }
     }
@@ -4393,19 +4238,10 @@ impl ModelEntry {
     pub(crate) fn own_credential(&self) -> Option<String> {
         first_own_credential(self.api_key.as_deref(), self.env_key.as_ref())
     }
-    /// The provider governing this model's bearer: `None` when a static `api_key`/`env_key` resolves.
-    /// The turn paths consult this, so a shadowed provider never runs.
-    pub(crate) fn effective_auth_provider(&self) -> Option<&codel_login::AuthProviderRef> {
-        if self.own_credential().is_some() {
-            return None;
-        }
-        self.auth_provider.as_ref()
-    }
-    /// `true` when the model has a non-empty `api_key`, an `env_key` that resolves to a non-empty value, or a named auth provider.
+    /// `true` when the model has a non-empty `api_key` or an `env_key` that resolves to a non-empty value.
     /// Probes `std::env::var` at call time: result is not stable across env changes.
-    /// Never executes a provider command.
     pub(crate) fn has_own_credentials(&self) -> bool {
-        self.own_credential().is_some() || self.auth_provider.is_some()
+        self.own_credential().is_some()
     }
 }
 impl std::ops::Deref for ModelEntry {
@@ -4719,7 +4555,7 @@ pub(crate) fn first_own_credential(
         .map(str::to_owned)
         .or_else(|| env_key.and_then(EnvKeys::resolve_value))
 }
-/// Priority: model api_key/env_key > cached auth-provider token > session token > CODEL_API_KEY.
+/// Priority: model api_key/env_key > session token > CODEL_API_KEY.
 pub(crate) fn resolve_credentials(
     model: &ModelEntry,
     session_key: Option<&str>,
@@ -4728,13 +4564,6 @@ pub(crate) fn resolve_credentials(
     let (api_key, base_url, auth_type) = if let Some(key) = model.own_credential() {
         (
             Some(key),
-            info.base_url.clone(),
-            codel_chat_state::AuthType::ApiKey,
-        )
-    } else if let Some(provider) = model.auth_provider.as_ref() {
-        debug_assert!(model.effective_auth_provider().is_some());
-        (
-            provider.cached_token(),
             info.base_url.clone(),
             codel_chat_state::AuthType::ApiKey,
         )
@@ -4850,34 +4679,22 @@ pub(crate) struct ModelAuthFacts {
     pub byok: ModelByok,
     pub auth_scheme: AuthScheme,
 }
-/// Resolve `model_id` to its auth facts and auth-provider reference from one effective-config load. Both ride the same memo (see `SessionActor::model_auth_memo`).
+/// Resolve `model_id` to its auth facts from one effective-config load, memoized by the session actor.
 /// A load/parse failure yields `byok = Unknown`; a model absent from the catalog yields `NotByok`.
 /// An empty `model_id` (no sampling config yet) yields `Unknown`, not `NotByok`, so the gate isn't activated for an unidentified model.
-pub(crate) fn resolve_model_auth_facts_and_provider(
-    model_id: &str,
-) -> (ModelAuthFacts, Option<codel_login::AuthProviderRef>) {
+pub(crate) fn resolve_model_auth_facts(model_id: &str) -> ModelAuthFacts {
     if model_id.is_empty() {
-        return (
-            ModelAuthFacts {
-                byok: ModelByok::Unknown,
-                auth_scheme: AuthScheme::default(),
-            },
-            None,
-        );
+        return ModelAuthFacts {
+            byok: ModelByok::Unknown,
+            auth_scheme: AuthScheme::default(),
+        };
     }
-    with_resolved_model(model_id, |lookup| {
-        let facts = ModelAuthFacts {
-            byok: byok_from_lookup(&lookup),
-            auth_scheme: match lookup {
-                ModelLookup::Loaded(Some(e)) => e.info().auth_scheme,
-                _ => AuthScheme::default(),
-            },
-        };
-        let provider = match lookup {
-            ModelLookup::Loaded(Some(e)) => e.effective_auth_provider().cloned(),
-            _ => None,
-        };
-        (facts, provider)
+    with_resolved_model(model_id, |lookup| ModelAuthFacts {
+        byok: byok_from_lookup(&lookup),
+        auth_scheme: match lookup {
+            ModelLookup::Loaded(Some(e)) => e.info().auth_scheme,
+            _ => AuthScheme::default(),
+        },
     })
 }
 fn byok_from_lookup(lookup: &ModelLookup) -> ModelByok {
@@ -4936,13 +4753,6 @@ pub(crate) fn resolve_aux_model_sampling_config(
         if sampler.api_key.is_some() {
             return Some(sampler);
         }
-        if entry.effective_auth_provider().is_some() {
-            tracing::warn!(
-                model = %model_id,
-                "aux model uses an auth provider with no cached token; the caller falls back to its session default"
-            );
-            return None;
-        }
     }
     let codel_bearer = session_key
         .map(|s| s.to_owned())
@@ -4996,7 +4806,6 @@ pub(crate) fn resolve_aux_model_sampling_config(
             mtls_cert_dir: None,
             api_key: Some(bearer),
             env_key: None,
-            auth_provider: None,
             api_base_url: None,
         };
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
@@ -5229,7 +5038,6 @@ fn resolve_hidden_default_web_search_sampling_config(
         mtls_cert_dir: None,
         api_key: None,
         env_key: None,
-        auth_provider: None,
         api_base_url: None,
     };
     let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
@@ -5253,13 +5061,6 @@ pub(crate) fn resolve_web_search_sampling_config(
 ) -> Option<SamplerConfig> {
     let resolved = if let Some(entry) = find_model_by_id(models, model_id).cloned() {
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
-        if credentials.api_key.is_none() && entry.effective_auth_provider().is_some() {
-            tracing::warn!(
-                web_search_model = %model_id,
-                "web search model uses an auth provider with no cached token; disabling web search"
-            );
-            return None;
-        }
         Some(sampling_config_for_model(
             &entry,
             credentials,
@@ -5386,14 +5187,6 @@ impl ModelSwitchIncompatibleAgentError {
             self.model_id, self.required_agent_type, self.active_agent_type,
         )
     }
-}
-/// The `force_login_team_uuid` pin from the merged `requirements.toml` / MDM layers; the non-overridable tier in `resolve_force_login_team`.
-/// Read at call time so the clamp holds on config-load paths that build `CodelComConfig` without a separate `apply_requirements` pass.
-/// Shell loads the requirements here and hands auth the parsed value.
-fn force_login_team_from_requirements() -> Option<codel_login::ForceLoginTeam> {
-    codel_login::force_login_team_from_requirements_value(
-        &crate::config::load_merged_requirements()?,
-    )
 }
 #[cfg(test)]
 #[path = "config_tests.rs"]

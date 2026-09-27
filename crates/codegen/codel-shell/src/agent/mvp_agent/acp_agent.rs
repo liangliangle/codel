@@ -11,7 +11,7 @@ use codel_logging::region;
 use codel_logging::region::Parent;
 use codel_logging::startup;
 use tracing::Instrument;
-use codel_login::{CachedTokenState, SilentRefresh};
+
 use crate::upload::trace::PromptMetadataParams;
 use crate::leader::protocol::InternalMethod;
 /// Which `x_search` sub-tools enforce the date cutoff, sent in `initialize`. `x_user_search` and
@@ -312,24 +312,6 @@ impl acp::Agent for MvpAgent {
             .borrow()
             .codel_com_config
             .api_key_auth_disabled();
-        {
-            let cfg = self.cfg.borrow();
-            let gc = &cfg.codel_com_config;
-            if disable_api_key_auth || gc.force_login_team_uuid.is_some() {
-                codel_logging::unified_log::info(
-                    "auth: enterprise login policy active",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "force_login_team_uuid": gc.force_login_team_uuid.as_ref().map(|t| format!("{t:?}")),
-                        "disable_api_key_auth_knob": gc.disable_api_key_auth,
-                        "api_key_auth_disabled": disable_api_key_auth,
-                    }),
-                    ),
-                );
-            }
-        }
-        let preferred_method_early = self.cfg.borrow().codel_com_config.preferred_method;
         let codel_api_base_url = self.cfg.borrow().endpoints.codel_api_base_url.clone();
         let has_byok = self
             .models_manager
@@ -340,7 +322,7 @@ impl acp::Agent for MvpAgent {
             disable_api_key_auth,
             has_byok,
             auth_method::has_codel_api_key_env(),
-            preferred_method_early.is_some(),
+            false,
         ) {
             codel_login::first_party_env_key_allows_advertise(
                     &codel_api_base_url,
@@ -356,90 +338,18 @@ impl acp::Agent for MvpAgent {
             self.models_manager.models().values(),
             first_party_env_ok,
         );
-        let init_token_state = self.auth_manager.cached_token_state();
-        let init_has_current = matches!(init_token_state, CachedTokenState::Valid(_));
-        let init_is_expired = matches!(init_token_state, CachedTokenState::Expired);
-        codel_logging::unified_log::info(
-            "auth init token state",
-            None,
-            Some(
-                serde_json::json!({
-                "has_current": init_has_current,
-                "is_expired": init_is_expired,
-            }),
-            ),
+        // The fork advertises exactly one method, so there is no token state to
+        // recover and no method pin to resolve.
+        tracing::info!(
+            has_external_api_key,
+            "auth: advertising the API-key auth method"
         );
-        let mut has_cached_token = init_has_current;
-        if !init_has_current && init_is_expired {
-            let _t = codel_logging::instrumentation::timer(
-                "startup.acp_initialize.silent_refresh",
-            );
-            let _s = region!("startup.acp_initialize.silent_refresh", Parent::Inherit);
-            has_cached_token = match self.auth_manager.silent_refresh().await {
-                SilentRefresh::Renewed(_) => true,
-                SilentRefresh::Failed(remedy) => remedy.is_self_healing(),
-            };
-        }
-        let (
-            login_label,
-            has_auth_provider,
-            has_enterprise_oidc,
-            enterprise_oidc_issuer,
-        ) = {
-            let cfg = self.cfg.borrow();
-            let issuer = cfg.codel_com_config.oidc.as_ref().map(|o| o.issuer.clone());
-            (
-                cfg.codel_com_config.auth_provider_label.clone(),
-                cfg.codel_com_config.auth_provider_command.is_some(),
-                cfg.codel_com_config.oidc.is_some(),
-                issuer,
-            )
-        };
-        if has_enterprise_oidc {
-            let issuer = enterprise_oidc_issuer
-                .as_deref()
-                .expect(
-                    "enterprise_oidc_issuer must be Some when has_enterprise_oidc is true",
-                );
-            tracing::info!(
-                issuer = %issuer,
-                "auth: advertising enterprise OIDC auth method",
-            );
-            codel_logging::unified_log::info(
-                "auth: advertising enterprise OIDC auth method",
-                None,
-                Some(serde_json::json!({ "issuer": issuer })),
-            );
-        } else {
-            tracing::info!(
-                label = ?login_label,
-                has_auth_provider,
-                "auth: advertising codel.dev auth method",
-            );
-        }
-        let preferred_method = preferred_method_early;
-        let has_external_api_key = match preferred_method {
-            Some(codel_login::PreferredAuthMethod::Oidc) => false,
-            _ => has_external_api_key,
-        };
-        let has_cached_token = match preferred_method {
-            Some(codel_login::PreferredAuthMethod::ApiKey) => false,
-            _ => has_cached_token,
-        };
         let built = {
             let _t = codel_logging::instrumentation::timer(
                 "startup.acp_initialize.auth_methods",
             );
             let _s = region!("startup.acp_initialize.auth_methods", Parent::Inherit);
-            auth_method::build_auth_methods(auth_method::AuthMethodsBuildInputs {
-                has_external_api_key,
-                has_cached_token,
-                has_enterprise_oidc,
-                enterprise_oidc_issuer: enterprise_oidc_issuer.as_deref(),
-                login_label: login_label.as_deref(),
-                has_auth_provider_command: has_auth_provider,
-                preferred_method,
-            })
+            auth_method::build_auth_methods(has_external_api_key)
         };
         let auth_methods = built.methods;
         codel_logging::unified_log::info(
@@ -452,10 +362,6 @@ impl acp::Agent for MvpAgent {
                 "has_external_api_key": has_external_api_key,
                 "first_party_env_api_key_ok": first_party_env_ok,
                 "disable_api_key_auth": disable_api_key_auth,
-                "has_cached_token": has_cached_token,
-                "has_enterprise_oidc": has_enterprise_oidc,
-                "init_has_current": init_has_current,
-                "init_is_expired": init_is_expired,
                 "auth_mode": self.auth_manager.current().map(|a| format!("{:?}", a.auth_mode)),
                 "methods": auth_methods.iter().map(|m| m.id().0.as_ref()).collect::<Vec<_>>(),
                 "default_auth_method_id": built.default_auth_method_id.as_ref().map(|id| id.0.as_ref()),
@@ -486,7 +392,6 @@ impl acp::Agent for MvpAgent {
                     serde_json::json!({
                     "default_auth_method_id": default_id.0.as_ref(),
                     "has_external_api_key": has_external_api_key,
-                    "has_cached_token": has_cached_token,
                     "methods_first": auth_methods.first().map(|m| m.id().0.as_ref()),
                     "methods_count": auth_methods.len(),
                 }),
@@ -609,30 +514,6 @@ impl acp::Agent for MvpAgent {
             None,
             Some(serde_json::json!({"method": arguments.method_id.0.as_ref()})),
         );
-        if let Some(preferred) = self.cfg.borrow().codel_com_config.preferred_method {
-            let kind = auth_method::AuthMethodKind::from_id(&arguments.method_id);
-            let allowed = match preferred {
-                codel_login::PreferredAuthMethod::ApiKey => kind.is_api_key(),
-                codel_login::PreferredAuthMethod::Oidc => kind.is_session_based(),
-            };
-            if !allowed {
-                let msg = match preferred {
-                    codel_login::PreferredAuthMethod::ApiKey => {
-                        auth_method::PREFERRED_API_KEY_UNAVAILABLE
-                    }
-                    codel_login::PreferredAuthMethod::Oidc => {
-                        "preferred_method=oidc; API-key auth is not allowed."
-                    }
-                };
-                emit_login_span(
-                    false,
-                    arguments.method_id.0.as_ref(),
-                    None,
-                    Some("preferred_method_mismatch"),
-                );
-                return Err(acp::Error::auth_required().data(msg));
-            }
-        }
         match arguments.method_id.0.as_ref() {
             auth_method::CODEL_API_KEY_METHOD_ID => {
                 if self.cfg.borrow().codel_com_config.api_key_auth_disabled() {
@@ -685,265 +566,12 @@ impl acp::Agent for MvpAgent {
                 });
                 Ok(Default::default())
             }
-            auth_method::CACHED_TOKEN_AUTH_METHOD_ID => {
-                let auth_meta = AuthRequestMeta::from_json(arguments.meta.as_ref());
-                if auth_meta.force_interactive {
-                    return self
-                        .authenticate(
-                            acp::AuthenticateRequest::new(
-                                    acp::AuthMethodId::new(auth_method::OIDC_METHOD_ID),
-                                )
-                                .meta(arguments.meta),
-                        )
-                        .await;
-                }
-                let current_auth = self.auth_manager.current();
-                let has_current = current_auth.is_some();
-                let is_expired = self.auth_manager.is_expired();
-                let is_legacy = current_auth
-                    .as_ref()
-                    .is_some_and(|a| a.auth_mode == codel_login::AuthMode::WebLogin);
-                let check_payload = serde_json::json!({
-                    "has_current": has_current,
-                    "is_expired": is_expired,
-                    "is_legacy": is_legacy,
-                });
-                codel_logging::unified_log::info(
-                    "auth cached_token check",
-                    None,
-                    Some(check_payload),
-                );
-                let token_state = self.auth_manager.cached_token_state();
-                let was_expired = matches!(token_state, CachedTokenState::Expired);
-                let resolved = match token_state {
-                    CachedTokenState::Valid(auth) => Some(*auth),
-                    CachedTokenState::Missing => None,
-                    CachedTokenState::Expired => {
-                        match self.auth_manager.silent_refresh().await {
-                            SilentRefresh::Renewed(auth) => Some(*auth),
-                            SilentRefresh::Failed(remedy) if remedy.is_self_healing() => {
-                                self.auth_manager.current_or_expired()
-                            }
-                            SilentRefresh::Failed(_) => None,
-                        }
-                    }
-                };
-                let Some(auth) = resolved else {
-                    let message = if was_expired {
-                        "Session expired, re-authentication required"
-                    } else {
-                        "No cached auth token found"
-                    };
-                    tracing::info!(%message, "cached_token missing/expired, falling through");
-                    codel_logging::unified_log::warn(
-                        "auth cached_token fallthrough",
-                        None,
-                        Some(serde_json::json!({ "reason": message })),
-                    );
-                    return self
-                        .authenticate_after_cached_token_unavailable(arguments)
-                        .await;
-                };
-                if auth.auth_mode == codel_login::AuthMode::WebLogin {
-                    tracing::info!("auth: rejecting legacy WebLogin token");
-                    codel_logging::unified_log::warn(
-                        "auth cached_token legacy rejected",
-                        None,
-                        Some(
-                            serde_json::json!({ "auth_mode": format!("{:?}", auth.auth_mode) }),
-                        ),
-                    );
-                    self.auth_manager.clear_in_memory();
-                    if let Err(e) = self
-                        .auth_manager
-                        .remove_scope(codel_login::LEGACY_AUTH_SCOPE)
-                    {
-                        tracing::warn!(error = ?e, "auth: failed to remove legacy scope during WebLogin rejection (non-fatal)");
-                    }
-                    return self
-                        .authenticate_after_cached_token_unavailable(arguments)
-                        .await;
-                }
-                self.enforce_codel_code_access(&auth).await;
-                self.maybe_sync_bundle_in_background(false);
-                let auth_for_settings = auth.clone();
-                {
-                    let mut sampling_config = self.sampling_config.borrow_mut();
-                    sampling_config.api_key = Some(auth.key);
-                    tracing::debug!("auth: cached_token handler set api_key (SessionToken)");
-                    codel_logging::unified_log::debug(
-                        "auth: cached_token handler set api_key (SessionToken)",
-                        None,
-                        None,
-                    );
-                }
-                self.set_auth_method(arguments.method_id.clone());
-                self.ensure_telemetry_client();
-                if crate::agent::chat_modes::process_chat_mode_enabled() {
-                    self.chat_modes.warm_in_background();
-                }
-                let uid = self.auth_manager.current().map(|a| a.user_id);
-                emit_login_span(true, "cached_token", uid.as_deref(), None);
-                log_event(codel_logging::events::Login {
-                    auth_method: "cached_token".to_string(),
-                    user_id: uid,
-                });
-                self.spawn_post_auth_settings(auth_for_settings);
-                Ok(self.auth_response_with_meta())
-            }
-            auth_method::CODEL_COM_METHOD_ID | auth_method::OIDC_METHOD_ID => {
-                let codel_ctx = self.auth_manager.codel_com_config();
-                let auth_meta = AuthRequestMeta::from_json(arguments.meta.as_ref());
-                tracing::info!(
-                    method = arguments.method_id.0.as_ref(),
-                    headless = auth_meta.headless,
-                    reauth = auth_meta.reauth,
-                    use_oauth = auth_meta.use_oauth,
-                    "auth: inline auth flow",
-                );
-                codel_logging::unified_log::info(
-                    "auth: inline auth flow",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "method": arguments.method_id.0.as_ref(),
-                        "headless": auth_meta.headless,
-                        "reauth": auth_meta.reauth,
-                        "use_oauth": auth_meta.use_oauth,
-                    }),
-                    ),
-                );
-                if auth_meta.reauth {
-                    let _ = self.auth_manager.clear();
-                }
-                let cli_oauth = auth_meta.use_oauth.then_some(true);
-                let use_oidc = self.cfg.borrow().resolve_codel_oauth(cli_oauth);
-                tracing::debug!(resolved = use_oidc.value, source = ?use_oidc.source, "auth: method resolved");
-                codel_logging::unified_log::debug(
-                    "auth: method resolved",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "use_oidc": use_oidc.value,
-                        "source": format!("{:?}", use_oidc.source),
-                    }),
-                    ),
-                );
-                let login_override = auth_meta.login_override();
-                let config_device_flow = self.cfg.borrow().login_device_flow;
-                let mut cancelled = false;
-                let client_seq = auth_meta.request_seq;
-                let auth_result = if !auth_meta.headless {
-                    let (url_tx, url_rx) = tokio::sync::oneshot::channel();
-                    let (code_tx, code_rx) = tokio::sync::mpsc::channel(1);
-                    let (cancel, _guard) = self
-                        .interactive_auth
-                        .begin(
-                            Some(
-                                codel_login::single_flight::AttemptChannels::new(
-                                    code_tx,
-                                    url_rx,
-                                ),
-                            ),
-                            client_seq,
-                        );
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => {
-                            cancelled = true;
-                            Err(anyhow::anyhow!("Authentication cancelled"))
-                        }
-                        r = codel_login::run_auth_flow_with_stderr_bridge(
-                            &self.auth_manager,
-                            codel_ctx,
-                            config_device_flow,
-                            codel_login::AuthChannels {
-                                url_tx: Some(url_tx),
-                                code_rx,
-                            },
-                            auth_meta.reauth,
-                            auth_meta.force_interactive,
-                            login_override,
-                        ) => r,
-                    }
-                } else {
-                    let (cancel, _guard) = self.interactive_auth.begin(None, client_seq);
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => {
-                            cancelled = true;
-                            Err(anyhow::anyhow!("Authentication cancelled"))
-                        }
-                        r = codel_login::run_auth_flow(
-                            &self.auth_manager,
-                            codel_ctx,
-                            config_device_flow,
-                            auth_meta.reauth,
-                            None,
-                            None,
-                            None,
-                            login_override,
-                        ) => r,
-                    }
-                };
-                let (auth, _did_auth) = auth_result
-                    .map_err(|e| {
-                        emit_login_span(
-                            false,
-                            arguments.method_id.0.as_ref(),
-                            None,
-                            Some(
-                                if cancelled {
-                                    "login_cancelled"
-                                } else {
-                                    "login_flow_failed"
-                                },
-                            ),
-                        );
-                        let mut err = acp::Error::auth_required();
-                        err.message = e.to_string();
-                        err
-                    })?;
-                {
-                    let mut sampling_config = self.sampling_config.borrow_mut();
-                    sampling_config.api_key = Some(auth.key.clone());
-                    tracing::debug!("auth: codel.dev/oidc handler set api_key (SessionToken)");
-                    codel_logging::unified_log::debug(
-                        "auth: codel.dev/oidc handler set api_key (SessionToken)",
-                        None,
-                        None,
-                    );
-                }
-                self.auth_manager.hot_swap(auth.clone());
-                self.enforce_codel_code_access(&auth).await;
-                self.maybe_sync_bundle_in_background(false);
-                tokio::task::spawn_local(
-                    crate::managed_config::post_login_sync(Some(auth.clone())),
-                );
-                self.set_auth_method(arguments.method_id.clone());
-                self.models_manager.on_auth_changed().await;
-                if crate::agent::chat_modes::process_chat_mode_enabled() {
-                    self.chat_modes.warm_in_background();
-                }
-                emit_login_span(
-                    true,
-                    arguments.method_id.0.as_ref(),
-                    Some(auth.user_id.as_str()),
-                    None,
-                );
-                log_event(codel_logging::events::Login {
-                    auth_method: arguments.method_id.0.as_ref().to_string(),
-                    user_id: Some(auth.user_id.clone()),
-                });
-                self.spawn_post_auth_settings(auth);
-                Ok(self.auth_response_with_meta())
-            }
             _ => {
                 Err(
                     acp::Error::invalid_params()
                         .data(
                             format!(
-                "unsupported auth method: {}",
+                "unsupported auth method: {}; this build authenticates with an API key",
                 arguments.method_id.0
             ),
                         ),

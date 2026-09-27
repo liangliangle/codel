@@ -452,14 +452,7 @@ impl SessionActor {
     }
 
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
-        self.model_auth_state(model_id).0
-    }
-
-    pub(super) fn model_auth_provider(
-        &self,
-        model_id: &str,
-    ) -> Option<codel_login::AuthProviderRef> {
-        self.model_auth_state(model_id).1
+        self.model_auth_state(model_id)
     }
 
     /// Drop the memoized per-model auth state; see [`Self::model_auth_memo`] for why each model/credential chokepoint must call this.
@@ -471,119 +464,29 @@ impl SessionActor {
     fn model_auth_state(
         &self,
         model_id: &str,
-    ) -> (
-        crate::agent::config::ModelAuthFacts,
-        Option<codel_login::AuthProviderRef>,
-    ) {
+    ) -> crate::agent::config::ModelAuthFacts {
         use crate::agent::auth_method::ModelByok;
         use crate::session::acp_session::ModelAuthMemo;
         if let Some(memo) = self.model_auth_memo.borrow().as_ref()
             && memo.model_id == model_id
             && memo.facts.byok != ModelByok::Unknown
         {
-            return (memo.facts, memo.provider.clone());
+            return memo.facts;
         }
-        let (fresh, provider) =
-            crate::agent::config::resolve_model_auth_facts_and_provider(model_id);
+        let fresh = crate::agent::config::resolve_model_auth_facts(model_id);
         if fresh.byok == ModelByok::Unknown {
             if let Some(memo) = self.model_auth_memo.borrow().as_ref()
                 && memo.model_id == model_id
             {
-                return (memo.facts, memo.provider.clone());
+                return memo.facts;
             }
-            return (fresh, provider);
+            return fresh;
         }
         *self.model_auth_memo.borrow_mut() = Some(ModelAuthMemo {
             model_id: model_id.to_string(),
             facts: fresh,
-            provider: provider.clone(),
         });
-        (fresh, provider)
-    }
-
-    /// The single writer of a provider mint/rotation into chat-state credentials.
-    async fn set_chat_api_key(&self, new_key: String) {
-        let mut creds = self.chat_state_handle.get_credentials().await;
-        creds.api_key = Some(new_key);
-        self.chat_state_handle.update_credentials(creds);
-    }
-
-    /// Pre-turn arm for a provider-backed model: mint on a cold cache, re-mint near expiry, and adopt a rotation that chat state missed.
-    /// No-op when `current_key` is already the fresh cached token.
-    async fn refresh_provider_token_pre_turn(
-        &self,
-        provider: &codel_login::AuthProviderRef,
-        current_key: Option<&str>,
-        model_id: &str,
-    ) {
-        match provider.ensure_fresh_token(current_key).await {
-            codel_login::ProviderRefreshOutcome::Rotated(new_key) => {
-                tracing::info!(
-                    model = %model_id,
-                    provider = %provider.name,
-                    cold = current_key.is_none(),
-                    "auth provider token rotated pre-turn"
-                );
-                self.set_chat_api_key(new_key).await;
-            }
-            codel_login::ProviderRefreshOutcome::Unchanged => {}
-            // A genuine mint failure; the 401 arm handles the rejection.
-            codel_login::ProviderRefreshOutcome::MintFailed => {
-                tracing::warn!(
-                    session_id = %self.session_info.id.0,
-                    provider = %provider.name,
-                    model = %model_id,
-                    "auth provider pre-turn refresh failed"
-                );
-                codel_logging::unified_log::warn(
-                    "auth provider pre-turn refresh failed",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "provider": provider.name,
-                        "model": model_id,
-                        "cold": current_key.is_none(),
-                    })),
-                );
-            }
-            // Unusable provider: already warned once, no per-turn breadcrumb.
-            codel_login::ProviderRefreshOutcome::Unusable => {}
-        }
-    }
-
-    /// 401 arm for a provider-backed model: re-run the helper once and resubmit.
-    /// A missing key means the cold mint failed and the request went out unauthenticated, so mint instead.
-    /// Returns `false` when the fresh-mint guard blocked the re-run or the helper failed; the 401 then becomes a terminal error.
-    async fn try_provider_401_recovery(&self, provider: &codel_login::AuthProviderRef) -> bool {
-        let rejected_key = self.chat_state_handle.get_credentials().await.api_key;
-        let recovered = match rejected_key {
-            Some(ref rejected_key) => provider.recover_rejected_token(rejected_key).await,
-            None => provider.ensure_fresh_token(None).await.rotated(),
-        };
-        let Some(new_key) = recovered else {
-            tracing::warn!(
-                session_id = %self.session_info.id.0,
-                provider = %provider.name,
-                "auth recovery: sampler 401, provider re-mint declined or failed"
-            );
-            codel_logging::unified_log::warn(
-                "auth recovery: sampler 401, provider re-mint declined or failed",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({ "provider": provider.name })),
-            );
-            return false;
-        };
-        tracing::info!(
-            session_id = %self.session_info.id.0,
-            provider = %provider.name,
-            "auth recovery: sampler 401, auth provider re-mint, retrying"
-        );
-        codel_logging::unified_log::info(
-            "auth recovery: sampler 401, auth provider re-mint, retrying",
-            Some(self.session_info.id.0.as_ref()),
-            None,
-        );
-        self.set_chat_api_key(new_key).await;
-        true
+        fresh
     }
 
     /// Gate inputs for `model_id` routed to `base_url`.
@@ -1350,21 +1253,12 @@ impl SessionActor {
             .map(|c| (c.model, c.base_url))
             .unwrap_or_default();
 
-        // Provider-backed models recover via arm 4c below
-        // The provider is resolved before the eligibility check so its warnings stay quiet for a 401 that 4c handles
-        let auth_provider =
-            if matches!(error.kind, SamplingErrorKind::Auth) || error.status_code == Some(401) {
-                self.model_auth_provider(&failed_model_id)
-            } else {
-                None
-            };
-
         let auth_recovery_eligible = matches!(error.kind, SamplingErrorKind::Auth) && {
             let gate = self.auth_gate(&failed_model_id, &failed_base_url);
             let eligible = gate.active();
             // Log the Unknown-BYOK decision (eligible or not) so a session still 401ing shows whether refresh fired
             self.log_auth_gate_unknown("handle_sampling_failure", gate, &failed_base_url);
-            if !eligible && auth_provider.is_none() {
+            if !eligible {
                 tracing::warn!(
                     session_id = %self.session_info.id.0,
                     is_session_based = gate.is_session_based,
@@ -1387,19 +1281,8 @@ impl SessionActor {
             eligible
         };
 
-        // A provider-backed model is BYOK, so its gate is inactive and the session arm (4b) can't fire; provider recovery (4c) is exclusive
-        // Assert it so a future gate change trips here, not double-recovers.
-        debug_assert!(
-            !(auth_recovery_eligible && auth_provider.is_some()),
-            "a provider-backed model must not be session-recovery-eligible"
-        );
-
-        // Observability: a 401 that did NOT classify as `Auth` kind bypasses the session arm 4b; only provider-backed models recover (4c)
-        // Make that decision visible; it is otherwise indistinguishable from a failed refresh in the unified log
-        if !matches!(error.kind, SamplingErrorKind::Auth)
-            && error.status_code == Some(401)
-            && auth_provider.is_none()
-        {
+        // Observability: a 401 that did NOT classify as `Auth` kind bypasses the session arm 4b.
+        if !matches!(error.kind, SamplingErrorKind::Auth) && error.status_code == Some(401) {
             codel_logging::unified_log::warn(
                 "auth recovery: sampler 401 not eligible (non-auth error kind)",
                 Some(self.session_info.id.0.as_ref()),
@@ -1453,16 +1336,6 @@ impl SessionActor {
             }
         }
 
-        // 4c. Auth failure or bare 401 on a provider-backed model (gateway 401s can classify under other error kinds).
-        if let Some(ref provider) = auth_provider
-            && self.try_provider_401_recovery(provider).await
-        {
-            self.prepare_sampler_for_turn().await;
-            return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
-                credential: error.credential,
-                store: RecoveredStore::AuthProvider,
-            });
-        }
 
         // 4d. Bounded resubmit, after the auth arms, before the terminal paths.
         //     Budgeted workflow children stay terminal (guards above)
@@ -1542,12 +1415,10 @@ impl SessionActor {
         let auth_mode_str = format!("{auth_mode:?}");
         let client_version = codel_version::VERSION;
 
-        // 5c. Legacy WebLogin auth: always show a deprecation message regardless of error type.
-        if auth_mode == codel_login::AuthMode::WebLogin {
+        // 5c. Removed with the login flows: there is no deprecated WebLogin mode to warn about.
+        if false {
             let msg = format!(
                 "{detailed_message}\n\n\
-                 You are using a deprecated authentication method (WebLogin).\n\
-                 This auth method is no longer supported and will cause errors.\n\n\
                  To fix: run `codel update`, then `codel logout`, then `codel login` to re-authenticate with OAuth2.\n\n\
                  Version: {client_version}"
             );
@@ -1587,12 +1458,6 @@ impl SessionActor {
             let mut msg = format!("{detailed_message}\n");
             msg.push_str(&format!("\n  Model:     {current_model}"));
             msg.push_str(&format!("\n  Auth:      {auth_mode_str}"));
-            if let Some(ref provider) = auth_provider {
-                msg.push_str(&format!(
-                    "\n  Provider:  [auth_provider.{}] (check the provider command and the debug log)",
-                    provider.name
-                ));
-            }
             msg.push_str(&format!("\n  Version:   {client_version}"));
             if available.is_empty() {
                 msg.push_str("\n  Available: (none)");
@@ -2058,17 +1923,6 @@ impl SessionActor {
             .map(|c| c.model)
             .unwrap_or_default();
 
-        // Provider-backed models mint and refresh here so `resolve_credentials` stays cache-only
-        if let Some(provider) = self.model_auth_provider(&current_model_id) {
-            self.refresh_provider_token_pre_turn(
-                &provider,
-                current_key.as_deref(),
-                &current_model_id,
-            )
-            .await;
-            // Provider models carry no session JWT, so skip the JWT refresh below.
-            return;
-        }
 
         let Some(ref key) = current_key else { return };
 

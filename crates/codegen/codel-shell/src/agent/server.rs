@@ -465,7 +465,6 @@ async fn run_persistent_agent(
     let agent_cancel = tokio_util::sync::CancellationToken::new();
     // Covers unwind; the explicit cancel below keeps its teardown ordering.
     let _cancel_on_exit = agent_cancel.clone().drop_guard();
-    auth_manager.start_proactive_refresh(agent_cancel.clone());
     crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
     // Current-thread boot: resolve settings before sync bootstrap.
     let boot = match crate::agent::init::resolve_boot_startup_settings(

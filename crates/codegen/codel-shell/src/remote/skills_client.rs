@@ -438,24 +438,8 @@ impl SkillsClient {
             email: primary.email.clone(),
             untagged_recovery: false,
         }];
-        if primary.auth_mode != AuthMode::Oidc || primary.user_id.is_empty() {
-            return out;
-        }
-        if self.base_url != CODEL_WEB_URL {
-            return out;
-        }
-        let Ok(store) = codel_login::read_auth_json(self.auth.auth_json_path()) else {
-            return out;
-        };
-        out.extend(skills_auth_alt_candidates(
-            primary,
-            store.values().filter(|e| {
-                e.auth_mode != AuthMode::Oidc
-                    && !e.key.is_empty()
-                    && e.key != primary.key
-                    && e.user_id == primary.user_id
-            }),
-        ));
+        // Upstream also looked for an OIDC session under the same user id. The
+        // fork has no session credential, so the primary key is the only candidate.
         out
     }
 

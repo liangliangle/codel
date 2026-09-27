@@ -180,7 +180,6 @@ pub fn bootstrap_with_cancel(
         }
         ModelsManager::from_config(&cfg, prefetched, auth_manager.clone())?
     };
-    models_manager.start_auth_refresh_watcher(auth_manager.refresh_notifier());
     Ok((cfg, models_manager))
 }
 /// Prints the error to the user's real stderr (undoing any TUI redirect) and exits.

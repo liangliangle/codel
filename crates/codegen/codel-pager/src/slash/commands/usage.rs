@@ -40,10 +40,10 @@ fn auth_provider_config_set() -> bool {
     let Ok(cfg) = codel_shell::agent::config::Config::new_from_toml_cfg(&raw) else {
         return false;
     };
-    cfg.codel_com_config
-        .auth_provider_command
-        .as_deref()
-        .is_some_and(|s| !s.trim().is_empty())
+    // Upstream treated a configured auth-provider command as "external auth".
+    // The fork has no provider command.
+    let _ = &cfg;
+    false
 }
 
 impl SlashCommand for UsageCommand {

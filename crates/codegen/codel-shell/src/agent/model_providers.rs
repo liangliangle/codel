@@ -19,53 +19,9 @@ pub struct ModelProviderConfig {
     pub query_params: IndexMap<String, String>,
     /// Header name to environment variable; inherited by models, resolved at client build.
     pub env_http_headers: IndexMap<String, String>,
-    pub auth_provider: Option<String>,
-    pub auth: Option<codel_config_types::AuthProviderConfig>,
     pub context_window: Option<u64>,
     /// Request-body cap of this endpoint; inherited by models that set none of their own.
     pub max_request_bytes: Option<NonZeroU64>,
-}
-
-pub(crate) fn model_provider_auth_name(provider_id: &str) -> String {
-    format!("model_provider:{provider_id}")
-}
-
-pub(crate) fn auth_config_issues(
-    config: &codel_config_types::AuthProviderConfig,
-) -> Vec<(&'static str, ConfigWarningKind, String)> {
-    let mut issues = Vec::new();
-    if !config.is_usable() {
-        issues.push((
-            "command",
-            ConfigWarningKind::InvalidValue,
-            "missing or empty command; models resolve with no credential".to_owned(),
-        ));
-    }
-    let skew = codel_login::PROVIDER_TOKEN_EXPIRY_SKEW_SECS;
-    if config.token_ttl_secs.is_some_and(|ttl| ttl <= skew) {
-        issues.push((
-            "token_ttl_secs",
-            ConfigWarningKind::InvalidValue,
-            format!(
-                "at or below the {skew}s refresh margin; the command will run before every turn"
-            ),
-        ));
-    }
-    if let Some(timeout) = config.timeout_secs
-        && !(1..=codel_login::PROVIDER_TIMEOUT_CEILING_SECS).contains(&timeout)
-    {
-        let ceiling = codel_login::PROVIDER_TIMEOUT_CEILING_SECS;
-        issues.push((
-            "timeout_secs",
-            ConfigWarningKind::InvalidValue,
-            if timeout == 0 {
-                "below the 1 second minimum; clamped to 1".to_owned()
-            } else {
-                format!("above the {ceiling}s maximum; clamped to {ceiling}")
-            },
-        ));
-    }
-    issues
 }
 
 pub(crate) fn parse_model_providers(
@@ -101,57 +57,6 @@ pub(crate) fn parse_model_providers(
                         "unrecognized key; field ignored".to_owned(),
                     ));
                 }
-                if let Some(auth) = &provider.auth {
-                    for (field, kind, reason) in auth_config_issues(auth) {
-                        warnings.push(ConfigWarning::model_provider(
-                            id,
-                            Some(&format!("auth.{field}")),
-                            kind,
-                            reason,
-                        ));
-                    }
-                }
-                let has_helper = provider.auth.is_some() || provider.auth_provider.is_some();
-                let has_static_api_key = provider
-                    .api_key
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|k| !k.is_empty());
-                if has_helper && has_static_api_key {
-                    warnings.push(ConfigWarning::model_provider(
-                        id,
-                        Some("api_key"),
-                        ConfigWarningKind::ConflictingFields,
-                        "api_key shadows this provider's auth helper; the static key always \
-                         takes precedence, so the helper never runs for inheriting models"
-                            .to_owned(),
-                    ));
-                } else if has_helper
-                    && provider
-                        .env_key
-                        .as_ref()
-                        .and_then(EnvKeys::primary)
-                        .is_some()
-                {
-                    warnings.push(ConfigWarning::model_provider(
-                        id,
-                        Some("env_key"),
-                        ConfigWarningKind::ConflictingFields,
-                        "env_key may shadow this provider's auth helper; env_key takes precedence \
-                         when its variable resolves, otherwise the helper runs"
-                            .to_owned(),
-                    ));
-                }
-                if provider.auth_provider.is_some() && provider.auth.is_some() {
-                    warnings.push(ConfigWarning::model_provider(
-                        id,
-                        Some("auth"),
-                        ConfigWarningKind::ConflictingFields,
-                        "inline auth is shadowed by auth_provider on this provider; the referenced \
-                         provider takes precedence, so the inline helper never runs"
-                            .to_owned(),
-                    ));
-                }
                 providers.insert(id.clone(), provider);
             }
             Err(error) => {
@@ -185,8 +90,6 @@ impl ConfigModelOverride {
             extra_headers,
             query_params,
             env_http_headers,
-            auth_provider,
-            auth,
             context_window,
             max_request_bytes,
         } = provider;
@@ -213,14 +116,10 @@ impl ConfigModelOverride {
             .as_deref()
             .is_some_and(|k| !k.trim().is_empty());
         let model_sets_own_env_key = self.env_key.as_ref().and_then(EnvKeys::primary).is_some();
-        let model_has_own_auth =
-            model_sets_own_api_key || model_sets_own_env_key || self.auth_provider.is_some();
+        let model_has_own_auth = model_sets_own_api_key || model_sets_own_env_key;
         if !model_has_own_auth {
             merged.api_key = api_key.clone();
             merged.env_key = env_key.clone();
-            merged.auth_provider = auth_provider
-                .clone()
-                .or_else(|| auth.as_ref().map(|_| model_provider_auth_name(provider_id)));
         }
         merged
     }

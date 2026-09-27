@@ -21,7 +21,6 @@ pub(crate) fn build_prefetched_map(
             mtls_cert_dir: None,
             api_key: None,
             env_key: None,
-            auth_provider: None,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
         };
         map.insert(key, entry);

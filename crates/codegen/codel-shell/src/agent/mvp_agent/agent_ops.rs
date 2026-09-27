@@ -4,7 +4,6 @@
 //! Co-located child of `mvp_agent` (`use super::*`).
 use super::*;
 use crate::sampling::EffortTarget;
-use codel_login::PreferredAuthMethod;
 use crate::upload::trace::PromptMetadataParams;
 use codel_tools::implementations::codel_build::task::backend::SubagentBackend;
 use codel_tty_utils::ProcessScope;
@@ -29,18 +28,14 @@ struct MissingSessionCtx {
     has_session_key: bool,
     has_own_credentials: bool,
     is_session_based_auth: bool,
-    preferred: Option<PreferredAuthMethod>,
 }
 /// Warn only when a missing session is a real failure, not on API-key hosts.
 fn should_warn_missing_session(ctx: MissingSessionCtx) -> bool {
     if ctx.has_session_key || ctx.has_own_credentials {
         return false;
     }
-    match ctx.preferred {
-        Some(PreferredAuthMethod::Oidc) => true,
-        Some(PreferredAuthMethod::ApiKey) => false,
-        None => ctx.is_session_based_auth,
-    }
+    // No advertised method is session-based, so a missing session is never a failure.
+    ctx.is_session_based_auth
 }
 /// The stored fields a settings poll may replace. Snapshotted before the fetch so a full reapply landing mid-fetch makes the poll skip.
 type PolledFields = (
@@ -1431,52 +1426,29 @@ impl MvpAgent {
             codel_chat_state::AuthType::ApiKey
         }
     }
-    /// Fall through to `codel.api_key` if the startup probe still allows it, else `codel.dev`.
-    /// `None` when `preferred_method` is pinned.
-    pub(super) fn cached_token_fallthrough_method_id(
-        &self,
-    ) -> Option<acp::AuthMethodId> {
-        let preferred = self.cfg.borrow().codel_com_config.preferred_method;
-        let id = auth_method::method_id_after_cached_token_unavailable(
-            auth_method::should_advertise_codel_api_key_with_env_ok(
-                self.cfg.borrow().codel_com_config.api_key_auth_disabled(),
-                self.models_manager.models().values(),
-                self.auth_manager.first_party_env_api_key_ok(),
-            ),
-            preferred,
-        )?;
-        Some(acp::AuthMethodId::new(id))
+    /// Fall through to `codel.api_key` when the startup probe still allows it.
+    /// `None` when no API key can be advertised.
+    pub(super) fn cached_token_fallthrough_method_id(&self) -> Option<acp::AuthMethodId> {
+        let advertiseable = auth_method::should_advertise_codel_api_key_with_env_ok(
+            self.cfg.borrow().codel_com_config.api_key_auth_disabled(),
+            self.models_manager.models().values(),
+            self.auth_manager.first_party_env_api_key_ok(),
+        );
+        advertiseable.then(|| acp::AuthMethodId::new(auth_method::CODEL_API_KEY_METHOD_ID))
     }
-    /// Shared exit for missing/expired/legacy `cached_token`: fall through with `use_oauth` only when the target is interactive `codel.dev`.
-    /// When `preferred_method` is pinned, fail instead of falling through.
+    /// Shared exit for a missing/expired `cached_token`: fall through to the API-key method.
     pub(super) async fn authenticate_after_cached_token_unavailable(
         &self,
         arguments: acp::AuthenticateRequest,
     ) -> Result<AuthenticateResponse, acp::Error> {
         let Some(method_id) = self.cached_token_fallthrough_method_id() else {
-            let preferred = self.cfg.borrow().codel_com_config.preferred_method;
-            let msg = match preferred {
-                Some(codel_login::PreferredAuthMethod::ApiKey) => {
-                    auth_method::PREFERRED_API_KEY_UNAVAILABLE
-                }
-                _ => auth_method::PREFERRED_OIDC_UNAVAILABLE,
-            };
-            tracing::info!(%msg, "cached_token unavailable; preferred_method forbids fallthrough");
+            let msg = auth_method::AUTH_ERROR_API_KEY;
             codel_logging::unified_log::warn(
-                "auth cached_token fallthrough blocked by preferred_method",
+                "auth cached_token fallthrough blocked: no API key is available",
                 None,
-                Some(
-                    serde_json::json!({
-                    "preferred_method": preferred.map(|p| format!("{p:?}")),
-                }),
-                ),
+                None,
             );
             return Err(acp::Error::auth_required().data(msg));
-        };
-        let meta = if method_id.0.as_ref() == auth_method::CODEL_COM_METHOD_ID {
-            serde_json::json!({ "use_oauth": true }).as_object().cloned()
-        } else {
-            arguments.meta
         };
         tracing::info!(fallback = %method_id.0, "cached_token fallthrough");
         codel_logging::unified_log::warn(
@@ -1486,11 +1458,11 @@ impl MvpAgent {
         );
         acp::Agent::authenticate(
                 self,
-                acp::AuthenticateRequest::new(method_id).meta(meta),
+                acp::AuthenticateRequest::new(method_id).meta(arguments.meta),
             )
             .await
     }
-    pub(crate) fn deployment_key(&self) -> Option<String> {
+     pub(crate) fn deployment_key(&self) -> Option<String> {
         self.cfg.borrow().endpoints.deployment_key.clone()
     }
     /// Apply settings side effects and push `codel/settings/update` to clients.
@@ -2056,25 +2028,15 @@ impl MvpAgent {
         model: &ModelEntry,
         origin_client: Option<crate::http::OriginClientInfo>,
     ) -> SamplingConfig {
-        let preferred = self.cfg.borrow().codel_com_config.preferred_method;
-        let prefers_oidc = preferred == Some(PreferredAuthMethod::Oidc);
         let is_session_based_auth = self.is_session_based_auth();
-        let session = match preferred {
-            Some(PreferredAuthMethod::ApiKey) => None,
-            _ if is_session_based_auth => self.auth_manager.current_or_expired(),
-            _ => None,
-        };
+        // No advertised method carries a session credential, so the bearer is
+        // always the configured API key.
+        let session: Option<codel_login::CodelAuth> = None;
         let has_session_key = session.is_some();
         let mut credentials = resolve_credentials(
             model,
             session.as_ref().map(|a| a.key.as_str()),
         );
-        if prefers_oidc && !model.has_own_credentials()
-            && credentials.auth_type == codel_chat_state::AuthType::ApiKey
-        {
-            credentials.api_key = None;
-            credentials.auth_type = codel_chat_state::AuthType::SessionToken;
-        }
         crate::agent::config::enforce_disable_api_key_auth(
             &mut credentials,
             self.cfg.borrow().codel_com_config.api_key_auth_disabled(),
@@ -2098,7 +2060,6 @@ impl MvpAgent {
             has_session_key,
             has_own_credentials: model.has_own_credentials(),
             is_session_based_auth,
-            preferred,
         }) {
             tracing::warn!(
                 model = model.info().model.as_str(),
@@ -2402,7 +2363,6 @@ impl MvpAgent {
             auth_method_id: crate::agent::auth_method::new_shared_auth_method_id(None),
             sampling_config: RefCell::new(sampling_config),
             auth_manager,
-            interactive_auth: Default::default(),
             client_type: RefCell::new(ClientType::default()),
             code_nav_enabled: std::cell::Cell::new(false),
             interactive_trust_client: std::cell::Cell::new(false),
@@ -2491,12 +2451,6 @@ impl MvpAgent {
             #[cfg(test)]
             tier_recheck_run_count: std::cell::Cell::new(0),
         };
-        instance
-            .auth_manager
-            .configure_refresher(
-                instance.cfg.borrow().codel_com_config.auth_provider_command.clone(),
-                instance.diagnostic_upload_config(),
-            );
         codel_login::credential_provider::wire_otel_auth_manager(
             instance.auth_manager.clone(),
         );
@@ -3118,56 +3072,6 @@ impl MvpAgent {
             None
         };
         cfg.endpoints.resolve_upload_method(auth_token)
-    }
-    pub(super) fn diagnostic_upload_config(
-        &self,
-    ) -> Option<codel_login::DiagnosticUploader> {
-        self.sync_collection_config_gate();
-        let cfg = self.cfg.borrow();
-        if !cfg.is_trace_upload_enabled() {
-            return None;
-        }
-        let proxy_base_url = cfg.endpoints.resolve_trace_upload_url();
-        let deployment_key = cfg.endpoints.deployment_key.clone();
-        let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
-        let auth_manager = self.auth_manager.clone();
-        let trace_upload_live = self.trace_upload_live.clone();
-        Some(
-            std::sync::Arc::new(move |
-                log_bytes: Vec<u8>,
-                auth_token: String,
-                user_id: String|
-            {
-                let proxy_base_url = proxy_base_url.clone();
-                let deployment_key = deployment_key.clone();
-                let alpha_test_key = alpha_test_key.clone();
-                let auth_manager = auth_manager.clone();
-                let trace_upload_live = trace_upload_live.clone();
-                Box::pin(async move {
-                    if !auth_manager.allows_data_collection()
-                        || !trace_upload_live.load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        tracing::debug!(
-                            "skipping auth-diagnostics upload: data collection disabled"
-                        );
-                        return;
-                    }
-                    let upload_method = crate::session::repo_changes::UploadMethod::Proxy {
-                        proxy_base_url,
-                        user_token: auth_token,
-                        deployment_key,
-                        alpha_test_key,
-                    };
-                    crate::upload::gcs::upload_to_auth_diagnostics(
-                            &log_bytes,
-                            &user_id,
-                            &upload_method,
-                            auth_manager,
-                        )
-                        .await;
-                })
-            }),
-        )
     }
     /// Like `trace_upload_config`, but also returns the reason why uploads are enabled or disabled for structured session events.
     async fn trace_upload_config_with_reason(

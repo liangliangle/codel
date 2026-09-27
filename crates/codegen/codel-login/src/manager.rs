@@ -5,7 +5,6 @@ use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
-use tokio_util::sync::CancellationToken;
 use codel_auth::bearer_suffix;
 #[path = "manager/enrichment.rs"]
 mod enrichment;
@@ -13,20 +12,13 @@ mod enrichment;
 pub(super) mod lock;
 #[path = "manager/remedy.rs"]
 mod remedy;
-pub use remedy::{AuthRemedy, BoundedRefresh, SilentRefresh};
-#[path = "manager/refresh_chain.rs"]
-mod refresh_chain;
-#[path = "manager/sleep_gate.rs"]
-mod sleep_gate;
+pub use remedy::AuthRemedy;
 use super::model::AuthStore;
-#[cfg(test)]
-use super::model::LEGACY_SCOPE;
 #[cfg(test)]
 use super::model::UserInfo;
 use super::model::{
     AuthMode, CodelAuth, early_invalidation, is_expired, is_expired_with_buffer, lookup_auth,
 };
-use super::refresh::{RefreshOutcome, TokenRefresher, resolve_refresh_credential};
 #[cfg(test)]
 use super::storage::read_auth_json_or_empty;
 use super::storage::{
@@ -43,17 +35,8 @@ use chrono::DateTime;
 #[cfg(test)]
 use enrichment::apply_user_info_enrichment;
 use lock::{LockAcquire, try_lock_auth_file_async};
-use sleep_gate::SleepGate;
 use codel_shell_base::util::dual_clock::DualClock;
 use codel_logging::events::ManualAuthSurface;
-/// Why a token refresh is being requested.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefreshReason {
-    /// Pre-request check. Return cached token if still valid.
-    PreRequest,
-    /// Server returned 401/403. Must obtain a different token.
-    ServerRejected,
-}
 /// Why [`AuthManager::try_use_disk_token`] (the single enforcement point for disk-token adoption) declined a disk token.
 /// Naming the decision, instead of collapsing every decline into a bare `None`, lets callers carry it into the structured log.
 /// Tests can assert the exact guard.
@@ -73,23 +56,7 @@ pub enum DiskTokenDecline {
 /// Timeout for acquiring the advisory `auth.json.lock` file lock.
 /// Used by advisory (non-critical) lock sites: `flow.rs`, `enrichment.rs`, `recovery.rs`.
 pub const AUTH_LOCK_TIMEOUT: StdDuration = StdDuration::from_secs(10);
-/// Lock timeout for `refresh_chain`, held across the IdP call to prevent refresh-token reuse. It is sized against the OIDC exchange that actually holds the flock.
-/// One refresh POST gets a 15s HTTP budget with up to two retries (`refresh_retry_policy` in `auth/oidc/protocol.rs`). Discovery and JWKS fetches add to that on a cold cache.
-/// A healthy single attempt fits with margin; a degraded IdP running the full retry ladder does not. A follower that cannot adopt a sibling's mint retries on its caller's backoff rather than pinning startup-path callers behind a slow leader.
-pub const REFRESH_LOCK_TIMEOUT: StdDuration = StdDuration::from_secs(25);
-/// Budget for [`AuthManager::refresh_chain_bounded`] at RPC-path call sites.
-/// It covers one full healthy OIDC token attempt (15s HTTP budget) plus flock acquisition margin, while staying below `REFRESH_LOCK_TIMEOUT`.
-pub const BEST_EFFORT_REFRESH_TIMEOUT: StdDuration = StdDuration::from_secs(20);
-const _: () = assert!(
-    BEST_EFFORT_REFRESH_TIMEOUT.as_millis() < REFRESH_LOCK_TIMEOUT.as_millis(),
-    "an RPC-path bounded refresh must never wait out a full lock convoy"
-);
-const _: () = assert!(
-    REFRESH_LOCK_TIMEOUT.as_millis() + LOCK_TIMEOUT_WAIT.as_millis() < 30_000,
-    "one lock acquisition attempt plus LOCK_TIMEOUT_WAIT must fit the pager's default startup gate"
-);
-/// Long poll interval used by the proactive refresh task when no productive refresh is possible (see [`compute_proactive_sleep`]).
-/// Long enough to avoid CPU/log spam; short enough that a `hot_swap()` or `configure_refresher()` is picked up in a reasonable window.
+/// Back-off interval for the auth-recovery paths.
 pub const BACKOFF_INTERVAL: StdDuration = StdDuration::from_secs(300);
 /// How long to wait after a file lock timeout before re-reading disk, giving the lock holder time to finish writing.
 const LOCK_TIMEOUT_WAIT: StdDuration = StdDuration::from_secs(2);
@@ -138,26 +105,7 @@ pub struct AuthManager {
     scope: String,
     codel_com_config: CodelComConfig,
     proxy_base_url: String,
-    refresher: RwLock<Option<Arc<dyn TokenRefresher>>>,
-    /// Idempotency guard for `configure_refresher` so double-calls don't reset internal state (e.g. `OidcRefresher::upload_in_flight`).
-    refresher_configured: std::sync::atomic::AtomicBool,
-    /// Idempotency guard for `start_proactive_refresh` so we don't spawn competing refresh loops on the same Arc.
-    proactive_started: std::sync::atomic::AtomicBool,
-    /// Serializes concurrent refresh attempts (async, held across .await).
-    refresh_lock: tokio::sync::Mutex<()>,
     permanent_failure: RwLock<Option<ScopedRefreshFailure>>,
-    /// Loop-body iteration count; catches busy-loops where the back-off gate fails to fire.
-    #[cfg(test)]
-    proactive_iter_count: std::sync::atomic::AtomicU32,
-    /// `tokio::spawn` count; catches idempotency-guard regressions (orthogonal to `proactive_iter_count`).
-    #[cfg(test)]
-    proactive_starts: std::sync::atomic::AtomicU32,
-    /// Notified after every successful token refresh (key changed).
-    /// Used by `ModelsManager` to trigger model catalog recovery after sleep/wake without relying on the file watcher.
-    refresh_notify: Arc<tokio::sync::Notify>,
-    /// Notified on every OS wake (`DidWake`), including dark wakes. Re-arms the proactive-refresh loop, whose monotonic sleep pauses during suspend.
-    /// A pre-sleep schedule would otherwise fire hours of awake-time late, leaving post-wake requests to discover the expired token via 401s. See `start_proactive_refresh`.
-    wake_notify: tokio::sync::Notify,
     /// Last state `read_disk_auth` observed for this manager's scope.
     /// Drives transition-level unified logging: hot retry loops read the disk every few seconds, so per-read logging would flood.
     /// No logging at all would leave auth.json loss invisible in production captures.
@@ -167,36 +115,12 @@ pub struct AuthManager {
     /// Model `api_key` / resolved `env_key` for voice/tools without a session.
     /// Not a session token (those live on `inner`). This key is preferred over the disk key; the env key wins.
     process_static_api_key: parking_lot::RwLock<Option<String>>,
-    sleep_gate: SleepGate,
-    /// Count of in-flight IdP refreshes (the network call only).
-    /// A sleep-imminent transition waits for a refresh straddling suspend to finish before acknowledging sleep.
-    /// Maintained by [`InFlightGuard`].
-    refresh_in_flight: std::sync::atomic::AtomicU32,
-    /// Pairs with `refresh_drain_cv`: `set_system_sleep_imminent` (on the OS power-listener thread) blocks until `refresh_in_flight` reaches zero.
-    /// A plain `Mutex`/`Condvar` rather than the async `refresh_notify` because the power callback is synchronous and runs off any runtime.
-    refresh_drain_lock: parking_lot::Mutex<()>,
-    /// Condvar signaled by [`InFlightGuard::drop`] when the in-flight count hits zero; waited on by `hold_sleep_ack_until_refresh_drains`.
-    refresh_drain_cv: parking_lot::Condvar,
-    /// Idempotency guard for `start_system_power_listener`.
-    power_listener_started: std::sync::atomic::AtomicBool,
-    /// Keeps the OS power listener alive for this manager's lifetime; dropping it stops the listener.
-    /// `None` until started (or if unavailable).
-    power_listener: parking_lot::Mutex<Option<codel_system_power::SystemPowerListener>>,
     /// Per-process `manual_auth` KPI debounce, shared by all recoveries on this manager.
     /// Repeated 401s on the most-recent dead credential emit once.
     manual_auth: crate::recovery::ManualAuthTracker,
     /// First-party env key may advertise after initialize probe (default true).
     /// Lives here (not on `MvpAgent`) so the probe verdict is auth-owned.
     first_party_env_api_key_ok: std::sync::atomic::AtomicBool,
-    /// When the current unbroken run of dark-wake refresh deferrals began, on two clocks (see [`DualClock`]); `None` outside such a run.
-    /// Bounds the deferral to [`sleep_gate::DARK_WAKE_DEFER_MAX`] so a machine stuck reporting dark wake can't defer refresh forever.
-    /// See [`AuthManager::should_defer_for_dark_wake`].
-    dark_wake_defer_since: parking_lot::RwLock<Option<DualClock>>,
-    /// Test-only override for [`AuthManager::is_dark_wake`].
-    /// `Some(_)` forces the dark-wake decision so the refresh-deferral path is unit-testable without a real macOS dark wake.
-    /// `None` means consult the OS.
-    #[cfg(test)]
-    dark_wake_override: parking_lot::Mutex<Option<bool>>,
 }
 /// Discriminated outcome of a disk read, for transition logging.
 /// `Ok` means the entry is present (possibly expired); the rest explain *why* `read_disk_auth` returned `None`.
@@ -298,7 +222,6 @@ impl AuthManager {
         let (auth, auth_read_detail, initial_disk_state) = match read_auth_json(&path) {
             Ok(map) => {
                 let found = lookup_auth(&map, &scope);
-                Self::prune_stale_inherited_scopes(&path, &map, found.is_none());
                 let detail = serde_json::json!({
                     "read": "ok",
                     "resolved_path": path.display().to_string(),
@@ -347,35 +270,6 @@ impl AuthManager {
         manager.enforce_pin_on_loaded_token();
         manager
     }
-    /// Drops inherited `WebLogin` entries that `lookup_auth` skipped, so they are not re-evaluated on
-    /// every launch. Best-effort under the advisory lock: a concurrent holder means retry next launch.
-    fn prune_stale_inherited_scopes(path: &Path, map: &AuthStore, lookup_missed: bool) {
-        if !lookup_missed {
-            return;
-        }
-        let stale: Vec<&str> = ActiveAuthBackend::default()
-            .inherited_scopes()
-            .iter()
-            .filter(|scope| {
-                map.get(**scope)
-                    .is_some_and(|a| a.auth_mode == AuthMode::WebLogin)
-            })
-            .copied()
-            .collect();
-        if stale.is_empty() {
-            return;
-        }
-        let Some(_lock) = lock::try_lock_auth_file_nonblocking(path) else {
-            tracing::debug!("auth: skipped WebLogin cleanup (lock unavailable)");
-            return;
-        };
-        let mut cleaned = map.clone();
-        for scope in stale {
-            cleaned.remove(scope);
-        }
-        let _ = write_auth_json(path, &cleaned);
-        tracing::debug!("auth: removed stale WebLogin scope from auth.json");
-    }
     /// Single field-assembly point for [`Self::new`]'s two construction paths (inline `CODEL_AUTH` vs. on-disk `auth.json`), which differ only in the threaded fields. One literal means a newly added field can't be silently dropped from one branch.
     fn assemble(
         inner: Option<CodelAuth>,
@@ -391,31 +285,12 @@ impl AuthManager {
             scope,
             codel_com_config,
             proxy_base_url,
-            refresher: RwLock::new(None),
-            refresher_configured: std::sync::atomic::AtomicBool::new(false),
-            proactive_started: std::sync::atomic::AtomicBool::new(false),
-            refresh_lock: tokio::sync::Mutex::new(()),
             permanent_failure: RwLock::new(None),
-            #[cfg(test)]
-            proactive_iter_count: std::sync::atomic::AtomicU32::new(0),
-            #[cfg(test)]
-            proactive_starts: std::sync::atomic::AtomicU32::new(0),
-            refresh_notify: Arc::new(tokio::sync::Notify::new()),
-            wake_notify: tokio::sync::Notify::new(),
             disk_state: RwLock::new(disk_state),
             static_key_cache: parking_lot::Mutex::new(None),
             process_static_api_key: parking_lot::RwLock::new(None),
-            sleep_gate: SleepGate::default(),
-            refresh_in_flight: std::sync::atomic::AtomicU32::new(0),
-            refresh_drain_lock: parking_lot::Mutex::new(()),
-            refresh_drain_cv: parking_lot::Condvar::new(),
-            power_listener_started: std::sync::atomic::AtomicBool::new(false),
-            power_listener: parking_lot::Mutex::new(None),
             manual_auth: Default::default(),
             first_party_env_api_key_ok: std::sync::atomic::AtomicBool::new(true),
-            dark_wake_defer_since: parking_lot::RwLock::new(None),
-            #[cfg(test)]
-            dark_wake_override: parking_lot::Mutex::new(None),
         }
     }
     /// Whether initialize's first-party env-key probe still allows advertising.
@@ -570,32 +445,21 @@ impl AuthManager {
         self.clear_inner();
         *self.permanent_failure.write() = None;
     }
-    /// `Some(error)` when a `force_login_team_uuid` pin is set and the token's team principal isn't allowed; `None` when compliant or unpinned. Reads the principal from the token's own (unverified) JWT claim.
-    /// This is fail-fast defense-in-depth, not the security boundary (the server is authoritative). An API-key session is rejected under the kill switch, else allowed.
-    pub fn cached_token_policy_error(&self, auth: &CodelAuth) -> Option<AuthError> {
-        if auth.auth_mode == AuthMode::ApiKey {
-            return self
-                .codel_com_config
-                .api_key_auth_disabled()
-                .then_some(AuthError::ApiKeyAuthDisabled);
-        }
-        if !ActiveAuthBackend::default().is_codel_authority() {
-            return None;
-        }
-        let policy = crate::oidc::login_principal_policy(&self.codel_com_config)?;
-        let actual = crate::oidc::peek_access_token_principal_id(&auth.key);
-        crate::oidc::enforce_login_principal(Some(&policy), actual.as_deref())
-            .err()
-            .map(|e| AuthError::PinnedTeamMismatch {
-                message: e.to_string(),
-            })
+    /// `Some(error)` when the credential must be refused.
+    ///
+    /// The only remaining rejection is the `api_key_auth_disabled` kill switch:
+    /// the `force_login_team_uuid` pin it used to enforce was an OIDC login
+    /// policy, and the fork has no OIDC login.
+    pub fn cached_token_policy_error(&self, _auth: &CodelAuth) -> Option<AuthError> {
+        self.codel_com_config
+            .api_key_auth_disabled()
+            .then_some(AuthError::ApiKeyAuthDisabled)
     }
     /// Log and clear a policy-violating session (disk and memory) so the next launch forces a fresh, compliant login.
     pub(crate) fn reject_and_clear(&self, error: &AuthError) {
         let policy = match error {
-            AuthError::PinnedTeamMismatch { .. } => "team_pin",
             AuthError::ApiKeyAuthDisabled => "api_key_disabled",
-            _ => "login_policy",
+            _ => "credential_policy",
         };
         codel_logging::unified_log::warn(
             "auth: cached session rejected by login policy; clearing",
@@ -725,25 +589,13 @@ impl AuthManager {
         let auth = self.current_wire_valid()?;
         let expires_at = match auth.expires_at {
             Some(at) => at,
-            None => {
-                let ttl = match (auth.auth_mode, self.codel_com_config.auth_token_ttl) {
-                    (AuthMode::External, Some(ttl)) => Duration::seconds(ttl as i64),
-                    _ => super::model::TOKEN_TTL,
-                };
-                auth.create_time + ttl
-            }
+            None => auth.create_time + super::model::TOKEN_TTL,
         };
         expires_at.signed_duration_since(Utc::now()).to_std().ok()
     }
     fn token_expired_with_buffer(&self, auth: &CodelAuth, buffer: Duration) -> bool {
         if auth.expires_at.is_some() {
             return is_expired_with_buffer(auth, buffer);
-        }
-        if auth.auth_mode == AuthMode::External
-            && let Some(ttl) = self.codel_com_config.auth_token_ttl
-        {
-            let age = Utc::now().signed_duration_since(auth.create_time);
-            return age >= Duration::seconds(ttl as i64) - buffer;
         }
         is_expired_with_buffer(auth, buffer)
     }
@@ -881,39 +733,6 @@ impl AuthManager {
     pub fn codel_com_config(&self) -> &CodelComConfig {
         &self.codel_com_config
     }
-    /// Handle notified after every successful token refresh.
-    /// Used by [`ModelsManager`] to trigger model catalog recovery after sleep/wake.
-    /// It bypasses the FSEvents file watcher, which can silently die on macOS after resume.
-    pub fn refresh_notifier(&self) -> Arc<tokio::sync::Notify> {
-        self.refresh_notify.clone()
-    }
-    /// Wake the proactive-refresh loop out of its (monotonic) timer.
-    /// Called by the power listener on every `DidWake` (see [`Self::set_system_sleep_imminent`]).
-    /// Safe from any thread; `Notify::notify_waiters` is sync and runtime-agnostic.
-    pub fn notify_wake(&self) {
-        self.wake_notify.notify_waiters();
-    }
-    /// Wait up to `timeout` for another consumer (proactive refresh task, main request path) to refresh the token.
-    /// Background consumers (signals sync, turn deltas) use this to defer to the primary refresh path.
-    /// Driving their own `ServerRejected` recovery would cause concurrent refresh storms that amplify 401 bursts at CCP.
-    pub async fn wait_for_token_refresh(&self, timeout: std::time::Duration) -> bool {
-        let pre_key = self.current().map(|a| a.key.clone());
-        tokio::select! {
-            _ = self.refresh_notify.notified() => {}
-            _ = tokio::time::sleep(timeout) => {}
-        }
-        let post_key = self.current().map(|a| a.key.clone());
-        post_key != pre_key
-    }
-    /// Run the external auth command and parse its output.
-    /// Pure: no state mutation, no logging (refresher logs once on its arm).
-    pub async fn run_external_refresh_command(
-        &self,
-        command: &str,
-    ) -> Result<CodelAuth, crate::ExternalRefreshError> {
-        let prev = self.inner_auth_or_external_default();
-        crate::refresh_with_command(command, &prev).await
-    }
     /// Hot-swap credentials (called by config watcher). Does NOT write to disk.
     /// Clears a sticky permanent verdict only when the new bearer is wire-valid (login / sibling adopt).
     /// Hard-expired swaps keep the sticky short-circuit so a dead RT is not re-tried until a real login.
@@ -928,12 +747,10 @@ impl AuthManager {
     pub fn clear_in_memory(&self) {
         self.clear_inner();
     }
-    /// Accept a sibling-rotated disk token. On `ServerRejected`, the disk key must differ from in-memory (else no one refreshed). Single enforcement point for disk adoption.
-    /// `try_adopt_disk_token` (refresh chains) and `pick_up_sibling_token` (`auth()` / proactive loop) both route here. The guards and the shared `hot_swap` therefore cannot drift between the two paths.
+    /// Accept a sibling-written disk token. Single enforcement point for disk adoption, so the guards and the shared `hot_swap` cannot drift between call sites.
     pub(crate) fn try_use_disk_token(
         &self,
         disk_auth: Option<&CodelAuth>,
-        reason: RefreshReason,
     ) -> Result<CodelAuth, DiskTokenDecline> {
         let Some(disk_auth) = disk_auth else {
             return Err(DiskTokenDecline::Missing);
@@ -947,24 +764,17 @@ impl AuthManager {
         {
             return Err(DiskTokenDecline::LaggingMemoryMint);
         }
-        if reason == RefreshReason::ServerRejected {
-            let current_key = self.inner.read().as_ref().map(|a| a.key.clone());
-            if current_key.as_deref() == Some(&disk_auth.key) {
-                return Err(DiskTokenDecline::SameKeyAsRejected);
-            }
-        }
         tracing::info!("auth: another process already refreshed, using disk token");
         self.hot_swap(disk_auth.clone());
         Ok(disk_auth.clone())
     }
     /// Re-read disk and try to adopt a sibling-written token, emitting telemetry on success.
-    /// Combines `read_disk_auth`, `try_use_disk_token`, and the structured log every `refresh_chain` callsite needs.
-    fn try_adopt_disk_token(&self, reason: RefreshReason, msg: &str) -> Option<CodelAuth> {
+    fn try_adopt_disk_token(&self, msg: &str) -> Option<CodelAuth> {
         let disk_auth = self.read_disk_auth();
         let prev = self
             .current_or_expired()
             .map(|a| bearer_suffix(&a.key).to_owned());
-        let refreshed = match self.try_use_disk_token(disk_auth.as_ref(), reason) {
+        let refreshed = match self.try_use_disk_token(disk_auth.as_ref()) {
             Ok(refreshed) => refreshed,
             Err(
                 decline @ (DiskTokenDecline::LaggingMemoryMint
@@ -975,7 +785,6 @@ impl AuthManager {
                     None,
                     Some(serde_json::json!({
                         "decline": decline.as_ref(),
-                        "refresh_reason": format!("{reason:?}"),
                         "prev_key_prefix": prev,
                         "disk_key_prefix": disk_auth.as_ref().map(|a| bearer_suffix(&a.key)),
                     })),
@@ -996,15 +805,6 @@ impl AuthManager {
         );
         Some(refreshed)
     }
-    /// Current auth or an `External`-defaulted placeholder.
-    /// **External path only**: the placeholder's `auth_mode = External` would mis-classify an OIDC token.
-    /// Carries user fields forward into the binary's freshly-minted token.
-    fn inner_auth_or_external_default(&self) -> CodelAuth {
-        self.owned_inner().unwrap_or_else(|| CodelAuth {
-            auth_mode: AuthMode::External,
-            ..Default::default()
-        })
-    }
     /// Test-only hot_swap and disk write (skips proxy `/user`).
     /// Production persistence routes through `update()`.
     #[cfg(test)]
@@ -1022,20 +822,6 @@ impl AuthManager {
             tracing::warn!(error = %e, "auth: failed to persist refreshed token to disk");
         }
         Some(auth)
-    }
-    /// `true` when the refresh token on disk is present and differs from the one we actually spent. That means a sibling process rotated the RT while our exchange was in flight.
-    /// The rejection we just got is then a lost race rather than a revoked session. The single definition of "disk moved past the token we spent".
-    /// Two hand-rolled copies of this comparison is how the wrong one survived long enough to log a dozen processes out at once. Callers read under the auth file lock, so the observation includes the sibling's committed write. Disk holding no RT is *not* divergence: there is no successor to fall back to, so the rejection must be honored.
-    fn refresh_token_superseded(disk_rt: Option<&str>, spent_rt: &str) -> bool {
-        disk_rt.is_some_and(|disk_rt| disk_rt != spent_rt)
-    }
-    /// `true` when a sibling process has rotated the refresh token on disk past the one in memory.
-    /// Used by `refresh_chain` to demote a `PermanentFailure` to transient so the sibling's fresher token can be tried on the next attempt.
-    /// Requires an in-memory RT: empty `inner` means the disk credential is the only candidate (not a multi-process rotation). Does **not** require a non-expired disk AT; a sibling may still hold a usable RT while its AT is buffer/hard-expired. Only a fallback for authorities that cannot report which RT they spent. `resolve_refresh_credential` is disk-first, so the RT actually sent is usually the disk one.
-    fn sibling_has_different_refresh_token(&self, disk_rt: Option<&str>) -> bool {
-        self.current_or_expired()
-            .and_then(|a| a.refresh_token)
-            .is_some_and(|mem_rt| Self::refresh_token_superseded(disk_rt, &mem_rt))
     }
     /// Re-read `auth.json` from disk without updating in-memory state.
     pub fn read_disk_auth(&self) -> Option<CodelAuth> {
@@ -1147,57 +933,8 @@ impl AuthManager {
     ) -> LockAcquire {
         try_lock_auth_file_async(&self.path, timeout, heartbeat).await
     }
-    /// Set up refresh capability. Call once per `Arc<AuthManager>` at startup.
-    /// Subsequent calls are no-op via an atomic guard.
-    /// Per-session call sites therefore don't reset refresher-internal state like `OidcRefresher::upload_in_flight`.
-    pub fn configure_refresher(
-        self: &Arc<Self>,
-        auth_provider_command: Option<String>,
-        diagnostic_uploader: Option<super::refresh::DiagnosticUploader>,
-    ) -> bool {
-        use std::sync::atomic::Ordering;
-        if self
-            .refresher_configured
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            tracing::debug!("auth: configure_refresher already wired; ignoring");
-            return false;
-        }
-        let refresher = super::refresh::build_refresher(
-            Arc::clone(self),
-            auth_provider_command,
-            diagnostic_uploader,
-        );
-        *self.refresher.write() = Some(refresher);
-        true
-    }
-    /// Test-only: inject a refresher, bypassing the idempotency guard.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_refresher(&self, refresher: Arc<dyn TokenRefresher>) {
-        use std::sync::atomic::Ordering;
-        *self.refresher.write() = Some(refresher);
-        self.refresher_configured.store(true, Ordering::SeqCst);
-    }
-    #[cfg(test)]
-    pub fn proactive_iteration_count(&self) -> u32 {
-        self.proactive_iter_count
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-    #[cfg(test)]
-    pub fn proactive_start_count(&self) -> u32 {
-        self.proactive_starts
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-    /// Test-only: whether [`Self::start_proactive_refresh`] has spawned this `Arc`'s loop.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn proactive_refresh_started(&self) -> bool {
-        self.proactive_started
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-    /// `pub(super)`: for refresh dispatch only.
-    /// External session classification uses `is_session_based_method`.
-    pub(super) fn token_type(&self) -> TokenType {
+    /// Classify the loaded credential.
+    pub(crate) fn token_type(&self) -> TokenType {
         TokenType::from_auth(self.owned_inner().as_ref())
     }
     /// Pre-request entry point: per-`TokenType` dispatch. For just the key: [`Self::get_valid_token`].
@@ -1227,10 +964,9 @@ impl AuthManager {
             {
                 return Ok(auth.clone());
             }
-            if let Some(refreshed) = self.try_adopt_disk_token(
-                RefreshReason::PreRequest,
-                "auth: adopted sibling token during PermanentFailure in auth()",
-            ) {
+            if let Some(refreshed) =
+                self.try_adopt_disk_token("auth: adopted sibling token during PermanentFailure in auth()")
+            {
                 return Ok(refreshed);
             }
             return Err(err);
@@ -1245,37 +981,6 @@ impl AuthManager {
                         Err(AuthError::NotLoggedIn)
                     }
                 }
-                TokenType::LegacySession => {
-                    self.pick_up_sibling_token();
-                    self.current().ok_or(AuthError::TokenExpiredNoRefresh)
-                }
-                TokenType::OidcSession | TokenType::ExternalBinary => {
-                    match self
-                        .refresh_chain(token_type, RefreshReason::PreRequest)
-                        .await
-                    {
-                        Ok(auth) => Ok(auth),
-                        Err(e) => {
-                            let deny_grace = matches!(
-                                &e,
-                                AuthError::Refresh(crate::RefreshTokenError::Permanent(pe))
-                                    if pe.reason
-                                        == crate::error::RefreshTokenFailedReason::RefreshTokenRejected
-                            );
-                            if !deny_grace
-                                && let Some(auth) = snapshot
-                                && self.outlives_send_horizon(&auth)
-                            {
-                                tracing::debug!(
-                                    "auth: refresh failed but token still valid (grace), using cached"
-                                );
-                                Ok(auth)
-                            } else {
-                                Err(e)
-                            }
-                        }
-                    }
-                }
             }
         };
         dispatch.await
@@ -1283,150 +988,6 @@ impl AuthManager {
     /// Return the current valid token string, or an error.
     pub async fn get_valid_token(self: &Arc<Self>) -> Result<String, AuthError> {
         self.auth().await.map(|a| a.key)
-    }
-    /// The only mutation point: persists on success, records the verdict on failure.
-    /// `_lock` type-enforces that the persisting `update()` runs under the file lock.
-    async fn apply_refresh_outcome(
-        self: &Arc<Self>,
-        outcome: RefreshOutcome,
-        reason: RefreshReason,
-        attempted_key: Option<String>,
-        _lock: &AuthFileLock,
-    ) -> Result<CodelAuth, AuthError> {
-        let pre_key_suffix = attempted_key.as_deref().map(bearer_suffix);
-        match outcome {
-            RefreshOutcome::Success(new_auth) => match self.update(*new_auth).await {
-                Ok(auth) => {
-                    let new_suffix = bearer_suffix(&auth.key);
-                    codel_logging::unified_log::info(
-                        "auth.refresh.success",
-                        None,
-                        Some(serde_json::json!({
-                            "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            "old_key_prefix": pre_key_suffix,
-                            "new_key_prefix": new_suffix,
-                            "key_changed": pre_key_suffix != Some(new_suffix),
-                        })),
-                    );
-                    tracing::info!(expires_at = ?auth.expires_at, "auth.refresh.success");
-                    self.refresh_notify.notify_waiters();
-                    Ok(auth)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "auth: failed to persist refreshed token");
-                    codel_logging::unified_log::warn(
-                        "auth.refresh.persist_failed",
-                        None,
-                        Some(serde_json::json!({ "error": format!("{e}") })),
-                    );
-                    Err(AuthError::transient_source(e))
-                }
-            },
-            RefreshOutcome::PermanentFailure {
-                error,
-                tried_key,
-                tried_refresh_token,
-            } => {
-                tracing::warn!(reason = ?error.reason, "auth.refresh.permanent_failure");
-                codel_logging::unified_log::warn(
-                    "auth.refresh.permanent_failure",
-                    None,
-                    Some(serde_json::json!({
-                        "reason": format!("{:?}", error.reason),
-                    })),
-                );
-                if let Some(refreshed) = self.try_adopt_disk_token(
-                    reason,
-                    "auth: adopted sibling token after PermanentFailure",
-                ) {
-                    return Ok(refreshed);
-                }
-                let failed_reason = error.reason;
-                let is_rtr =
-                    failed_reason == crate::error::RefreshTokenFailedReason::RefreshTokenRejected;
-                if is_rtr {
-                    let mem = self.current_or_expired();
-                    let disk = self.read_disk_auth();
-                    let disk_rt = disk.as_ref().and_then(|d| d.refresh_token.as_deref());
-                    let sibling_rotated = match tried_refresh_token.as_deref() {
-                        Some(tried_rt) => Self::refresh_token_superseded(disk_rt, tried_rt),
-                        None => {
-                            tried_key.is_none() && self.sibling_has_different_refresh_token(disk_rt)
-                        }
-                    };
-                    if sibling_rotated {
-                        tracing::info!("auth: sibling-rotation detected; demoting to transient");
-                        codel_logging::unified_log::info(
-                            "auth.refresh.sibling_rotation_demoted",
-                            None,
-                            Some(serde_json::json!({
-                                "reason": format!("{failed_reason:?}"),
-                                "tried_rt_prefix": tried_refresh_token
-                                    .as_deref()
-                                    .map(bearer_suffix),
-                                "disk_rt_prefix": disk_rt.map(bearer_suffix),
-                            })),
-                        );
-                        return Err(AuthError::transient(format!(
-                            "sibling-rotation: {failed_reason:?}"
-                        )));
-                    }
-                    let (clear_mem, clear_disk) = match (tried_key.as_ref(), &mem, &disk) {
-                        (Some(tk), m, d) => {
-                            let mem_match = m.as_ref().is_some_and(|a| a.key == *tk);
-                            let disk_match = d.as_ref().is_some_and(|a| a.key == *tk);
-                            if mem_match || disk_match {
-                                (mem_match, disk_match)
-                            } else {
-                                (true, true)
-                            }
-                        }
-                        (None, _, _) => (true, true),
-                    };
-                    if let Some(key) = tried_key.or(attempted_key) {
-                        self.record_permanent_failure(key, error);
-                    }
-                    let mut disk_mutation = "unchanged";
-                    if clear_disk {
-                        disk_mutation = match self.write_scope_removal(&self.scope) {
-                            Ok(m) => m.label(),
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "auth: failed to clear credentials after permanent refresh failure"
-                                );
-                                "write_failed"
-                            }
-                        };
-                    }
-                    if clear_mem {
-                        self.clear_inner();
-                    }
-                    codel_logging::unified_log::warn(
-                        "auth: cleared credentials after permanent refresh failure",
-                        None,
-                        Some(serde_json::json!({
-                            "reason": format!("{failed_reason:?}"),
-                            "disk_mutation": disk_mutation,
-                            "cleared_mem": clear_mem,
-                            "cleared_disk": clear_disk,
-                        })),
-                    );
-                } else if let Some(key) = tried_key.or(attempted_key) {
-                    self.record_permanent_failure(key, error);
-                }
-                Err(AuthError::permanent(failed_reason))
-            }
-            RefreshOutcome::TransientFailure { message } => {
-                tracing::warn!(%message, "auth.refresh.transient_failure");
-                codel_logging::unified_log::warn(
-                    "auth.refresh.transient_failure",
-                    None,
-                    Some(serde_json::json!({ "message": &message })),
-                );
-                Err(AuthError::transient(message))
-            }
-        }
     }
     /// Re-read auth.json from disk and update the in-memory cache (used by the refresh chains). Non-destructive: it updates in-memory only if disk has a different valid token.
     /// The token must pass the shared adoption guards in [`Self::try_use_disk_token`]. (That means a sibling process wrote a fresher one.) Returns `true` only when in-memory state was actually replaced.
@@ -1439,7 +1000,7 @@ impl AuthManager {
         let Some(auth) = auth.filter(|a| self.is_different_token(a)) else {
             return false;
         };
-        match self.try_use_disk_token(Some(&auth), RefreshReason::PreRequest) {
+        match self.try_use_disk_token(Some(&auth)) {
             Ok(adopted) => {
                 codel_logging::unified_log::info(
                     "auth: pick_up_sibling_token adopted",
@@ -1488,12 +1049,6 @@ impl AuthManager {
             recorded_at: DualClock::now(),
         });
     }
-    /// Key the sticky verdict is scoped to: the credential a refresh for `reason` would send. It goes via the shared [`resolve_refresh_credential`] so record and check can't drift.
-    /// Does a synchronous `auth.json` read, and that read matters. It detects a sibling's freshly rotated token, so an in-memory-only check could leave a stale verdict on a now-valid credential.
-    /// Called from [`Self::permanent_failure`] (only when a verdict is stored) and once per active `refresh_chain` as the fallback verdict key. Both are pre-IdP paths where the read cost is bounded.
-    fn attempted_verdict_key(&self, reason: RefreshReason) -> Option<String> {
-        resolve_refresh_credential(self, self.read_disk_auth_silent(), reason).map(|a| a.key)
-    }
     /// Reads the stored verdict first (cheap lock): the common no-verdict case returns before any disk I/O. Only a stored verdict triggers [`Self::attempted_verdict_key`]'s disk read.
     /// After a permanent failure **discards** credentials, sticky reasons (`RefreshTokenRejected`) still short-circuit with no live credential. Concurrent callers therefore cannot re-hit the IdP with a dead RT.
     /// Sticky applies only to the **same** rejected key or to **no** live credential (post-discard). A different attempted key (sibling RT/AT on disk) must be allowed to refresh. Without it, a recoverable failure cached just before the lid closes would keep short-circuiting `auth()`.
@@ -1509,21 +1064,20 @@ impl AuthManager {
             }
             (pf.token_key.clone(), pf.error.reason)
         };
-        match self.attempted_verdict_key(RefreshReason::ServerRejected) {
-            Some(k) if k == token_key => Some(AuthError::permanent(reason)),
-            Some(_) => None,
-            None if reason.is_sticky() => Some(AuthError::permanent(reason)),
-            None => None,
-        }
+        let _ = token_key;
+        reason.is_sticky().then(|| AuthError::permanent(reason))
     }
     /// `true` iff [`Self::permanent_failure`] has a non-expired entry.
     /// Lets callers peek the IdP verdict without touching its `message` payload.
     pub fn has_permanent_failure(&self) -> bool {
         self.permanent_failure().is_some()
     }
-    /// Whether the only way back is a manual `/login`. That means a sticky IdP rejection of the refresh token, or no refresh authority or refreshable credential at all.
-    /// `false` for anything that self-heals (transient failures, recoverable verdicts). A *live state* query ("can a future refresh succeed?").
-    /// Deliberately separate from `recovery::manual_auth_reason`, which buckets a terminal error *value* for the KPI. Drives the "`/login` banner vs self-healing" decision.
+    /// Whether the only way back is a new API key.
+    ///
+    /// `true` on a sticky server rejection, and whenever no credential is on the
+    /// wire — nothing can be refreshed, so a missing key has to be configured
+    /// again. `false` for anything that self-heals (transient failures,
+    /// recoverable verdicts).
     pub fn requires_manual_reauth(&self) -> bool {
         use crate::error::RefreshTokenError;
         if let Some(AuthError::Refresh(RefreshTokenError::Permanent(e))) = self.permanent_failure()
@@ -1531,23 +1085,7 @@ impl AuthManager {
         {
             return true;
         }
-        if !self.has_refresher_attached() {
-            return true;
-        }
-        let mem_refreshable = self.token_type().is_refreshable();
-        let disk_refreshable = self
-            .read_disk_auth_silent()
-            .is_some_and(|a| a.refresh_token.is_some());
-        !(mem_refreshable || disk_refreshable)
-    }
-    fn is_external_provider_refresh_authority(&self) -> bool {
-        self.codel_com_config.auth_provider_command.is_some()
-            && self.token_type() == TokenType::ExternalBinary
-    }
-    /// `true` iff a [`TokenRefresher`] is wired in.
-    /// `false` for static-key or pre-`configure_refresher` managers.
-    pub fn has_refresher_attached(&self) -> bool {
-        self.refresher.read().is_some()
+        self.current_wire_valid().is_none() && self.read_disk_auth_silent().is_none()
     }
     /// Test-only: age the cached `permanent_failure` past its TTL so the `permanent_failure()` getter treats it as expired.
     #[cfg(any(test, feature = "test-support"))]
@@ -1636,213 +1174,6 @@ impl AuthManager {
     #[cfg(test)]
     pub fn manual_auth_last_emit(&self) -> Option<codel_logging::events::ManualAuth> {
         self.manual_auth.last_emit_for_test()
-    }
-    /// Spawn a background task that proactively refreshes the token ahead of expiry. Cancelled via `cancel`. Idempotent: a second call on the same `Arc` is a no-op (debug log, then return).
-    /// Sleep duration and back-off conditions are computed by [`compute_proactive_sleep`]; see its body for the six non-busy-loop guards.
-    /// They are permanent_failure, non-refreshable type, no refresher, sleep-gated, dark wake with a wire-valid token, and no expires_at. `pub`: the pager's embedded-shell spawn owns this process's refresh loop.
-    pub fn start_proactive_refresh(self: &Arc<Self>, cancel: CancellationToken) {
-        use std::sync::atomic::Ordering;
-        if self
-            .proactive_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            tracing::debug!("auth: start_proactive_refresh already running on this Arc, ignoring");
-            return;
-        }
-        #[cfg(test)]
-        self.proactive_starts.fetch_add(1, Ordering::SeqCst);
-        let this = self.clone();
-        tokio::spawn(async move {
-            let mut consecutive_failures: u32 = 0;
-            loop {
-                let sleep_dur = compute_proactive_sleep(&this)
-                    .max(proactive_failure_backoff(consecutive_failures));
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        tracing::debug!("auth: proactive refresh task cancelled");
-                        return;
-                    }
-                    _ = tokio::time::sleep(sleep_dur) => {}
-                    // OS wake: re-evaluate immediately (see `wake_notify`).
-                    // The failure ladder resets too: a wake is a changed world that deserves the fast schedule
-                    // It should not inherit a backoff cap accumulated across overnight dark-wake misses
-                    _ = this.wake_notify.notified() => {
-                        consecutive_failures = 0;
-                        tracing::debug!("auth: proactive refresh re-armed by OS wake");
-                    }
-                }
-                #[cfg(test)]
-                this.proactive_iter_count.fetch_add(1, Ordering::SeqCst);
-                if this.permanent_failure().is_some() {
-                    if let Some(_refreshed) = this.try_adopt_disk_token(
-                        RefreshReason::PreRequest,
-                        "auth: proactive refresh adopted sibling token during PermanentFailure",
-                    ) {
-                        consecutive_failures = 0;
-                        continue;
-                    }
-                    tracing::debug!(
-                        "auth: skipping proactive refresh, permanent failure still set"
-                    );
-                    continue;
-                }
-                if !this.token_type().is_refreshable() {
-                    tracing::debug!(
-                        "auth: skipping proactive refresh, token type is not refreshable"
-                    );
-                    continue;
-                }
-                if this.refresher.read().is_none() {
-                    tracing::debug!("auth: skipping proactive refresh, no refresher configured");
-                    continue;
-                }
-                let adopted_from_sibling = this.pick_up_sibling_token();
-                if this.current().is_some() {
-                    let adopted = this.current().map(|a| bearer_suffix(&a.key).to_owned());
-                    let expires_at = this
-                        .inner
-                        .read()
-                        .as_ref()
-                        .and_then(|a| a.expires_at.map(|e| e.to_rfc3339()));
-                    if adopted_from_sibling {
-                        tracing::info!(
-                            "auth: proactive refresh skipped, adopted sibling token from disk"
-                        );
-                    } else {
-                        tracing::info!(
-                            "auth: proactive refresh skipped, in-memory token still valid"
-                        );
-                    }
-                    codel_logging::unified_log::info(
-                        "auth: proactive refresh skipped",
-                        None,
-                        Some(serde_json::json!({
-                            "adopted_from_sibling": adopted_from_sibling,
-                            "key_prefix": adopted,
-                            "expires_at": expires_at,
-                        })),
-                    );
-                    consecutive_failures = 0;
-                    continue;
-                }
-                tracing::info!("auth: proactive refresh starting");
-                let before = this.owned_inner().map(|a| a.generation());
-                match this.auth().await {
-                    Ok(auth)
-                        if before.as_ref() == Some(&auth.generation())
-                            && this.is_token_expired(&auth) =>
-                    {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        tracing::warn!(
-                            consecutive_failures,
-                            "auth: proactive refresh did not renew; cached token still wire-valid"
-                        );
-                        codel_logging::unified_log::warn(
-                            "auth: proactive refresh completed",
-                            None,
-                            Some(serde_json::json!({
-                                "result": "not_renewed",
-                                "consecutive_failures": consecutive_failures,
-                                "backoff_ms": proactive_failure_backoff(consecutive_failures)
-                                    .as_millis() as u64,
-                                "key_prefix": bearer_suffix(&auth.key),
-                                "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            })),
-                        );
-                    }
-                    Ok(auth) => {
-                        consecutive_failures = 0;
-                        tracing::info!("auth: proactive refresh succeeded");
-                        codel_logging::unified_log::info(
-                            "auth: proactive refresh completed",
-                            None,
-                            Some(serde_json::json!({
-                                "result": "success",
-                                "key_prefix": bearer_suffix(&auth.key),
-                                "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            })),
-                        );
-                    }
-                    Err(e) => {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        tracing::warn!(error = %e, "auth: proactive refresh failed");
-                        codel_logging::unified_log::warn(
-                            "auth: proactive refresh completed",
-                            None,
-                            Some(serde_json::json!({
-                                "result": "failed",
-                                "consecutive_failures": consecutive_failures,
-                                "backoff_ms": proactive_failure_backoff(consecutive_failures)
-                                    .as_millis() as u64,
-                                "error": format!("{e}"),
-                            })),
-                        );
-                    }
-                }
-            }
-        });
-    }
-}
-/// The one doubling schedule behind every refresh-failure wait: 5 s · 2^(n−1), capped at [`BACKOFF_INTERVAL`]; zero for `n == 0`.
-/// [`proactive_failure_backoff`] adds jitter on top of it and `ExternalBinaryRefresher::run_cooldown` uses it as is, which is what keeps the proactive wake landing at or after the refresher's cooldown.
-pub(crate) fn refresh_failure_backoff(consecutive_failures: u32) -> StdDuration {
-    if consecutive_failures == 0 {
-        return StdDuration::ZERO;
-    }
-    let exp = consecutive_failures.saturating_sub(1).min(6);
-    StdDuration::from_secs(5)
-        .saturating_mul(1u32 << exp)
-        .min(BACKOFF_INTERVAL)
-}
-/// Backoff after `n` consecutive failed proactive refresh attempts.
-/// [`refresh_failure_backoff`] plus 0 to 3 s jitter to de-stagger siblings that failed in lockstep.
-/// Sized so the OIDC transient-escalation threshold cannot be reached inside a typical post-wake network-recovery window.
-pub(crate) fn proactive_failure_backoff(consecutive_failures: u32) -> StdDuration {
-    let base = refresh_failure_backoff(consecutive_failures);
-    if base.is_zero() {
-        return StdDuration::ZERO;
-    }
-    base + StdDuration::from_millis(rand::random_range(0..3000))
-}
-/// Floor for the proactive loop's per-iteration sleep. Past the refresh point the schedule returns "now", and the adopt/skip `continue` paths re-roll the jitter each pass.
-/// A raw zero sleep spins that into thousands of 1 to 2 ms iterations inside the 0 to 60 s jitter window. One second bounds the spin without meaningfully delaying a due refresh (the schedule runs off a 5-minute buffer).
-pub const PROACTIVE_MIN_SLEEP: StdDuration = StdDuration::from_secs(1);
-/// Compute the sleep duration for the next iteration of the proactive refresh loop.
-/// Pulled out of `start_proactive_refresh` so the gate chain is testable in isolation and the spawned async block stays small.
-pub fn compute_proactive_sleep(this: &AuthManager) -> StdDuration {
-    if this.permanent_failure().is_some() {
-        return BACKOFF_INTERVAL
-            + StdDuration::from_secs(rand::random_range(0..JITTER_RANGE_SECS) as u64);
-    }
-    if !this.token_type().is_refreshable() {
-        return BACKOFF_INTERVAL;
-    }
-    if this.refresher.read().is_none() {
-        return BACKOFF_INTERVAL;
-    }
-    if this.is_sleep_gated() {
-        return BACKOFF_INTERVAL;
-    }
-    if this.current_wire_valid().is_some() && this.is_dark_wake() {
-        return BACKOFF_INTERVAL;
-    }
-    match this.inner.read().as_ref().and_then(|a| a.expires_at) {
-        Some(expires_at) => {
-            let buffer = early_invalidation();
-            let jitter = Duration::seconds(rand::random_range(0..JITTER_RANGE_SECS));
-            let target = expires_at - buffer - jitter;
-            let delta = target.signed_duration_since(Utc::now());
-            if delta <= Duration::zero() {
-                PROACTIVE_MIN_SLEEP
-            } else {
-                delta
-                    .to_std()
-                    .expect("delta > 0 above; chrono::Duration -> std::Duration must succeed")
-                    .max(PROACTIVE_MIN_SLEEP)
-            }
-        }
-        None => BACKOFF_INTERVAL,
     }
 }
 fn api_key_from_auth_file(path: &Path) -> Option<String> {

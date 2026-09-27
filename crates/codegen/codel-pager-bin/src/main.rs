@@ -2179,10 +2179,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                         agent_cfg.codel_com_config.clone(),
                         agent_cfg.endpoints.proxy_url(),
                     ));
-                auth_manager.configure_refresher(
-                    agent_cfg.codel_com_config.auth_provider_command.clone(),
-                    None,
-                );
                 codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
             }
             Err(e) => {

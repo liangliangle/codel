@@ -54,25 +54,15 @@ pub(crate) fn resolved_policy_channel() -> PolicyChannel {
 pub(crate) struct StartupGate {
     pub(crate) channel: PolicyChannel,
     pub(crate) has_session: bool,
-    pub(crate) session_pending: bool,
 }
 /// Returns whether a leader opens the gate at startup.
 pub(crate) fn should_open_at_startup(gate: StartupGate) -> bool {
     if gate.channel.is_unavailable() {
         return true;
     }
-    !gate.has_session && !gate.session_pending
+    !gate.has_session
 }
-/// Returns whether a session-less startup is about to mint a codel.dev session
-pub(crate) fn is_session_pending(
-    has_session: bool,
-    codel_com_config: &codel_login::CodelComConfig,
-) -> bool {
-    if has_session {
-        return false;
-    }
-    codel_com_config.auth_provider_command.is_some()
-}
+
 /// Opens the gate at startup once [`should_open_at_startup`] holds; a later session re-resolves via [`OtelGate::resolve`].
 pub(crate) fn open_at_startup() {
     codel_logging::external::mark_external_otel_settings_resolved();

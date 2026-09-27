@@ -3,14 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use codel_auth::bearer_suffix;
 
-use super::is_codel_oauth2_issuer;
 
 pub const TOKEN_TTL: Duration = Duration::days(30);
 const DEFAULT_EARLY_INVALIDATION_SECS: u64 = 300; // 5 minutes
 
 /// Legacy auth.json scope key. Fallback for old devbox auth files.
-pub(super) const LEGACY_SCOPE: &str = "https://accounts.codel/sign-in";
-
 /// auth.json scope key for plain API key auth (desktop login, `codel login --api-key`).
 pub(super) const API_KEY_SCOPE: &str = "codel::api_key";
 
@@ -27,15 +24,10 @@ pub fn default_coding_data_retention_opt_out() -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
-    /// Deprecated. Kept for deserializing old auth.json files.
-    #[serde(alias = "codel")]
-    WebLogin,
-    /// OIDC or OAuth2 interactive login via customer IdP
-    #[serde(alias = "oidc")]
-    Oidc,
-    /// External auth provider binary
-    External,
-    /// Plain API key (e.g. from codel-desktop login or `codel login --api-key`)
+    /// Plain API key. The fork supports no other credential kind; an `auth.json`
+    /// written by an older build deserializes here rather than failing, and the
+    /// credential is then treated as an API key.
+    #[serde(other)]
     ApiKey,
 }
 
@@ -150,31 +142,20 @@ impl CodelAuth {
             .num_seconds()
     }
 
-    /// `true` when the token comes from a first-party Codel account. That is either an OIDC login against https://auth.codel.dev (or the local-dev equivalent), or an external auth provider declaring an Codel issuer.
-    /// The issuer is a client-side hint, not a trust assertion. Everything it unlocks still authenticates the actual token server-side, and it never influences endpoints.
+    /// Always `false`: an API key is not a first-party Codel session, so nothing
+    /// that is gated on a session login applies to it.
     pub fn is_codel_auth(&self) -> bool {
-        match self.auth_mode {
-            AuthMode::Oidc | AuthMode::External => self
-                .oidc_issuer
-                .as_deref()
-                .is_some_and(is_codel_oauth2_issuer),
-            AuthMode::ApiKey | AuthMode::WebLogin => false,
-        }
+        false
     }
 
-    /// `true` when this auth can access codel.dev managed MCP connectors.
+    /// Always `false`: managed codel.dev MCP connectors are a session feature.
     pub fn is_managed_mcp_eligible(&self) -> bool {
-        self.is_codel_auth() || self.auth_mode == AuthMode::WebLogin
+        false
     }
 
-    /// Whether this credential can access `supported_in_api: false` models. Session logins (WebLogin, OIDC, including enterprise issuers) always qualify.
-    /// External-provider credentials qualify only when first-party (`is_codel_auth`). Plain API keys never do.
+    /// Always `false`: `supported_in_api: false` models require a session login.
     pub fn is_session_auth(&self) -> bool {
-        match self.auth_mode {
-            AuthMode::WebLogin | AuthMode::Oidc => true,
-            AuthMode::External => self.is_codel_auth(),
-            AuthMode::ApiKey => false,
-        }
+        false
     }
 
     pub fn is_team_principal(&self) -> bool {
@@ -218,7 +199,7 @@ impl Default for CodelAuth {
     fn default() -> Self {
         Self {
             key: String::new(),
-            auth_mode: AuthMode::Oidc,
+            auth_mode: AuthMode::ApiKey,
             create_time: Utc::now(),
             user_id: String::new(),
             email: None,
@@ -305,29 +286,13 @@ pub struct UserInfo {
     pub subscription_tier: Option<String>,
 }
 
-/// Look up auth from the store by scope key. Legacy `WebLogin` tokens (from the pre-OIDC `codel login --legacy` flow) are skipped. They are validated via a per-request DB lookup server-side, which fails at high volume.
-/// Skipping them here forces affected users to re-authenticate via OIDC on next launch.
+/// Look up auth from the store by scope key.
+///
+/// Upstream also fell back to scope keys the backend inherited, which existed
+/// for pre-OIDC web-login credentials. The fork has no such login, so an
+/// obsolete entry is ignored rather than adopted as an API key.
 pub fn lookup_auth(map: &AuthStore, scope: &str) -> Option<CodelAuth> {
-    let auth = map
-        .get(scope)
-        .cloned()
-        .or_else(|| inherited_lookup(map, scope))?;
-    if auth.auth_mode == AuthMode::WebLogin {
-        tracing::info!("auth: ignoring legacy WebLogin token — re-authentication required");
-        return None;
-    }
-    Some(auth)
-}
-
-/// Falls back to a scope the active backend inherits, skipping the one already tried.
-fn inherited_lookup(map: &AuthStore, scope: &str) -> Option<CodelAuth> {
-    use crate::backend::{ActiveAuthBackend, AuthBackend};
-
-    ActiveAuthBackend::default()
-        .inherited_scopes()
-        .iter()
-        .filter(|inherited| **inherited != scope)
-        .find_map(|inherited| map.get(*inherited).cloned())
+    map.get(scope).cloned()
 }
 
 /// Early-invalidation buffer.
@@ -369,115 +334,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn carry_user_profile_from_keeps_can_administer_team() {
-        for (prev_value, next_value) in [
-            (Some(true), Some(false)),
-            (Some(false), Some(true)),
-            (None, Some(true)),
-        ] {
-            let prev = CodelAuth {
-                can_administer_team: prev_value,
-                ..make_auth(AuthMode::Oidc)
-            };
-            let mut next = CodelAuth {
-                can_administer_team: next_value,
-                ..make_auth(AuthMode::Oidc)
-            };
-            next.carry_user_profile_from(&prev);
-            assert_eq!(prev_value, next.can_administer_team);
-        }
-    }
 
-    #[test]
-    fn can_administer_team_serde_tri_state() {
-        let unknown = serde_json::to_string(&make_auth(AuthMode::Oidc)).unwrap();
-        assert!(!unknown.contains("can_administer_team"));
-        for (json, expected) in [
-            (r#"{"userId": "u1"}"#, None),
-            (r#"{"userId": "u1", "canAdministerTeam": null}"#, None),
-            (
-                r#"{"userId": "u1", "canAdministerTeam": false}"#,
-                Some(false),
-            ),
-        ] {
-            let info: UserInfo = serde_json::from_str(json).unwrap();
-            assert_eq!(expected, info.can_administer_team, "{json}");
-        }
-    }
 
-    #[test]
-    fn is_codel_auth_matrix() {
-        use crate::CODEL_OAUTH2_ISSUER;
-        let with_issuer = |mode: AuthMode, issuer: Option<&str>| CodelAuth {
-            oidc_issuer: issuer.map(str::to_owned),
-            ..make_auth(mode)
-        };
 
-        // Only Oidc/External qualify, and only with an codel.dev issuer.
-        assert!(with_issuer(AuthMode::Oidc, Some(CODEL_OAUTH2_ISSUER)).is_codel_auth());
-        assert!(with_issuer(AuthMode::External, Some(CODEL_OAUTH2_ISSUER)).is_codel_auth());
-        assert!(!with_issuer(AuthMode::Oidc, None).is_codel_auth());
-        assert!(!with_issuer(AuthMode::External, None).is_codel_auth());
-        assert!(!with_issuer(AuthMode::Oidc, Some("https://idp.acme.example")).is_codel_auth());
-        assert!(!with_issuer(AuthMode::External, Some("https://idp.acme.example")).is_codel_auth());
 
-        // ApiKey / WebLogin stay false even with an codel.dev issuer set.
-        assert!(!with_issuer(AuthMode::ApiKey, Some(CODEL_OAUTH2_ISSUER)).is_codel_auth());
-        assert!(!with_issuer(AuthMode::WebLogin, Some(CODEL_OAUTH2_ISSUER)).is_codel_auth());
-    }
-
-    #[test]
-    fn is_session_auth_requires_first_party_for_external() {
-        use crate::CODEL_OAUTH2_ISSUER;
-        let with_issuer = |mode: AuthMode, issuer: Option<&str>| CodelAuth {
-            oidc_issuer: issuer.map(str::to_owned),
-            ..make_auth(mode)
-        };
-
-        // Session logins qualify regardless of issuer (incl. enterprise OIDC).
-        assert!(with_issuer(AuthMode::WebLogin, None).is_session_auth());
-        assert!(with_issuer(AuthMode::Oidc, None).is_session_auth());
-        assert!(with_issuer(AuthMode::Oidc, Some("https://idp.acme.example")).is_session_auth());
-
-        // External qualifies only when first-party.
-        assert!(with_issuer(AuthMode::External, Some(CODEL_OAUTH2_ISSUER)).is_session_auth());
-        assert!(!with_issuer(AuthMode::External, None).is_session_auth());
-        assert!(
-            !with_issuer(AuthMode::External, Some("https://idp.acme.example")).is_session_auth()
-        );
-
-        // Plain API keys never do.
-        assert!(!with_issuer(AuthMode::ApiKey, Some(CODEL_OAUTH2_ISSUER)).is_session_auth());
-    }
-
-    #[test]
-    fn lookup_auth_skips_weblogin_on_primary_scope() {
-        let mut map = AuthStore::new();
-        map.insert("scope".into(), make_auth(AuthMode::WebLogin));
-        assert!(lookup_auth(&map, "scope").is_none());
-    }
-
-    #[test]
-    fn lookup_auth_skips_weblogin_on_legacy_fallback() {
-        let mut map = AuthStore::new();
-        map.insert(LEGACY_SCOPE.into(), make_auth(AuthMode::WebLogin));
-        assert!(lookup_auth(&map, "other-scope").is_none());
-    }
-
-    #[test]
-    fn lookup_auth_returns_oidc_token() {
-        let mut map = AuthStore::new();
-        map.insert("scope".into(), make_auth(AuthMode::Oidc));
-        assert!(lookup_auth(&map, "scope").is_some());
-    }
-
-    #[test]
-    fn lookup_auth_returns_api_key_token() {
-        let mut map = AuthStore::new();
-        map.insert("scope".into(), make_auth(AuthMode::ApiKey));
-        assert!(lookup_auth(&map, "scope").is_some());
-    }
 
     /// subscriptionTier present deserializes to Some.
     #[test]

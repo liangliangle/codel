@@ -121,44 +121,6 @@ mod tests {
     use crate::{AuthManager, AuthMode, CodelAuth, CodelComConfig};
     use chrono::{Duration, Utc};
     use std::sync::Arc;
-    fn make_manager_with_token(
-        expires_at: chrono::DateTime<Utc>,
-    ) -> (Arc<AuthManager>, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = Arc::new(AuthManager::new(dir.path(), CodelComConfig::default()));
-        let auth = CodelAuth {
-            key: "test-bearer-token".into(),
-            auth_mode: AuthMode::External,
-            expires_at: Some(expires_at),
-            create_time: Utc::now(),
-            ..CodelAuth::test_default()
-        };
-        mgr.hot_swap(auth);
-        (mgr, dir)
-    }
-    #[test]
-    fn resolve_returns_token_when_not_expired() {
-        let (mgr, _dir) = make_manager_with_token(Utc::now() + Duration::hours(1));
-        let creds = CodelAuthCredentials::new(None).with_auth_manager(mgr);
-        let resolved = creds.resolve();
-        assert_eq!(resolved.user_token.as_deref(), Some("test-bearer-token"));
-    }
-    #[test]
-    fn resolve_returns_token_during_early_invalidation_window() {
-        let (mgr, _dir) = make_manager_with_token(Utc::now() + Duration::minutes(3));
-        let creds = CodelAuthCredentials::new(None).with_auth_manager(mgr.clone());
-        assert!(mgr.current().is_none());
-        assert!(mgr.current_or_expired().is_some());
-        assert_eq!(
-            creds.resolve().user_token.as_deref(),
-            Some("test-bearer-token")
-        );
-    }
-    #[test]
-    fn resolve_returns_static_token_when_no_auth_manager() {
-        let creds = CodelAuthCredentials::new(Some("static-token".into()));
-        assert_eq!(creds.resolve().user_token.as_deref(), Some("static-token"));
-    }
     #[test]
     fn resolve_returns_none_when_no_token_at_all() {
         let dir = tempfile::tempdir().unwrap();

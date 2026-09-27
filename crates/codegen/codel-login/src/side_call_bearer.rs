@@ -21,7 +21,6 @@ use std::sync::Arc;
 use codel_tools::types::api_key_provider::SideCallBearerError;
 
 use crate::AuthManager;
-use crate::config::PreferredAuthMethod;
 use crate::model::{AuthMode, CodelAuth};
 
 impl AuthManager {
@@ -83,13 +82,9 @@ impl AuthManager {
 /// An API key always may. A session may unless a foreign login authority issued it. Anything else
 /// is sent, as chat sends it, and the server decides. The issuer is checked here rather than
 /// through the active backend so that an injected foreign credential is refused on every build.
-pub(crate) fn is_codel_side_call_principal(auth: &CodelAuth) -> bool {
-    match auth.auth_mode {
-        AuthMode::ApiKey => true,
-        AuthMode::Oidc | AuthMode::External | AuthMode::WebLogin => {
-            !auth.oidc_issuer.as_deref().is_some_and(is_foreign_issuer)
-        }
-    }
+pub(crate) fn is_codel_side_call_principal(_auth: &CodelAuth) -> bool {
+    // An API key always may be used for a side call; the server decides.
+    true
 }
 
 /// Host match, not a prefix match: `cursor.com.evil.test` is another domain.
@@ -140,22 +135,15 @@ impl codel_tools::types::ApiKeyProvider for SharedAuthKeyProvider {
     }
 }
 
+/// An API key is the only credential there is, so it is always preferred unless
+/// the operator has switched API-key auth off.
 fn prefers_static_api_key(am: &AuthManager) -> bool {
-    matches!(
-        am.codel_com_config().preferred_method,
-        Some(PreferredAuthMethod::ApiKey)
-    )
+    !am.codel_com_config().api_key_auth_disabled()
 }
 
-/// Precedence: env, then process model key, then disk. Off under kill-switch / oidc pin.
+/// Precedence: env, then process model key, then disk. Off under the kill switch.
 pub(crate) fn resolve_static_api_key(am: &AuthManager) -> Option<String> {
     if am.codel_com_config().api_key_auth_disabled() {
-        return None;
-    }
-    if matches!(
-        am.codel_com_config().preferred_method,
-        Some(PreferredAuthMethod::Oidc)
-    ) {
         return None;
     }
     non_empty_key(crate::auth_method::read_codel_api_key_env().ok())

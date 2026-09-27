@@ -677,7 +677,6 @@ pub(crate) use crate::session::streaming_capture::StreamingTurnCapture;
 pub(crate) struct ModelAuthMemo {
     pub(crate) model_id: String,
     pub(crate) facts: crate::agent::config::ModelAuthFacts,
-    pub(crate) provider: Option<codel_login::AuthProviderRef>,
 }
 pub(crate) struct PendingImageStrip {
     pub(crate) urls: Vec<std::sync::Arc<str>>,

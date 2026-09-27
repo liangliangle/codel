@@ -11,8 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use codel_login::AuthManager;
 use codel_login::UserInfo;
-use codel_login::manager::{BEST_EFFORT_REFRESH_TIMEOUT, BoundedRefresh, RefreshReason};
-use codel_login::token_type::TokenType;
 /// Any active subscription qualifies: the proxy only returns a tier when an active subscription exists (`None` otherwise).
 /// The access gate in remote settings controls which tiers are actually allowed.
 /// The `"Free"` guard is defense-in-depth should the proxy ever start stamping free users explicitly.
@@ -119,41 +117,9 @@ pub(crate) async fn single_check(
             "new_tier": new_tier,
         })),
     );
-    let refresh_deadline_hit = match auth_manager
-        .refresh_chain_bounded_outcome(
-            TokenType::OidcSession,
-            RefreshReason::ServerRejected,
-            BEST_EFFORT_REFRESH_TIMEOUT,
-        )
-        .await
-    {
-        BoundedRefresh::Resolved(result) => {
-            if let Err(e) = *result {
-                codel_logging::unified_log::warn(
-                    "paywall_check_error",
-                    None,
-                    Some(serde_json::json!({
-                        "user_id": user_id,
-                        "kind": "refresh_failed",
-                        "detail": e.to_string(),
-                    })),
-                );
-            }
-            false
-        }
-        BoundedRefresh::DeadlineElapsed => {
-            codel_logging::unified_log::warn(
-                "paywall_check_error",
-                None,
-                Some(serde_json::json!({
-                    "user_id": user_id,
-                    "kind": "refresh_deadline",
-                    "detail": "bounded refresh deadline elapsed; mint continues in background",
-                })),
-            );
-            true
-        }
-    };
+    // An API key cannot be refreshed, so a confirmed tier lifts the gate with no
+    // further mint.
+    let refresh_deadline_hit = false;
     codel_logging::unified_log::info(
         "paywall_check_unblocked",
         None,

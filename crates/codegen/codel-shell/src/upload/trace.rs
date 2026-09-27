@@ -1054,10 +1054,9 @@ impl TraceExportSource for DynamicResolver {
         {
             return Some(Box::pin(std::future::ready(true)));
         }
-        let am = self.auth_manager.clone();
-        Some(Box::pin(
-            async move { am.wait_for_token_refresh(timeout).await },
-        ))
+        // No refresh can arrive: an API key does not rotate.
+        let _ = timeout;
+        Some(Box::pin(std::future::ready(false)))
     }
     fn resolve_async(
         &self,

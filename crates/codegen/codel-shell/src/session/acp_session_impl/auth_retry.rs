@@ -40,12 +40,9 @@ pub(crate) async fn pace_uncharged_resubmit(
                 if remaining.is_zero() {
                     break;
                 }
-                if am
-                    .wait_for_token_refresh(remaining.min(PACE_WAIT_SLICE))
-                    .await
-                {
-                    break;
-                }
+                // An API key cannot be refreshed; pace the retry instead of
+                // waiting for a refresh that will never arrive.
+                tokio::time::sleep(remaining.min(PACE_WAIT_SLICE)).await;
             }
         }
         _ => tokio::time::sleep(delay).await,

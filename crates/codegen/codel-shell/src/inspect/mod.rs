@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use codel_login::ForceLoginTeam;
 use codel_tools::types::config_source::ConfigSource;
 use codel_tools::util::truncate::estimate_tokens;
 use codel_workspace::permission::resolution::{
@@ -228,8 +227,6 @@ pub(crate) struct SkippedRule {
 pub(crate) struct LoginPolicyReport {
     /// Raw `disable_api_key_auth` knob (env `CODEL_DISABLE_API_KEY_AUTH`).
     pub disable_api_key_auth: Option<bool>,
-    /// Configured team pin: single string, list, or null when unset.
-    pub force_login_team_uuid: Option<ForceLoginTeam>,
     /// Resolved verdict: true when either knob forces first-party login.
     pub api_key_auth_disabled: bool,
 }
@@ -803,7 +800,6 @@ fn login_policy_report(config: Option<&crate::agent::config::Config>) -> LoginPo
     LoginPolicyReport {
         api_key_auth_disabled: codel_com_config.api_key_auth_disabled(),
         disable_api_key_auth: codel_com_config.disable_api_key_auth,
-        force_login_team_uuid: codel_com_config.force_login_team_uuid,
     }
 }
 
@@ -1395,18 +1391,6 @@ fn print_columns<T>(
     Ok(())
 }
 
-/// Render the team pin for the human view: single value, comma-joined list, or an explicit empty-list marker (which fails closed at login).
-fn format_force_login_team(team: &Option<ForceLoginTeam>) -> String {
-    match team {
-        None => "(none)".to_string(),
-        Some(ForceLoginTeam::Single(s)) => s.clone(),
-        Some(ForceLoginTeam::AnyOf(list)) if list.is_empty() => {
-            "(empty -- fail closed)".to_string()
-        }
-        Some(ForceLoginTeam::AnyOf(list)) => list.join(", "),
-    }
-}
-
 /// Human label for an enforced setting.
 /// Uses product vocabulary, not the internal field names (no `ui.yolo` / `--yolo` / `permission_mode`).
 fn enforced_label(p: &EnforcedPolicy) -> String {
@@ -1636,11 +1620,6 @@ fn print_human(r: &InspectReport, out: &mut impl Write) -> std::io::Result<()> {
             Some(v) => v.to_string(),
             None => "(unset)".to_string(),
         }
-    )?;
-    writeln!(
-        out,
-        "  {TREE} force_login_team_uuid: {}",
-        format_force_login_team(&r.login_policy.force_login_team_uuid)
     )?;
     writeln!(
         out,

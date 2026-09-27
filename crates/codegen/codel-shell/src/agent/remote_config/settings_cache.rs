@@ -133,12 +133,7 @@ impl SettingsCacheManager {
         } else {
             auth.user_id.as_str()
         };
-        let auth_mode = match auth.auth_mode {
-            codel_login::AuthMode::WebLogin => "web_login",
-            codel_login::AuthMode::Oidc => "oidc",
-            codel_login::AuthMode::External => "external",
-            codel_login::AuthMode::ApiKey => "api_key",
-        };
+        let auth_mode = "api_key";
         let mut hasher = Sha256::new();
         for part in [
             principal,

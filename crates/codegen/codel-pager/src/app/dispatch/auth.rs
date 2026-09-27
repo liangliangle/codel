@@ -40,7 +40,7 @@ pub(super) fn ensure_login_method(app: &mut AppView) {
 /// When the list is empty, prefer the shell's `PREFERRED_API_KEY_UNAVAILABLE` copy.
 fn no_login_method_error(app: &AppView) -> String {
     if app.auth_methods.is_empty() {
-        codel_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string()
+        codel_shell::agent::auth_method::AUTH_ERROR_API_KEY.to_string()
     } else {
         "No login method available".to_string()
     }

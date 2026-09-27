@@ -553,69 +553,20 @@ pub fn parse_feedback_trace_offer(meta: Option<&acp::Meta>) -> bool {
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
-/// Determine whether interactive login is needed based on the advertised auth methods. Otherwise, authenticate
-/// eagerly.
+/// Whether interactive login is needed, plus the method to present.
+///
+/// The fork advertises at most the API-key method, which is not interactive, so
+/// this is always the "authenticate eagerly" answer.
 pub fn startup_auth_metadata(
-    auth_methods: &[acp::AuthMethod],
-) -> (
-    bool,
-    Option<String>,
-    Option<acp::AuthMethodId>,
-    AuthStartMode,
-) {
-    let first_method = auth_methods.first();
-    let needs_login = first_method
-        .map(|m| AuthMethodKind::from_id(m.id()).needs_interactive_login())
-        .unwrap_or(false);
-    if !needs_login {
-        return (false, None, None, AuthStartMode::Pending);
-    }
-    let method = first_method.unwrap();
-    let login_label = Some(method.name().to_string());
-    let login_method_id = Some(method.id().clone());
-    let is_provider = method
-        .meta()
-        .as_ref()
-        .and_then(|v| v.get("external_provider"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let auth_start_mode = if is_provider {
-        AuthStartMode::Command
-    } else {
-        AuthStartMode::Pending
-    };
-    (needs_login, login_label, login_method_id, auth_start_mode)
+    _auth_methods: &[acp::AuthMethod],
+) -> (bool, Option<String>, Option<acp::AuthMethodId>, AuthStartMode) {
+    (false, None, None, AuthStartMode::Pending)
 }
-/// Find an interactive login method from the auth methods list.
-/// Used when eager auth (cached_token or API key) fails and we need to fall back to the welcome screen with a working login button.
-/// Scans the list for a `codel.dev` or `oidc` method; these are the ones that can trigger a browser-based re-auth flow.
+/// No method is interactive in this fork, so there is never a login method to find.
 pub fn find_interactive_login_method(
-    auth_methods: &[acp::AuthMethod],
+    _auth_methods: &[acp::AuthMethod],
 ) -> (Option<String>, Option<acp::AuthMethodId>, AuthStartMode) {
-    let interactive = auth_methods
-        .iter()
-        .find(|m| AuthMethodKind::from_id(m.id()).needs_interactive_login());
-    match interactive {
-        Some(method) => {
-            let is_provider = method
-                .meta()
-                .as_ref()
-                .and_then(|v| v.get("external_provider"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let mode = if is_provider {
-                AuthStartMode::Command
-            } else {
-                AuthStartMode::Pending
-            };
-            (
-                Some(method.name().to_string()),
-                Some(method.id().clone()),
-                mode,
-            )
-        }
-        None => (None, None, AuthStartMode::Pending),
-    }
+    (None, None, AuthStartMode::Pending)
 }
 /// Attempt eager auth; on failure fall back to the interactive login screen. The shell owns unpinned fallthrough,
 /// and a failed api_key must not open a browser. Otherwise hand the interactive method for the login screen. Empty
@@ -744,12 +695,7 @@ pub fn select_eager_auth_method(
     {
         return Some(default_id.clone());
     }
-    let cached_token_method = auth_methods
-        .iter()
-        .find(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::CachedToken);
-    cached_token_method
-        .or_else(|| auth_methods.first())
-        .map(|m| m.id().clone())
+    auth_methods.first().map(|m| m.id().clone())
 }
 #[cfg(test)]
 mod tests {

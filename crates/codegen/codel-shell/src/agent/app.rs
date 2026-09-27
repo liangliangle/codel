@@ -22,7 +22,7 @@ use codel_acp_lib::{
 };
 #[cfg(test)]
 use codel_login::AuthMode;
-use codel_login::{AuthManager, CodelAuth, CodelComConfig, run_auth_flow};
+use codel_login::{AuthManager, CodelAuth, CodelComConfig};
 const MAX_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 use indexmap::IndexMap;
 /// Configuration for periodic auto-update checking in leader mode. A long-running leader periodically calls `check_fn` to check for updates.
@@ -277,8 +277,6 @@ pub async fn run_stdio_agent(
                 let _ = tx.shutdown().await;
             });
             let auth_manager = Arc::new(agent_config.create_auth_manager());
-            auth_manager.start_proactive_refresh(cancel_for_agent.clone());
-            auth_manager.start_system_power_listener();
             crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
             let boot = crate::agent::init::resolve_boot_startup_settings(
                 &mut agent_config,
@@ -320,8 +318,8 @@ pub async fn run_headless(
     crate::http::set_process_client_mode_headless();
     use crate::agent::relay::spawn_relay_connection_with_callback;
     use tokio_util::sync::CancellationToken;
-    const HEADLESS_NO_SESSION: &str = "Headless mode requires a codel.dev session. \
-        Run `codel login` to sign in, or use `codel agent stdio` for API-key access.";
+    const HEADLESS_NO_CREDENTIALS: &str = "Headless mode requires an API key. \
+        Set CODEL_API_KEY, or add api_key/env_key to a [model.<id>] entry in config.toml.";
     codel_file_utils::queue::cleanup_orphaned_uploads(
         &codel_home::codel_home(),
         codel_file_utils::queue::DEFAULT_MAX_AGE,
@@ -329,53 +327,23 @@ pub async fn run_headless(
     let mut agent_config = agent_config.clone();
     agent_config.mode = crate::agent::config::AgentMode::Headless;
     let ctx = &agent_config.codel_com_config;
-    let (mut auth, did_browser_flow) = if reauthenticate {
-        let auth_manager = Arc::new(AuthManager::new_with_proxy_base_url(
-            &codel_home::codel_home(),
-            ctx.clone(),
-            crate::agent::config::EndpointsConfig::from_effective_config().proxy_url(),
-        ));
-        run_auth_flow(
-            &auth_manager,
-            ctx,
-            agent_config.login_device_flow,
-            true,
-            None,
-            None,
-            None,
-            codel_login::LoginTransportOverride::None,
-        )
-        .await?
-    } else {
-        let auth_manager = Arc::new(AuthManager::new_with_proxy_base_url(
-            &codel_home::codel_home(),
-            ctx.clone(),
-            crate::agent::config::EndpointsConfig::from_effective_config().proxy_url(),
-        ));
-        if crate::agent::auth_method::has_codel_api_key_env()
-            && ctx.auth_provider_command.is_none()
-            && codel_login::try_ensure_fresh_auth(ctx, auth_manager.proxy_base_url().to_string())
-                .await
-                .is_none()
-        {
-            anyhow::bail!("{HEADLESS_NO_SESSION}");
-        }
-        run_auth_flow(
-            &auth_manager,
-            ctx,
-            agent_config.login_device_flow,
-            false,
-            None,
-            None,
-            None,
-            codel_login::LoginTransportOverride::None,
-        )
-        .await?
+    // `reauthenticate` has no counterpart here: an API key cannot be re-obtained
+    // interactively, so a refused key has to be replaced by the operator.
+    let auth_manager = Arc::new(AuthManager::new_with_proxy_base_url(
+        &codel_home::codel_home(),
+        ctx.clone(),
+        crate::agent::config::EndpointsConfig::from_effective_config().proxy_url(),
+    ));
+    let mut auth = match auth_manager.auth().await {
+        Ok(auth) => Arc::new(auth),
+        Err(e) => anyhow::bail!("{HEADLESS_NO_CREDENTIALS} ({e})"),
     };
     if auth.user_id.is_empty() || auth.email.is_none() {
-        auth = Arc::new(agent_config.create_auth_manager())
-            .update(auth.clone())
-            .await?;
+        auth = Arc::new(
+            Arc::new(agent_config.create_auth_manager())
+                .update((*auth).clone())
+                .await?,
+        );
     }
     let auth_for_prefetch = auth.clone();
     let endpoints_for_prefetch = agent_config.endpoints.clone();
@@ -401,25 +369,9 @@ pub async fn run_headless(
     let Some(relay_config) =
         relay_config_for_session(Some(&auth), &agent_config, &shared_auth_manager)
     else {
-        anyhow::bail!("{HEADLESS_NO_SESSION}");
+        anyhow::bail!("{HEADLESS_NO_CREDENTIALS}");
     };
-    let codel_code_url = format!("{}/build", ctx.codel_ws_origin);
-    let on_first_connect: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
-        if !did_browser_flow {
-            eprintln!();
-            eprintln!(
-                "Open Codel Build: {} (press Enter to open in browser)",
-                codel_code_url
-            );
-            eprintln!();
-            let url_for_open = codel_code_url.clone();
-            std::thread::spawn(move || {
-                let mut input = String::new();
-                let _ = std::io::stdin().read_line(&mut input);
-                let _ = webbrowser::open(&url_for_open);
-            });
-        }
-    });
+    let on_first_connect: Box<dyn FnOnce() + Send + 'static> = Box::new(|| {});
     let cancel = CancellationToken::new();
     let (agent_to_ws_tx, _relay_handle) = spawn_relay_connection_with_callback(
         relay_config,
@@ -439,7 +391,6 @@ pub async fn run_headless(
                 let (gw_tx, gw_rx) = tokio::sync::mpsc::unbounded_channel();
                 let gateway = GatewaySender::new(gw_tx);
                 let auth_manager = shared_auth_manager;
-                auth_manager.start_proactive_refresh(agent_cancel.clone());
                 crate::managed_config::ensure_managed_policy_present(&auth_manager)
                     .await;
                 let boot = match crate::agent::init::resolve_boot_startup_settings(
@@ -661,7 +612,6 @@ pub fn apply_otel_config(auth_manager: &AuthManager, codel_com_config: &CodelCom
     if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
         channel: crate::agent::otel_gate::resolved_policy_channel(),
         has_session,
-        session_pending: crate::agent::otel_gate::is_session_pending(has_session, codel_com_config),
     }) {
         crate::agent::otel_gate::open_at_startup();
     }
@@ -853,19 +803,15 @@ pub async fn run_leader(
             .create_auth_manager()
             .read_disk_auth()
             .is_some();
-    let session_pending =
-        crate::agent::otel_gate::is_session_pending(has_session, &agent_config.codel_com_config);
     let policy_channel =
         crate::agent::otel_gate::policy_channel_for(&agent_config.endpoints.proxy_url());
     if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
         channel: policy_channel,
         has_session,
-        session_pending,
     }) {
         info!(
             channel = ?policy_channel,
             has_session,
-            session_pending,
             "Opening external-OTEL gate at startup: no fleet policy is pending for this leader"
         );
         crate::agent::otel_gate::open_at_startup();
@@ -883,8 +829,6 @@ pub async fn run_leader(
     let agent_to_ipc_tx_clone = agent_to_ipc_tx.clone();
     let cancel_clone = cancel.clone();
     let shared_auth_manager = Arc::new(agent_config_for_spawn.create_auth_manager());
-    shared_auth_manager.start_proactive_refresh(cancel_clone.clone());
-    shared_auth_manager.start_system_power_listener();
     if let Some(session) = auth.as_ref()
         && should_seed_shared_session(shared_auth_manager.current_or_expired().as_ref(), session)
     {
@@ -1044,26 +988,6 @@ pub async fn run_leader(
                 }
             });
             tokio::task::spawn_local(run_changed_notifier(external_roster, fan_out));
-            if session_pending {
-                let mint_auth_manager = auth_manager_for_mint;
-                let mint_cancel = cancel_clone.clone();
-                tokio::task::spawn_local(async move {
-                    tokio::select! {
-                        biased;
-                        _ = mint_cancel.cancelled() => {}
-                        minted = codel_login::mint_session_noninteractive(&mint_auth_manager)
-                            => match minted {
-                            Some(session) => info!(
-                                is_codel = session.is_codel_auth(),
-                                "background cold-mint acquired a session post-readiness"
-                            ),
-                            None => warn!(
-                                "background cold-mint found no session; leader remains session-less"
-                            ),
-                        },
-                    }
-                });
-            }
             let relay_handle_slot: Rc<
                 std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>,
             > = Rc::new(std::cell::RefCell::new(None));

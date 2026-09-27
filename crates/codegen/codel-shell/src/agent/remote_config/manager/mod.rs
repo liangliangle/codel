@@ -886,66 +886,6 @@ impl ModelsManager {
         self.spawn_catalog_retry(remote_fetch_enabled);
     }
 
-    /// Refresh the model catalog on every auth token refresh.
-    pub fn start_auth_refresh_watcher(&self, notify: Arc<tokio::sync::Notify>) {
-        let mgr = self.clone();
-        let had_catalog_at_start = self.inner.catalog.read().has_fetched_real_catalog;
-        codel_logging::unified_log::info(
-            "model catalog: auth refresh watcher started",
-            None,
-            Some(serde_json::json!({
-                "had_real_catalog": had_catalog_at_start,
-                "model_count": self.available().len(),
-            })),
-        );
-        tokio::spawn(async move {
-            loop {
-                notify.notified().await;
-                if !crate::util::config::resolve_remote_fetch_enabled() {
-                    tracing::debug!(
-                        "model catalog: auth refresh watcher skipped (remote_fetch disabled)"
-                    );
-                    continue;
-                }
-                let had_catalog = mgr.inner.catalog.read().has_fetched_real_catalog;
-                let old_count = mgr.available().len();
-                codel_logging::unified_log::info(
-                    "model catalog: auth refresh watcher triggered",
-                    None,
-                    Some(serde_json::json!({
-                        "had_real_catalog": had_catalog,
-                        "model_count_before": old_count,
-                    })),
-                );
-                mgr.fetch_and_apply().await;
-                let has_catalog = mgr.inner.catalog.read().has_fetched_real_catalog;
-                let new_count = mgr.available().len();
-                if has_catalog {
-                    if !had_catalog || new_count != old_count {
-                        codel_logging::unified_log::info(
-                            "model catalog: auth refresh watcher updated catalog",
-                            None,
-                            Some(serde_json::json!({
-                                "model_count_before": old_count,
-                                "model_count_after": new_count,
-                                "was_recovery": !had_catalog,
-                            })),
-                        );
-                    }
-                    mgr.notify_models_updated();
-                } else {
-                    codel_logging::unified_log::warn(
-                        "model catalog: auth refresh watcher fetch failed",
-                        None,
-                        Some(serde_json::json!({
-                            "model_count": old_count,
-                        })),
-                    );
-                }
-            }
-        });
-    }
-
     /// Wipe in-memory state so a previous identity's catalog doesn't leak.
     fn clear(&self) {
         {

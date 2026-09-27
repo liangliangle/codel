@@ -16,8 +16,6 @@ mod mcp;
 pub use mcp::*;
 mod permission;
 pub use permission::*;
-mod auth_provider;
-pub use auth_provider::*;
 use serde::{Deserialize, Serialize};
 use codel_announcements::RemoteAnnouncement;
 pub use codel_config::DisplayRefreshSettings;

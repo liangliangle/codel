@@ -730,17 +730,10 @@ fn session_bearer_resolver(
     byok: crate::agent::auth_method::ModelByok,
     base_url: &str,
 ) -> Option<codel_sampler::SharedBearerResolver> {
-    use crate::agent::auth_method;
-    auth_method::session_token_auth_gate(
-        auth_method::is_session_based_method(&ctx.auth_method_id),
-        byok,
-        crate::util::is_codel_api_url(base_url),
-    )
-    .then(|| {
-        codel_login::credential_provider::WireValidBearerResolver::shared(
-            ctx.auth_manager.clone(),
-        )
-    })
+    // No advertised method carries a session credential, so a subagent never
+    // needs a session bearer resolver.
+    let _ = (ctx, byok, base_url);
+    None
 }
 /// [`session_bearer_resolver`] for an inherited config, where only the model string is known: BYOK comes from the catalog memo.
 fn inherited_bearer_resolver(
@@ -748,9 +741,7 @@ fn inherited_bearer_resolver(
     model: &str,
     base_url: &str,
 ) -> Option<codel_sampler::SharedBearerResolver> {
-    let byok = crate::agent::config::resolve_model_auth_facts_and_provider(model)
-        .0
-        .byok;
+    let byok = crate::agent::config::resolve_model_auth_facts(model).byok;
     session_bearer_resolver(ctx, byok, base_url)
 }
 fn parent_catalog_model_id(ctx: &SubagentSpawnContext, routing_model: &str) -> acp::ModelId {
