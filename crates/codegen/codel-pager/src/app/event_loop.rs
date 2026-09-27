@@ -1232,64 +1232,10 @@ pub(crate) async fn run(
     apply_session_recap_available(&mut app, connection.session_recap_available);
     app.shell_feedback_trace_offer = connection.feedback_trace_offer;
     app.auth_methods = connection.auth_methods.clone();
-    let force_login = args.force_login && !connection.auth_methods.is_empty();
-    let needs_interactive_login = connection.needs_login || force_login;
-    if needs_interactive_login {
-        app.welcome_prompt_focused = false;
-        if connection.needs_login {
-            app.login_label = connection.login_label;
-            app.login_method_id = connection.login_method_id;
-            app.auth_start_mode = match connection.auth_start_mode {
-                crate::acp::AuthStartMode::Pending => super::app_view::AuthMode::Pending,
-                crate::acp::AuthStartMode::Command => super::app_view::AuthMode::Command,
-            };
-        } else {
-            let codel_com = connection
-                .auth_methods
-                .iter()
-                .find(|m| m.id().0.as_ref() == "codel.dev");
-            if let Some(method) = codel_com {
-                app.login_label = Some(method.name().to_string());
-                app.login_method_id = Some(method.id().clone());
-                let is_provider = method
-                    .meta()
-                    .as_ref()
-                    .and_then(|v| v.get("external_provider"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                app.auth_start_mode = if is_provider {
-                    super::app_view::AuthMode::Command
-                } else {
-                    super::app_view::AuthMode::Pending
-                };
-            } else if let Some(first) = connection.auth_methods.first() {
-                app.login_label = Some(first.name().to_string());
-                app.login_method_id = Some(first.id().clone());
-                app.auth_start_mode = super::app_view::AuthMode::Pending;
-            }
-        }
-        tracing::info!(
-            method_id = ?app.login_method_id,
-            methods_empty = connection.auth_methods.is_empty(),
-            "auto-triggering login at startup"
-        );
-    }
-    let mut post_render_effects = if needs_interactive_login {
-        if connection.auth_methods.is_empty() {
-            app.auth_state = super::app_view::AuthState::Pending {
-                error: Some(
-                    codel_shell::agent::auth_method::AUTH_ERROR_API_KEY.to_string(),
-                ),
-            };
-            vec![]
-        } else {
-            dispatch::dispatch(Action::Login, &mut app)
-        }
-    } else {
-        vec![]
-    };
-    app.has_external_auth_provider =
-        crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
+    // No interactive login exists: the API key comes from config or
+    // `codel/setApiKey`, so the startup path never prompts.
+    let mut post_render_effects: Vec<Effect> = vec![];
+    app.has_external_auth_provider = false;
     if let Some(meta) = connection.auth_meta.as_ref() {
         match serde_json::from_value::<codel_login::AuthMeta>(meta.clone()) {
             Ok(auth_meta) => {

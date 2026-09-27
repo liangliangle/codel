@@ -1,5 +1,5 @@
 //! `AuthManager` is the single source of truth for `auth.json` and the in-memory bearer cache.
-//! Mutations go through `refresh_chain` or `update`; lock and enrichment helpers live in submodules.
+//! Mutations go through `update`; lock and enrichment helpers live in submodules.
 use chrono::{Duration, Utc};
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
@@ -95,9 +95,8 @@ impl std::fmt::Debug for AuthManager {
 }
 /// Single source of truth for `auth.json` and the in-memory bearer. Lock order: `refresh_lock` (async), then the sync locks (`inner` / `refresher` / `permanent_failure` / `manual_auth`), never co-held.
 /// `permanent_failure()` reads `permanent_failure` first, then `inner` (via `attempted_verdict_key`, when a verdict is stored), never co-held. Never hold a `parking_lot` guard across `.await`.
-/// Refreshers return [`RefreshOutcome`] for `refresh_chain` to apply.
 pub struct AuthManager {
-    /// In-memory bearer. Mutate via [`Self::with_inner_write`] or [`Self::refresh_chain`].
+    /// In-memory bearer. Mutate via [`Self::with_inner_write`] or [`Self::update`].
     /// The closure helpers' sync return type enforces "no `.await` while holding the lock".
     /// `Arc` so the spawned `/user` enrichment task can write back.
     inner: Arc<RwLock<Option<CodelAuth>>>,
@@ -600,7 +599,7 @@ impl AuthManager {
         is_expired_with_buffer(auth, buffer)
     }
     /// Persist rotated tokens to disk and cache, then spawn `/user` enrichment. Invariants: **Disk write before any network I/O** (else a sibling process can reuse the not-yet-rotated RT and the IdP returns `invalid_grant`).
-    /// **Caller holds the `auth.json` file lock** (production callers: `refresh_chain` Success arm, `flow::run_auth_flow`).
+    /// **Caller holds the `auth.json` file lock** (the production caller is `update`).
     /// Returns the input `CodelAuth` BEFORE enrichment lands; callers needing the post-enrichment view re-read `current()`.
     pub async fn update(self: &Arc<Self>, auth: CodelAuth) -> std::io::Result<CodelAuth> {
         let update_started = std::time::Instant::now();

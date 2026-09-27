@@ -331,7 +331,7 @@ impl UnauthorizedRecovery {
     }
     /// Return the live token instead of refreshing when its mint age is within ±[`FRESH_MINT_GUARD_SECS`]. Anything outside (including a clock that stepped far back) falls through to a normal refresh.
     /// A 401 moments after a successful mint is a stale rejection or validation lag on the new key. A stale rejection was sent with the previous key and mis-attributed; see `is_stale_snapshot`.
-    /// Re-minting fixes neither, and a crash between the IdP grant and persisting the response orphans the replacement RT (forced re-login). Lives here, not in `refresh_chain`, so paywall claims re-mints that call `refresh_chain(ServerRejected)` directly are unaffected.
+    /// There is no re-mint to fall back on: an API key is configured, not issued.
     fn fresh_mint_guard(&self) -> Option<CodelAuth> {
         let auth = self.auth_manager.current()?;
         let mint_age_seconds = auth.mint_age_seconds();
