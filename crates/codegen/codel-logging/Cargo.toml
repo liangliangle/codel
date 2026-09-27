@@ -31,7 +31,6 @@ git2 = { version = "0.20", default-features = false, features = [
 ] }
 reqwest = { workspace = true }
 codel-secrets = { workspace = true }
-codel-mixpanel = { workspace = true }
 codel-config = { workspace = true }
 codel-extra-ca = { workspace = true }
 codel-sampler = { workspace = true }

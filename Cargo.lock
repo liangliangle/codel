@@ -2554,7 +2554,6 @@ dependencies = [
  "codel-env",
  "codel-extra-ca",
  "codel-file-utils",
- "codel-mixpanel",
  "codel-otel",
  "codel-sampler",
  "codel-secrets",
@@ -2786,19 +2785,6 @@ dependencies = [
 [[package]]
 name = "codel-message-delivery-core"
 version = "0.1.0"
-
-[[package]]
-name = "codel-mixpanel"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "codel-secrets",
- "reqwest 0.12.24",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "wiremock",
-]
 
 [[package]]
 name = "codel-models"

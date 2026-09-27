@@ -1,4 +1,4 @@
-//! Core telemetry tracking: product events and Mixpanel.
+//! Local logging entry points. The fork ships no analytics transport: `init` builds nothing.
 //!
 //! All calls route through [`track`].
 //! Precedence: env overrides config, config overrides remote config, remote config overrides the default.
@@ -12,7 +12,6 @@ use chrono::{Local, SecondsFormat};
 use serde_json::json;
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use codel_env::env_bool;
-use codel_mixpanel::Mixpanel;
 /// Event property map shared by all telemetry modules.
 pub type Metadata = serde_json::Map<String, serde_json::Value>;
 /// Strips the [`EmitterOrigin`] prefix so shell events keep their historical `event_value` and workspace events collapse to the same bare suffix.
@@ -35,7 +34,6 @@ pub struct TelemetryClient {
     mode: TelemetryMode,
     events_url: Option<String>,
     events_api_key: Option<String>,
-    mixpanel: Option<Arc<Mixpanel>>,
     user_id: Option<String>,
     team_id: Option<String>,
     deployment_id: Option<String>,
@@ -52,7 +50,6 @@ impl std::fmt::Debug for TelemetryClient {
                 "events_api_key",
                 &self.events_api_key.as_ref().map(|_| "***"),
             )
-            .field("mixpanel", &self.mixpanel.as_ref().map(|_| "configured"))
             .finish()
     }
 }
@@ -82,14 +79,6 @@ impl TelemetryClient {
                 );
                 });
         }
-        let mixpanel = if config.mixpanel_enabled {
-            config
-                .mixpanel_token
-                .as_ref()
-                .map(|token| Arc::new(Mixpanel::with_client(token.as_str(), http_client.clone())))
-        } else {
-            None
-        };
         let deployment_id = deployment_key
             .filter(|s| !s.is_empty())
             .map(|k| deployment_id_from_key(&k));
@@ -101,7 +90,6 @@ impl TelemetryClient {
             mode,
             events_url: config.events_url,
             events_api_key: config.events_api_key,
-            mixpanel,
             user_id,
             team_id,
             deployment_id,
@@ -248,7 +236,7 @@ pub const RESERVED_EVENT_KEYS: &[&str] = &[
     "session_id",
     "turn_number",
 ];
-/// Core telemetry emitter. Routes to product events and Mixpanel.
+/// Event emitter. With no client built by `init`, every call is a no-op.
 pub async fn track(event_name: &str, request_id: &str, ctx: &UserContext, mut metadata: Metadata) {
     // Transport removed: events are dropped.
     let _ = (event_name, request_id, ctx, &mut metadata);
@@ -316,30 +304,6 @@ pub async fn track(event_name: &str, request_id: &str, ctx: &UserContext, mut me
             .send()
             .await;
     }
-    if let Some(ref mixpanel) = client.mixpanel {
-        let time_secs = chrono::Utc::now().timestamp();
-        let insert_id = product_analytics_insert_id();
-        let mut props: std::collections::HashMap<String, serde_json::Value> =
-            metadata.into_iter().collect();
-        props.insert("distinct_id".into(), json!(user_id));
-        props.insert("time".into(), json!(time_secs));
-        props.insert("$insert_id".into(), json!(insert_id));
-        props.insert("app_name".into(), json!("Codel Code"));
-        props.insert("user_type".into(), json!("LoggedIn"));
-        props.insert("country".into(), json!(ctx.country));
-        props.insert("language".into(), json!(ctx.language));
-        props.insert("locale".into(), json!("English"));
-        match mixpanel.track(event_name, Some(props)).await {
-            Ok(()) => {
-                if event_name.ends_with("session_context_snapshot") {
-                    tracing::info!(event = %event_name, "mixpanel track ok");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, event = %event_name, "mixpanel track failed");
-            }
-        }
-    }
 }
 /// Resolved mode of the initialized client, `None` when off.
 /// Lets a parent pass its mode to a spawned child that cannot re-resolve remote settings.
@@ -348,45 +312,9 @@ pub fn current_mode() -> Option<TelemetryMode> {
     let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
     guard.as_ref().map(|c| c.mode)
 }
-/// Sync the user's Mixpanel profile once per init. Fire-and-forget. Only runs in [`TelemetryMode::Enabled`].
-/// SessionMetrics mode may emit lifecycle events via [`track`], but must not write Mixpanel people profiles (`engage`).
-pub fn sync_profile() {
-    let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
-    let client = {
-        let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
-        match guard.clone() {
-            Some(c) => c,
-            None => return,
-        }
-    };
-    if !client.mode.is_enabled() {
-        return;
-    }
-    let Some(mixpanel) = client.mixpanel.clone() else {
-        return;
-    };
-    tokio::spawn(async move {
-        let agent_id = crate::id::agent_id_async().await;
-        let user_id = client.user_id.as_deref().unwrap_or(&agent_id).to_owned();
-        let mut props = std::collections::HashMap::new();
-        props.insert("agent_id".into(), json!(agent_id));
-        props.insert("shell_version".into(), json!(client.shell_version));
-        props.insert("app_name".into(), json!("Codel Code"));
-        if let Some(ref client_type) = client.client_type {
-            props.insert("client_type".into(), json!(client_type));
-        }
-        if let Some(ref client_version) = client.client_version {
-            props.insert("client_version".into(), json!(client_version));
-        }
-        if let Some(ref deployment_id) = client.deployment_id {
-            props.insert("deployment_id".into(), json!(deployment_id));
-        }
-        if let Some(ref team_id) = client.team_id {
-            props.insert("team_id".into(), json!(team_id));
-        }
-        let _ = mixpanel.engage(&user_id, props).await;
-    });
-}
+/// Kept for its callers: there is no profile to sync now that the fork ships no
+/// analytics transport, so this is a no-op whatever the mode says.
+pub fn sync_profile() {}
 /// Safe to call multiple times. `Disabled`: no client; `SessionMetrics`: client active (only `session_metrics::*` events
 /// fire); `Enabled`: client active (all events fire). `shell_version` is stamped into every event payload (legacy field
 /// name kept for analytics continuity); shell passes its `CARGO_PKG_VERSION`.

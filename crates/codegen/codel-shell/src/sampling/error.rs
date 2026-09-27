@@ -549,18 +549,12 @@ mod tests {
     }
 
     #[test]
-    fn format_rate_limited_api_key_rewrites_consumer_subscription_upsell() {
-        let body = "Some resource has been exhausted: You are sending requests too quickly. \
-             Please slow down, or upgrade to a Codel subscription for higher limits: \
-             https://codel.dev/supercodel";
+    fn format_rate_limited_surfaces_the_server_body_for_every_auth_kind() {
+        let body = "Some resource has been exhausted: You are sending requests too quickly.";
         let wire = format!("API error (status 429 Too Many Requests): {body}");
-        // OAuth keeps the IC body (personal plan upgrade is correct).
+        // No client-side plan copy is injected: the body reaches the user as sent.
         assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
-        // API key must not push codel.dev SuperCodel; it gets the team credits / rate-limit tiers copy
-        assert_eq!(
-            format_rate_limited_user_message(Some(&wire), true),
-            RATE_LIMITED_USER_MESSAGE_API_KEY
-        );
+        assert_eq!(format_rate_limited_user_message(Some(&wire), true), body);
     }
 
     #[test]
@@ -780,13 +774,16 @@ mod tests {
         }
     }
 
+        /// A 403 body reaches the user unchanged: there is no login session to end, so
+    /// no hint tells them to `codel logout`.
     #[test]
     #[serial_test::serial]
-    fn forbidden_subscription_error_includes_api_key_hint_when_env_set() {
+    fn forbidden_subscription_error_surfaces_backend_message_only() {
         with_api_key_env(Some("codel-test"), || {
+            let message = "The model 'codel-build' requires a Codel subscription.";
             let err = SamplingError::Api {
                 status: StatusCode::FORBIDDEN,
-                message: "The model 'codel-build' requires a Codel subscription.".into(),
+                message: message.into(),
                 model_metadata: None,
                 retry_after_secs: None,
                 should_retry: None,
@@ -794,37 +791,7 @@ mod tests {
             };
             let acp_err = map_sampling_err_to_acp(err);
             let data = acp_err.data.unwrap();
-            let msg = data.as_str().unwrap();
-            assert!(
-                msg.contains("codel logout"),
-                "should suggest codel logout when API key is available: {msg}"
-            );
-            assert!(
-                msg.contains("/logout"),
-                "should mention /logout TUI command: {msg}"
-            );
-        });
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn forbidden_subscription_error_no_hint_without_api_key() {
-        with_api_key_env(None, || {
-            let err = SamplingError::Api {
-                status: StatusCode::FORBIDDEN,
-                message: "The model 'codel-build' requires a Codel subscription.".into(),
-                model_metadata: None,
-                retry_after_secs: None,
-                should_retry: None,
-                error_code: None,
-            };
-            let acp_err = map_sampling_err_to_acp(err);
-            let data = acp_err.data.unwrap();
-            let msg = data.as_str().unwrap();
-            assert!(
-                !msg.contains("codel logout"),
-                "should NOT suggest logout when no API key is available: {msg}"
-            );
+            assert_eq!(data.as_str().unwrap(), message);
         });
     }
 

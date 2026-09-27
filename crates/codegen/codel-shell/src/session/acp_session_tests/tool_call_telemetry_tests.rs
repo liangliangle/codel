@@ -190,7 +190,6 @@ fn init_product(server: &codel_test_support::MockInferenceServer, mode: Telemetr
         None,
         None,
         "test".into(),
-        None,
         client,
     );
 }

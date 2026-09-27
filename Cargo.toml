@@ -47,7 +47,6 @@ members = [
     "crates/codegen/codel-mermaid",
     "crates/codegen/codel-models",
     "crates/codegen/codel-logging",
-    "crates/codegen/codel-mixpanel",
     "crates/codegen/codel-otel",
     "crates/codegen/codel-pager",
     "crates/codegen/codel-pager-bin",
@@ -370,7 +369,6 @@ codel-workspace-types = { path = "crates/codegen/codel-workspace-types" }
 codel-hooks-plugins-types = { path = "crates/codegen/codel-hooks-plugins-types" }
 codel-interjection-core = { path = "crates/common/codel-interjection-core" }
 codel-message-delivery-core = { path = "crates/common/codel-message-delivery-core" }
-codel-mixpanel = { path = "crates/codegen/codel-mixpanel" }
 codel-prompt-queue = { path = "crates/codegen/codel-prompt-queue" }
 codel-proto-build = { path = "crates/build/codel-proto-build" }
 codel-ratatui-inline = { path = "crates/codegen/codel-ratatui-inline" }
