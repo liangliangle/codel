@@ -79,8 +79,9 @@ cargo check -p codel-pager-bin            # fast validation
 ```
 
 The binary artifact is named `codel-pager`; official installs ship it as
-`codel`. On first launch it opens your browser to authenticate — see the
-[authentication guide](crates/codegen/codel-pager/docs/user-guide/02-authentication.md).
+`codel`. Authentication is an API key: set it in your config (`[model.<id>]`
+`api_key` / `env_key`) or export `CODEL_API_KEY`. There is no login flow — see
+the [model and API-key guide](crates/codegen/codel-pager/docs/user-guide/02-模型配置.md).
 
 ## Documentation
 

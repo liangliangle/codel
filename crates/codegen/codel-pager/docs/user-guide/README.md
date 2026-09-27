@@ -41,7 +41,6 @@
 
 | # | 章节文档 | 说明描述 |
 |---|----------|-------------|
-<<<<<<< CODEL(ours)
 | 14 | [无头交互模式](14-无头交互模式.md) | `codel -p`、输出格式、CI/CD 集成与管道串接 |
 | 15 | [智使模式与 IDE 集成](15-智使模式.md) | ACP stdio 传输、WebSocket 中继与 SDK 集成 |
 | 16 | [分身智使与人设](16-分身智使.md) | 并行子会话、智使类型、人设与能力模式 |
@@ -52,30 +51,7 @@
 | 21 | [终端兼容性与排障](21-终端兼容性.md) | tmux、SSH、Truecolor 真彩色、剪贴板与 OSC 52 |
 | 22 | [权限与安全](22-权限与安全.md) | 模式（始终批准、自动、询问）、规则、匹配、钩子与示例 |
 | 23 | [控制面板](23-控制面板.md) | 本地会话与分叉会话的全局总览视图 |
-||||||| UPSTREAM-BASE
-| 14 | [Headless Mode and Scripting](14-headless-mode.md) | `codel -p`, output formats, CI/CD integration, and piping |
-| 15 | [Agent Mode and IDE Integration](15-agent-mode.md) | ACP stdio transport, WebSocket relay, and SDK integration |
-| 16 | [Subagents and Personas](16-subagents.md) | Parallel child sessions, agent types, personas, and capability modes |
-| 17 | [Session Management](17-sessions.md) | Save, load, resume, rewind, compact, and the session persistence format |
-| 18 | [Sandbox Mode](18-sandbox.md) | OS-level filesystem and network isolation profiles |
-| 19 | [Plan Mode](19-plan-mode.md) | Structured planning, plan-file edits, and approval before coding |
-| 20 | [Background Tasks and Monitoring](20-background-tasks.md) | `background: true`, `/loop`, `monitor`, and `Ctrl+B` to demote |
-| 21 | [Terminal Support and Troubleshooting](21-terminal-support.md) | tmux, SSH, truecolor, clipboard, and OSC 52 |
-| 22 | [Permissions and Safety](22-permissions-and-safety.md) | Modes (always-approve, auto, ask), rules, matching, hooks, and examples |
-| 23 | [Agent Dashboard](23-dashboard.md) | Central overview of local sessions and forks |
-| 24 | [Monitoring Usage (External OpenTelemetry)](24-monitoring-usage.md) | Customer OTEL export |
-=======
-| 14 | [Headless Mode and Scripting](14-headless-mode.md) | `codel -p`, output formats, CI/CD integration, and piping |
-| 15 | [Agent Mode and IDE Integration](15-agent-mode.md) | ACP stdio transport, WebSocket relay, and SDK integration |
-| 16 | [Subagents and Personas](16-subagents.md) | Parallel child sessions, agent types, personas, and capability modes |
-| 17 | [Session Management](17-sessions.md) | Save, load, resume, rewind, compact, and the session persistence format |
-| 18 | [Sandbox Mode](18-sandbox.md) | OS-level filesystem and network isolation profiles |
-| 19 | [Plan Mode](19-plan-mode.md) | Structured planning, plan-file edits, and approval before coding |
-| 20 | [Background Tasks and Monitoring](20-background-tasks.md) | `background: true`, `/loop`, `monitor`, and `Ctrl+B` to demote |
-| 21 | [Terminal Support and Troubleshooting](21-terminal-support.md) | tmux, SSH, truecolor, clipboard, and OSC 52 |
-| 22 | [Permissions and Safety](22-permissions-and-safety.md) | Modes (always-approve, auto, ask), rules, matching, hooks, and examples |
-| 23 | [Agent Dashboard](23-dashboard.md) | Central overview of local sessions and forks |
-| 24 | [Monitoring Usage (External OpenTelemetry)](24-monitoring-usage.md) | Customer OTEL export |
-| 25 | [Status Line](25-status-line.md) | The bottom status row: built-in segments, command scripts, and the stdin JSON contract |
-| 26 | [Configuration Reference](26-config-reference.md) | Field list for `config.toml`, `managed_config.toml`, and `requirements.toml` |
->>>>>>> UPSTREAM-HEAD
+| 25 | [Status Line](25-status-line.md) | 底部状态行：内置段、命令脚本与 stdin JSON 契约 |
+| 25 | [工作流](25-工作流.md) | 多步骤工作流定义、运行与并发上限 |
+| 26 | [配置参考](26-config-reference.md) | `config.toml`、`managed_config.toml` 与 `requirements.toml` 字段表 |
+| 27 | [codel clone](27-codel-clone.md) | 克隆会话目录与本地工作区 |

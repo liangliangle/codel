@@ -52,33 +52,12 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `auth` | `table` | `yes` | `user` | Alias of `[codel_com_config]`; every `codel_com_config.*` key also works as `auth.*`. |
-| `auth.auth_provider_command` | `string` | `yes` | `user` | External auth binary; stdout is the token. Also CODEL_AUTH_PROVIDER_COMMAND; also valid as `codel_com_config.auth_provider_command`. |
-| `auth.auth_provider_label` | `string` | `yes` | `user` | Login button label for an external auth provider. Also CODEL_AUTH_PROVIDER_LABEL; also valid as `codel_com_config.auth_provider_label`. |
 | `auth.auth_token_ttl` | `number` | `yes` | `user` | Token TTL in seconds for providers that return a bare token. Also CODEL_AUTH_TOKEN_TTL; also valid as `codel_com_config.auth_token_ttl`. |
 | `auth.disable_api_key_auth` | `boolean` | `pin` | `user` | Refuse API-key auth so only the deployment IdP can log in. Also CODEL_DISABLE_API_KEY_AUTH; also valid as `codel_com_config.disable_api_key_auth`. |
-| `auth.force_login_team_uuid` | `string / string[]` | `pin` | `user` | Require login to this team UUID, or any of an array; empty array fails closed. Also CODEL_FORCE_LOGIN_TEAM_ID; also valid as `codel_com_config.force_login_team_uuid`. |
 | `auth.codel_ws_origin` | `string` | `yes` | `user` | Websocket origin for codel.dev. Also CODEL_WS_ORIGIN; also valid as `codel_com_config.codel_ws_origin`. |
 | `auth.codel_ws_url` | `string` | `yes` | `user` | Relay websocket URL. Also CODEL_WS_URL; also valid as `codel_com_config.codel_ws_url`. |
-| `auth.oauth2` | `table` | `yes` | `user` | OAuth2 provider used when enterprise OIDC is unset; also valid as `codel_com_config.oauth2`. |
-| `auth.oauth2.client_id` | `string` | `yes` | `user` | OAuth2 client id. Also CODEL_OAUTH2_CLIENT_ID; also valid as `codel_com_config.oauth2.client_id`. |
-| `auth.oauth2.issuer` | `string` | `yes` | `user` | OAuth2 issuer URL. Also CODEL_OAUTH2_ISSUER; also valid as `codel_com_config.oauth2.issuer`. |
-| `auth.oauth2.principal_id` | `string` | `yes` | `user` | Required principal id when `principal_type` is set. Also CODEL_OAUTH2_PRINCIPAL_ID; also valid as `codel_com_config.oauth2.principal_id`. |
-| `auth.oauth2.principal_type` | `string` | `yes` | `user` | Token principal type, such as Team. Also CODEL_OAUTH2_PRINCIPAL_TYPE; also valid as `codel_com_config.oauth2.principal_type`. |
-| `auth.oauth2.referrer` | `string` | `yes` | `user` | Referrer for OAuth usage attribution. Also CODEL_OAUTH2_REFERRER; also valid as `codel_com_config.oauth2.referrer`. |
-| `auth.oauth2.scopes` | `string[]` | `yes` | `user` | OAuth2 scopes. Also CODEL_OAUTH2_SCOPES; also valid as `codel_com_config.oauth2.scopes`. |
-| `auth.oidc` | `table` | `yes` | `user` | Customer OIDC identity-provider settings; also valid as `codel_com_config.oidc`. |
-| `auth.oidc.audience` | `string` | `yes` | `user` | Optional OIDC audience. Also CODEL_OIDC_AUDIENCE; also valid as `codel_com_config.oidc.audience`. |
-| `auth.oidc.client_id` | `string` | `yes` | `user` | OIDC client id. Also CODEL_OIDC_CLIENT_ID; also valid as `codel_com_config.oidc.client_id`. |
-| `auth.oidc.issuer` | `string` | `yes` | `user` | OIDC issuer URL. Also CODEL_OIDC_ISSUER; also valid as `codel_com_config.oidc.issuer`. |
-| `auth.oidc.scopes` | `string[]` | `yes` | `user` | OIDC scopes. Also CODEL_OIDC_SCOPES; also valid as `codel_com_config.oidc.scopes`. |
-| `auth.preferred_method` | `api_key / oidc` | `yes` | `user` | Pin automatic auth to one method with no fallthrough; also valid as `codel_com_config.preferred_method`. |
 | `auth.token_header` | `string` | `yes` | `user` | Header name that carries the CLI auth token; default `codel-cli`; also valid as `codel_com_config.token_header`. |
 
-### `auth_provider`
-
-| Key | Type / Values | Requirements | Managed | Details |
-| --- | --- | --- | --- | --- |
-| `auth_provider.<name>` | `table` | `yes` | `user` | Named credential helper used by `[model.<id>] auth_provider`. |
 
 ### `auto_mode`
 
@@ -226,7 +205,7 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `features.subagent_model_inheritance` | `boolean` | `pin` | `user` | Hide the subagent `model` argument when every model you can pick is an Codel model, so subagents inherit the parent's model. Default false. Also `CODEL_SUBAGENT_MODEL_INHERITANCE`. Read when a session starts; changing it requires a restart. |
 | `features.subagent_worktree_snapshot` | `boolean` | `pin` | `user` | Enable or disable `subagent_worktree_snapshot`. Default false. Also `CODEL_SUBAGENT_WORKTREE_SNAPSHOT`. |
 | `features.support_permission` | `boolean` | `yes` | `user` | Allow the agent to ask permission for tool executions. |
-| `features.telemetry` | `boolean / session_metrics / off` | `pin` | `user` | Product telemetry mode. Enterprise default is off. |
+| `features.telemetry` | `boolean / session_metrics / off` | `pin` | `user` | 已废弃：本分支不发送产品遥测，任何取值都不产生上报。 |
 | `features.terminal_theme` | `boolean` | `pin` | `user` | Reveal the terminal-native `terminal` color theme during its rollout. Default false. Also `CODEL_TERMINAL_THEME`. |
 | `features.title_refresh` | `boolean` | `pin` | `user` | Early-session auto-title refresh. Pin this in requirements to beat CODEL_TITLE_REFRESH. |
 | `features.turn_summary` | `boolean` | `pin` | `user` | Enable or disable `turn_summary`. Default true. Also `CODEL_TURN_SUMMARY`. |
@@ -256,26 +235,9 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `codel_com_config` | `table` | `yes` | `user` | Codel.com websocket and OAuth/OIDC settings. `[auth]` is an alias. |
-| `codel_com_config.auth_provider_command` | `string` | `yes` | `user` | External auth binary; stdout is the token. Also CODEL_AUTH_PROVIDER_COMMAND. |
-| `codel_com_config.auth_provider_label` | `string` | `yes` | `user` | Login button label for an external auth provider. Also CODEL_AUTH_PROVIDER_LABEL. |
-| `codel_com_config.auth_token_ttl` | `number` | `yes` | `user` | Token TTL in seconds for providers that return a bare token. Also CODEL_AUTH_TOKEN_TTL. |
 | `codel_com_config.disable_api_key_auth` | `boolean` | `pin` | `user` | Refuse API-key auth so only the deployment IdP can log in. Also CODEL_DISABLE_API_KEY_AUTH. |
-| `codel_com_config.force_login_team_uuid` | `string / string[]` | `pin` | `user` | Require login to this team UUID, or any of an array; empty array fails closed. Also CODEL_FORCE_LOGIN_TEAM_ID. |
 | `codel_com_config.codel_ws_origin` | `string` | `yes` | `user` | Websocket origin for codel.dev. Also CODEL_WS_ORIGIN. |
 | `codel_com_config.codel_ws_url` | `string` | `yes` | `user` | Relay websocket URL. Also CODEL_WS_URL. |
-| `codel_com_config.oauth2` | `table` | `yes` | `user` | OAuth2 provider used when enterprise OIDC is unset. |
-| `codel_com_config.oauth2.client_id` | `string` | `yes` | `user` | OAuth2 client id. Also CODEL_OAUTH2_CLIENT_ID. |
-| `codel_com_config.oauth2.issuer` | `string` | `yes` | `user` | OAuth2 issuer URL. Also CODEL_OAUTH2_ISSUER. |
-| `codel_com_config.oauth2.principal_id` | `string` | `yes` | `user` | Required principal id when `principal_type` is set. Also CODEL_OAUTH2_PRINCIPAL_ID. |
-| `codel_com_config.oauth2.principal_type` | `string` | `yes` | `user` | Token principal type, such as Team. Also CODEL_OAUTH2_PRINCIPAL_TYPE. |
-| `codel_com_config.oauth2.referrer` | `string` | `yes` | `user` | Referrer for OAuth usage attribution. Also CODEL_OAUTH2_REFERRER. |
-| `codel_com_config.oauth2.scopes` | `string[]` | `yes` | `user` | OAuth2 scopes. Also CODEL_OAUTH2_SCOPES. |
-| `codel_com_config.oidc` | `table` | `yes` | `user` | Customer OIDC identity-provider settings. |
-| `codel_com_config.oidc.audience` | `string` | `yes` | `user` | Optional OIDC audience. Also CODEL_OIDC_AUDIENCE. |
-| `codel_com_config.oidc.client_id` | `string` | `yes` | `user` | OIDC client id. Also CODEL_OIDC_CLIENT_ID. |
-| `codel_com_config.oidc.issuer` | `string` | `yes` | `user` | OIDC issuer URL. Also CODEL_OIDC_ISSUER. |
-| `codel_com_config.oidc.scopes` | `string[]` | `yes` | `user` | OIDC scopes. Also CODEL_OIDC_SCOPES. |
-| `codel_com_config.preferred_method` | `api_key / oidc` | `yes` | `user` | Pin automatic auth to one method with no fallthrough. |
 | `codel_com_config.token_header` | `string` | `yes` | `user` | Header name that carries the CLI auth token; default `codel-cli`. |
 
 ### `harness`
@@ -533,6 +495,9 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `subagents.toggle.<name>` | `boolean` | `yes` | `user` | Enable or disable an individual subagent type. Omitted agents default on. |
 
 ### `telemetry`
+
+> 本分支（codel）去除了遥测：产品事件不再上报，`telemetry.*` 与 `features.telemetry` 仅保留解析，
+> 不产生任何对外发送；外部 OTEL 导出通道未启用。
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
