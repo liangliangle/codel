@@ -214,4 +214,53 @@ pub fn deployment_id_from_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_is_build_env_layer_when_feature_off() {
+        let cfg = TelemetryConfig::default();
+        let url = build_env_default(option_env!("CODEL_TELEMETRY_BUILD_EVENTS_URL"));
+        let key = build_env_default(option_env!("CODEL_TELEMETRY_BUILD_EVENTS_API_KEY"));
+        let token = build_env_default(option_env!("CODEL_TELEMETRY_BUILD_MIXPANEL_TOKEN"));
+        assert_eq!(cfg.mixpanel_enabled, token.is_some());
+        assert_eq!(cfg.events_url, url);
+        assert_eq!(cfg.events_api_key, key);
+        assert_eq!(cfg.mixpanel_token, token);
+    }
+
+    #[test]
+    fn disarm_baked_sinks_keeps_explicit_sinks() {
+        let mut cfg = TelemetryConfig {
+            events_url: Some("http://127.0.0.1:9/events".into()),
+            mixpanel_token: Some("explicit-token".into()),
+            mixpanel_enabled: true,
+            ..TelemetryConfig::default()
+        };
+        let key_before = cfg.events_api_key.clone();
+        assert!(
+            !cfg.disarm_baked_sinks(),
+            "explicit sinks must not count as cleared"
+        );
+        assert_eq!(
+            (
+                cfg.events_url.as_deref(),
+                cfg.events_api_key == key_before,
+                cfg.mixpanel_token.as_deref(),
+                cfg.mixpanel_enabled
+            ),
+            (
+                Some("http://127.0.0.1:9/events"),
+                true,
+                Some("explicit-token"),
+                true
+            )
+        );
+    }
+
+    #[test]
+    fn build_env_default_normalizes() {
+        assert_eq!(build_env_default(None), None);
+        assert_eq!(build_env_default(Some("")), None);
+        assert_eq!(build_env_default(Some(" \t ")), None);
+        assert_eq!(build_env_default(Some(" key ")), Some("key".to_owned()));
+    }
+
 }

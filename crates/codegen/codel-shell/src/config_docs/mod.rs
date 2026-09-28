@@ -55,22 +55,7 @@ const CODEL_COM_CONFIG_LEAVES: &[&str] = &[
     "codel_com_config.codel_ws_origin",
     "codel_com_config.codel_ws_url",
     "codel_com_config.token_header",
-    "codel_com_config.auth_provider_label",
-    "codel_com_config.auth_token_ttl",
-    "codel_com_config.auth_provider_command",
-    "codel_com_config.preferred_method",
     "codel_com_config.disable_api_key_auth",
-    "codel_com_config.force_login_team_uuid",
-    "codel_com_config.oauth2.issuer",
-    "codel_com_config.oauth2.client_id",
-    "codel_com_config.oauth2.scopes",
-    "codel_com_config.oauth2.principal_type",
-    "codel_com_config.oauth2.principal_id",
-    "codel_com_config.oauth2.referrer",
-    "codel_com_config.oidc.issuer",
-    "codel_com_config.oidc.client_id",
-    "codel_com_config.oidc.scopes",
-    "codel_com_config.oidc.audience",
 ];
 
 #[derive(Clone, Debug)]
@@ -399,7 +384,6 @@ mod tests {
             panic!("missing codel_com_config.disable_api_key_auth: {map:?}");
         };
         assert_eq!(disable_auth.requirements, "pin");
-        let Some(force_team) = map.get("codel_com_config.force_login_team_uuid") else {
             panic!("missing codel_com_config.force_login_team_uuid: {map:?}");
         };
         assert_eq!(force_team.requirements, "pin");

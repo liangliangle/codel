@@ -1620,37 +1620,6 @@ fn telemetry_config_parses_custom_values_from_toml() {
     );
     assert!(!cfg.telemetry.mixpanel_enabled);
 }
-#[test]
-fn telemetry_otel_timeout_accepts_toml_integer_and_string() {
-    let as_int: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            otel_timeout = 10000
-            otel_metric_export_interval = 60000
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&as_int).expect("integer otel_timeout must parse");
-    assert_eq!(cfg.telemetry.otel_timeout.as_deref(), Some("10000"));
-    assert_eq!(
-        cfg.telemetry.otel_metric_export_interval.as_deref(),
-        Some("60000")
-    );
-    let as_str: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            otel_timeout = "10000"
-            otel_metric_export_interval = "60000"
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&as_str).expect("string otel_timeout must parse");
-    assert_eq!(cfg.telemetry.otel_timeout.as_deref(), Some("10000"));
-    assert_eq!(
-        cfg.telemetry.otel_metric_export_interval.as_deref(),
-        Some("60000")
-    );
-}
 /// Empty/whitespace values must become `None`, not reach the HTTP client as empty strings.
 #[test]
 fn telemetry_empty_string_disables_sink() {

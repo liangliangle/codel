@@ -3499,9 +3499,6 @@ pub struct ConfigModelOverride {
     pub api_key: Option<String>,
     /// Env var name(s) for the provider key: string or array in config.toml.
     pub env_key: Option<EnvKeys>,
-    /// Name of a `[auth_provider.<name>]` credential helper that mints this model's bearer token.
-    /// Static `api_key` / `env_key` win when both are set.
-    pub auth_provider: Option<String>,
     pub model_provider: Option<String>,
     pub api_base_url: Option<String>,
     pub max_completion_tokens: Option<u32>,

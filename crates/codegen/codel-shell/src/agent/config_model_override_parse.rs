@@ -1,7 +1,6 @@
 //! Resilient parsing for `[model.<id>]` TOML overrides.
 //!
 //! It also defines [`ConfigWarning`] and [`WarningTarget`], the shared warning vocabulary.
-//! The `[auth_provider.*]` parser in `config.rs` emits them too.
 //!
 //! A model entry must survive a bad field: warn and skip the field, never drop the model (managed configs must not lose catalog entries).
 //!
@@ -48,14 +47,6 @@ pub enum WarningTarget {
         #[serde(skip_serializing_if = "Option::is_none")]
         field: Option<String>,
     },
-    /// The `[auth_provider]` section as a whole.
-    AuthProviderSection,
-    /// An `[auth_provider.<name>]` table; `field` names a key when the warning is field-specific.
-    AuthProvider {
-        name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        field: Option<String>,
-    },
     ModelProviderSection,
     ModelProvider {
         id: String,
@@ -68,13 +59,11 @@ pub enum WarningTarget {
 }
 
 impl WarningTarget {
-    /// The config path, e.g. `model."codel-4.5"` or `auth_provider."litellm"`.
+    /// The config path, e.g. `model."codel-4.5"` or `model_providers."gateway"`.
     pub(crate) fn label(&self) -> String {
         match self {
             Self::ModelSection => "model".to_owned(),
             Self::Model { key, .. } => format!("model.\"{key}\""),
-            Self::AuthProviderSection => "auth_provider".to_owned(),
-            Self::AuthProvider { name, .. } => format!("auth_provider.\"{name}\""),
             Self::ModelProviderSection => "model_providers".to_owned(),
             Self::ModelProvider { id, .. } => format!("model_providers.\"{id}\""),
             Self::ConfigKey { path } => path.clone(),
@@ -83,13 +72,8 @@ impl WarningTarget {
 
     pub(crate) fn field(&self) -> Option<&str> {
         match self {
-            Self::Model { field, .. }
-            | Self::AuthProvider { field, .. }
-            | Self::ModelProvider { field, .. } => field.as_deref(),
-            Self::ModelSection
-            | Self::AuthProviderSection
-            | Self::ModelProviderSection
-            | Self::ConfigKey { .. } => None,
+            Self::Model { field, .. } | Self::ModelProvider { field, .. } => field.as_deref(),
+            Self::ModelSection | Self::ModelProviderSection | Self::ConfigKey { .. } => None,
         }
     }
 }
@@ -125,31 +109,6 @@ impl ConfigWarning {
     pub(crate) fn model_section(kind: ConfigWarningKind, reason: String) -> Self {
         Self {
             target: WarningTarget::ModelSection,
-            kind,
-            reason,
-        }
-    }
-
-    pub(crate) fn auth_provider(
-        name: &str,
-        field: Option<&str>,
-        kind: ConfigWarningKind,
-        reason: String,
-    ) -> Self {
-        let target = WarningTarget::AuthProvider {
-            name: name.to_owned(),
-            field: field.map(str::to_owned),
-        };
-        Self {
-            target,
-            kind,
-            reason,
-        }
-    }
-
-    pub(crate) fn auth_provider_section(kind: ConfigWarningKind, reason: String) -> Self {
-        Self {
-            target: WarningTarget::AuthProviderSection,
             kind,
             reason,
         }
@@ -305,41 +264,6 @@ fn parse_model_override_table(
             }
         }
     };
-
-    if entry.auth_provider.is_some() {
-        // A non-empty `api_key` always shadows; an `env_key` only shadows when its variable resolves at runtime, which parse time can't know
-        // Warn accordingly so the message matches what actually happens
-        let has_static_api_key = entry
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|k| !k.is_empty());
-        if has_static_api_key {
-            warnings.push(ConfigWarning::model(
-                model_key,
-                Some("auth_provider"),
-                ConfigWarningKind::ConflictingFields,
-                "auth_provider is shadowed by api_key on this model; the static \
-                 key always takes precedence, so the provider never runs"
-                    .to_owned(),
-            ));
-        } else if entry
-            .env_key
-            .as_ref()
-            .and_then(crate::agent::config::EnvKeys::primary)
-            .is_some()
-        {
-            warnings.push(ConfigWarning::model(
-                model_key,
-                Some("auth_provider"),
-                ConfigWarningKind::ConflictingFields,
-                "auth_provider may be shadowed by env_key on this model; env_key \
-                 takes precedence when its variable resolves to a value, \
-                 otherwise the provider runs"
-                    .to_owned(),
-            ));
-        }
-    }
 
     (entry, warnings)
 }
@@ -723,7 +647,6 @@ mod tests {
             description: Some("desc".into()),
             api_key: Some("key".into()),
             env_key: Some(crate::agent::config::EnvKeys::single("ENV_KEY")),
-            auth_provider: Some("corp-gateway".into()),
             model_provider: Some("gateway".into()),
             api_base_url: Some("https://api.example.com".into()),
             max_completion_tokens: Some(1024),
@@ -797,59 +720,6 @@ mod tests {
         assert_eq!(reparsed, serialized, "round-trip must be lossless");
     }
 
-    /// `auth_provider` alongside `api_key`/`env_key` warns but keeps both fields.
-    /// Static keys win in `resolve_credentials`, so the provider never runs.
-    #[test]
-    fn auth_provider_shadowed_by_static_key_warns() {
-        let mut entry = toml::map::Map::new();
-        entry.insert("api_key".to_owned(), toml::Value::String("sk-x".into()));
-        entry.insert(
-            "auth_provider".to_owned(),
-            toml::Value::String("corp".into()),
-        );
-        let (models, warnings) = parse_single_entry(entry);
-        let [warning] = warnings.as_slice() else {
-            panic!("expected one warning: {warnings:?}");
-        };
-        assert_eq!(warning.kind, ConfigWarningKind::ConflictingFields);
-        assert_eq!(warning.field(), Some("auth_provider"));
-        let parsed = models.get("m").unwrap();
-        assert_eq!(parsed.api_key.as_deref(), Some("sk-x"));
-        assert_eq!(parsed.auth_provider.as_deref(), Some("corp"));
-
-        // Provider alone: no warning.
-        let mut entry = toml::map::Map::new();
-        entry.insert(
-            "auth_provider".to_owned(),
-            toml::Value::String("corp".into()),
-        );
-        let (_, warnings) = parse_single_entry(entry);
-        assert_eq!(warnings, Vec::new());
-
-        // env_key is only a conditional shadow: warn, but as "may be shadowed".
-        let mut entry = toml::map::Map::new();
-        entry.insert("env_key".to_owned(), toml::Value::String("MY_KEY".into()));
-        entry.insert(
-            "auth_provider".to_owned(),
-            toml::Value::String("corp".into()),
-        );
-        let (_, warnings) = parse_single_entry(entry);
-        let [warning] = warnings.as_slice() else {
-            panic!("expected one warning: {warnings:?}");
-        };
-        assert_eq!(warning.kind, ConfigWarningKind::ConflictingFields);
-        assert!(warning.reason.contains("may be shadowed"));
-
-        // An empty api_key does not shadow, so it must not warn.
-        let mut entry = toml::map::Map::new();
-        entry.insert("api_key".to_owned(), toml::Value::String("  ".into()));
-        entry.insert(
-            "auth_provider".to_owned(),
-            toml::Value::String("corp".into()),
-        );
-        let (_, warnings) = parse_single_entry(entry);
-        assert_eq!(warnings, Vec::new());
-    }
 
     /// Drift guard: every `#[serde(alias)]` on [`ConfigModelOverride`] must have a matching `ALIASES` pair, and vice versa.
     /// An unregistered alias would send both-keys configs to the empty-override fallback.

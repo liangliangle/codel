@@ -2454,31 +2454,6 @@ mod tests {
             human.contains("[model.\"codel-4.5\"] reasoning_effort"),
             "{human}"
         );
-        // Auth-provider warnings render under their own table syntax.
-        let provider_warning =
-            crate::agent::config_model_override_parse::ConfigWarning::auth_provider(
-                "litellm",
-                Some("command"),
-                crate::agent::config_model_override_parse::ConfigWarningKind::InvalidValue,
-                "missing or empty command".to_owned(),
-            );
-        let human = render_config_warnings(&[provider_warning]);
-        assert!(
-            human.contains("[auth_provider.\"litellm\"] command"),
-            "{human}"
-        );
-        // A dotted provider name renders whole; the field splits off the right
-        let dotted = crate::agent::config_model_override_parse::ConfigWarning::auth_provider(
-            "corp.gateway",
-            Some("token_ttl_secs"),
-            crate::agent::config_model_override_parse::ConfigWarningKind::InvalidValue,
-            "at or below the refresh margin".to_owned(),
-        );
-        let human = render_config_warnings(&[dotted]);
-        assert!(
-            human.contains("[auth_provider.\"corp.gateway\"] token_ttl_secs"),
-            "{human}"
-        );
         assert_eq!(render_config_warnings(&[]), "");
 
         let json = serde_json::to_value(&warnings).unwrap();
