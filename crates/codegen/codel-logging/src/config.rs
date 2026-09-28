@@ -147,26 +147,6 @@ impl Default for TelemetryConfig {
     }
 }
 impl TelemetryConfig {
-    /// Clears every sink still carrying its baked `internal-telemetry-defaults` value; the events
-    /// key follows the URL, so an explicit URL keeps a baked key. Returns whether anything was cleared.
-    pub(crate) fn disarm_baked_sinks(&mut self) -> bool {
-        let (baked_url, _, baked_token, _) = internal_defaults();
-        let events_cleared = self
-            .events_url
-            .take_if(|url| baked_url.as_deref() == Some(url.as_str()))
-            .is_some();
-        if events_cleared {
-            self.events_api_key = None;
-        }
-        let token_cleared = self
-            .mixpanel_token
-            .take_if(|token| baked_token.as_deref() == Some(token.as_str()))
-            .is_some();
-        if token_cleared {
-            self.mixpanel_enabled = false;
-        }
-        events_cleared || token_cleared
-    }
     pub fn apply_env_overrides(&mut self) {
         self.normalize();
         if let Some(value) = Self::env_override("CODEL_TELEMETRY_EVENTS_URL") {

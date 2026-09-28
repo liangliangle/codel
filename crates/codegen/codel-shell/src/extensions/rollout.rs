@@ -8,7 +8,6 @@ use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;
 use crate::session::{RolloutSurveyRequest, RolloutSurveyResponse};
 use codel_logging::events::RolloutSurvey;
-use codel_logging::session_ctx::log_event;
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(_agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {

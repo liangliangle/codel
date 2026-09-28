@@ -1,7 +1,5 @@
-//! Build the strategy report from a dispatch outcome plus the request gate,
-//! and relay the daemon's redirect telemetry ring to the host's `log_event`.
+//! Build the strategy report from a dispatch outcome plus the request gate.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use codel_fast_worktree::{
@@ -11,7 +9,6 @@ use codel_logging::events::{
     CloneCancellationDisposition, CloneDaemonCapabilityClass, CloneFallbackReason, CloneOutcome,
     CloneStrategy, CloneTransport, RedirectEvent, WorktreeEnded, WorktreeLifecycle,
 };
-use codel_logging::session_ctx::log_event;
 use codel_workspace_types::rpc::worktree::{
     StrategyReport, WorktreeType, is_grove_resolved, transport_for_resolved,
 };
@@ -19,10 +16,6 @@ use codel_workspace_types::rpc::worktree::{
 /// Budget for one whole drain. The fetch gets all of it and the ack gets what
 /// is left, but `NfsWorktreeClient::call` applies the value it is handed to
 /// connect, write, and read separately, so a daemon that accepts and stalls
-/// costs at most about three times the remaining budget per call before the
-/// ack is skipped.
-const REDIRECT_EVENTS_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
-
 pub(super) struct WorktreeEndedEmit<'a> {
     pub lifecycle: WorktreeLifecycle,
     pub outcome: CloneOutcome,
@@ -84,121 +77,11 @@ pub(super) fn emit_worktree_ended(emit: WorktreeEndedEmit<'_>) -> WorktreeEnded 
             .and_then(CloneDaemonCapabilityClass::from_class_str),
     };
 
-    drain_redirect_events(&event);
     #[cfg(test)]
     LAST_WORKTREE_ENDED.with(|slot| {
         *slot.borrow_mut() = Some(event.clone());
     });
     event
-}
-
-/// Set while one drain is in flight, so concurrent worktree ends in one
-/// process do not both fetch and log the same unacked entries.
-static REDIRECT_DRAIN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
-
-/// Holds `REDIRECT_DRAIN_IN_FLIGHT`. Releasing on `Drop` keeps the flag from
-/// wedging shut when tokio drops the spawned closure unrun at runtime shutdown
-/// or when the drain panics.
-#[must_use]
-struct RedirectDrainGuard;
-
-impl RedirectDrainGuard {
-    fn try_acquire() -> Option<Self> {
-        REDIRECT_DRAIN_IN_FLIGHT
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-            .then_some(RedirectDrainGuard)
-    }
-}
-
-impl Drop for RedirectDrainGuard {
-    fn drop(&mut self) {
-        REDIRECT_DRAIN_IN_FLIGHT.store(false, Ordering::Release);
-    }
-}
-
-/// worker thread. Only a grove-backed worktree talked to the daemon, and a
-/// host with telemetry off must not ack entries a telemetry-enabled peer
-/// sharing the daemon would have logged.
-pub(crate) fn drain_redirect_events(event: &WorktreeEnded) {
-    if event.transport.is_none()
-        || !codel_logging::is_enabled()
-        || tokio::runtime::Handle::try_current().is_err()
-    {
-        return;
-    }
-    let Some(guard) = RedirectDrainGuard::try_acquire() else {
-        return;
-    };
-    let opts = NfsWorktreeOpts::default();
-    #[cfg(test)]
-    let opts = NfsWorktreeOpts {
-        control_sock: REDIRECT_DRAIN_CONTROL_SOCK.with(|slot| slot.borrow().clone()),
-        ..opts
-    };
-    // The ring is daemon-wide, so its entries carry no session id; the
-    // blocking thread has no task-local session context and none is wanted.
-    tokio::task::spawn_blocking(move || {
-        let _in_flight = guard;
-        drain_redirect_events_sync(&NfsWorktreeClient::from_opts(&opts));
-    });
-}
-
-/// Blocking drain, decode, log, then ack through the last seq seen. Returns
-/// `(logged, undecodable)`. Delivery is at least once, since the ring keeps an
-/// entry until acked and a host that dies mid-translation, or a second host
-/// sharing the daemon, logs it again. Undecodable entries are acked too,
-/// because the host cannot use them and leaving them would block the ring
-/// forever.
-fn drain_redirect_events_sync(client: &NfsWorktreeClient) -> (usize, usize) {
-    // Each call receives the time left on this deadline and applies it per
-    // socket operation, so the deadline bounds the ack's start, not the total.
-    let deadline = Instant::now() + REDIRECT_EVENTS_DRAIN_TIMEOUT;
-    let (values, next_seq) = match client.redirect_events(0, REDIRECT_EVENTS_DRAIN_TIMEOUT) {
-        Ok(reply) => reply,
-        Err(_) => {
-            tracing::debug!("redirect telemetry drain skipped; daemon unreachable or too old");
-            return (0, 0);
-        }
-    };
-    if values.is_empty() {
-        return (0, 0);
-    }
-    let mut logged = 0;
-    let mut undecodable = 0;
-    for value in values {
-        match serde_json::from_value::<RedirectEvent>(value) {
-            Ok(event) => {
-                log_redirect_event(event);
-                logged += 1;
-            }
-            // The serde message would echo daemon-supplied text; the count is enough.
-            Err(_) => undecodable += 1,
-        }
-    }
-    tracing::debug!(logged, undecodable, "redirect telemetry drained");
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        tracing::debug!("redirect telemetry ack skipped; drain budget spent, entries stay queued");
-    } else if client
-        .redirect_events(next_seq.saturating_sub(1), remaining)
-        .is_err()
-    {
-        tracing::debug!("redirect telemetry ack failed; entries stay queued");
-    }
-    (logged, undecodable)
-}
-
-fn log_redirect_event(event: RedirectEvent) {
-    #[cfg(test)]
-    LOGGED_REDIRECT_EVENTS.with(|slot| slot.borrow_mut().push(event.clone()));
-    match event {
-        RedirectEvent::Applied(applied) => log_event(applied),
-        RedirectEvent::FixupFailed(failed) => log_event(failed),
-        RedirectEvent::Demoted(demoted) => log_event(demoted),
-        RedirectEvent::Overwrite(overwrite) => log_event(overwrite),
-        RedirectEvent::LimitHit(hit) => log_event(hit),
-    }
 }
 
 fn classify_fallback(
@@ -295,25 +178,8 @@ pub(super) fn last_worktree_ended_for_test() -> Option<WorktreeEnded> {
     LAST_WORKTREE_ENDED.with(|slot| slot.borrow_mut().take())
 }
 
-#[cfg(test)]
-std::thread_local! {
-    static LOGGED_REDIRECT_EVENTS: std::cell::RefCell<Vec<RedirectEvent>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-#[cfg(test)]
-fn take_logged_redirect_events_for_test() -> Vec<RedirectEvent> {
-    LOGGED_REDIRECT_EVENTS.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
-}
-
 // Where a test points the drain spawned by `emit_worktree_ended`, so a gate
 // regression is observed on a fake socket instead of the host's daemon.
-#[cfg(test)]
-std::thread_local! {
-    static REDIRECT_DRAIN_CONTROL_SOCK: std::cell::RefCell<Option<std::path::PathBuf>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 pub(super) fn report_from_worktree(
     grove_enabled: bool,
     grove_gate_source: Option<&str>,

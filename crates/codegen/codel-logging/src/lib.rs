@@ -1,19 +1,17 @@
-//! Telemetry engine for Codel Build sessions.
-//! Covers product events, Mixpanel emission, Sentry error reporting, OpenTelemetry tracing, and the structured unified log.
+//! Local logging and diagnostics for Codel sessions.
 //!
-//! Extracted from `codel-file-utils` so telemetry has its own ownership boundary (see CODEOWNERS).
-//! Consumers that only want event tracking and inference metrics no longer pull in Mixpanel/HTTP/identity dependencies.
+//! Covers the structured unified log, the debug/hooks/memory/sampling file logs,
+//! the typed records those logs carry, local tracing spans, and process identity.
+//! The fork ships no analytics transport: nothing here opens a network sender or
+//! batches a record for export, so no diagnostic leaves the process.
 
 #![deny(clippy::indexing_slicing)]
 
-pub mod client;
 pub mod config;
-pub mod context;
 pub mod enums;
 pub mod events;
 pub mod http;
 pub mod id;
-pub mod sentry;
 
 // Leaf modules re-exported at crate root below, so the public API stays unchanged.
 mod logs;
@@ -21,8 +19,6 @@ mod process;
 mod session;
 mod spans;
 
-// OTLP HTTP client now lives in the low-level foundation crate; re-export keeps `crate::otlp` paths working.
-// Shared redaction utils now live in the foundation crate; re-export keeps `crate::redact_common` paths working.
 pub(crate) use codel_trace_context::redact_common;
 pub use codel_trace_context::redact_common::redact_error_detail;
 
@@ -32,12 +28,4 @@ pub use process::{memory_telemetry, process_info, process_metrics};
 pub use session::{activity, session_ctx, session_end, session_metrics, subagent_spawn};
 pub use spans::{instrumentation, prompt_timing, region, span_profile, startup, turn_phases};
 
-pub use client::{
-    Metadata, TelemetryClient, UserContext, init, init_if_needed, is_enabled,
-    is_session_metrics_enabled,
-};
-pub use events::TelemetryEvent;
-pub use session::session_ctx::{
-    EmitterOrigin, TelemetryCtx, emit_event, emit_event_with_origin, log_event, log_session_event,
-    log_session_event_with_origin, spawn_local_in_session_ctx, with_session_ctx,
-};
+pub use session::session_ctx::{TelemetryCtx, spawn_local_in_session_ctx, with_session_ctx};

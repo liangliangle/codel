@@ -3,7 +3,6 @@
 use agent_client_protocol as acp;
 use codel_feedback::{DeleteOutcome, FeedbackDraftStore, FeedbackStoreError, UpdateOutcome};
 use codel_logging::events::{FeedbackDraftOp, FeedbackDraftOpError, FeedbackDraftOpKind};
-use codel_logging::session_ctx::log_event_dual;
 
 use super::{ExtResult, parse_params};
 use crate::agent::MvpAgent;

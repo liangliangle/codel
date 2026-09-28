@@ -373,7 +373,6 @@ async fn spawn_agent_thread_direct(
             agent_rc.flush_all_sessions(SESSION_FLUSH_GRACE).await;
             tokio::join!(
                 codel_shell::upload::drain_pending_uploads(UPLOAD_DRAIN_AT_CANCEL),
-                codel_logging::session_ctx::drain_at_process_exit(),
             );
             anyhow::Result::Ok(())
         });

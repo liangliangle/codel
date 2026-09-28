@@ -1829,12 +1829,12 @@ impl PromptWidget {
         if crate::input::key::is_paste_key(key) {
             if let Some(text) = system_clipboard_get() {
                 if !crate::clipboard::clipboard_text_is_pasteable(Some(&text)) {
-                    crate::clipboard::log_paste_key_empty_host_clipboard("prompt_widget");
+                    
                 }
                 // handle_paste calls update_file_search_context internally.
                 return self.handle_paste(&text);
             }
-            crate::clipboard::log_paste_key_empty_host_clipboard("prompt_widget");
+            
             return PromptEvent::Ignored;
         }
 
@@ -1843,13 +1843,13 @@ impl PromptWidget {
             if let Some(text) = system_clipboard_get() {
                 let text = normalize_line_breaks(&text);
                 if text.is_empty() {
-                    crate::clipboard::log_paste_key_empty_host_clipboard("prompt_widget_inline");
+                    
                     return PromptEvent::Ignored;
                 }
                 self.insert_replacing_selection(&text);
                 return PromptEvent::Edited;
             }
-            crate::clipboard::log_paste_key_empty_host_clipboard("prompt_widget_inline");
+            
             return PromptEvent::Ignored;
         }
 
@@ -1904,7 +1904,6 @@ impl PromptWidget {
                 && key.modifiers.contains(KeyModifiers::CONTROL));
             if is_backspace_key && !old_text.is_empty() {
                 use codel_logging::events::BackspaceNoEffect;
-                use codel_logging::session_ctx::log_event;
                 let evt = BackspaceNoEffect {
                     terminal: crate::terminal::terminal_context().telemetry_snapshot(),
                     key_code: format!("{:?}", key.code),
@@ -1930,8 +1929,6 @@ impl PromptWidget {
                     textarea.has_selection = evt.has_selection,
                     "backspace_no_effect"
                 );
-                // Product analytics event (when telemetry is enabled).
-                log_event(evt);
             }
             PromptEvent::Ignored
         }

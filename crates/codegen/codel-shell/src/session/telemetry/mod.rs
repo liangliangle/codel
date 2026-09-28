@@ -18,7 +18,6 @@ pub use tool_call::{complete_projected_call, grep_output, tool_execution_span};
 pub(crate) use active_agent_message::*;
 pub(crate) use permission::*;
 
-use codel_logging::events::SessionHarness;
 use codel_tools::implementations::skills::types::SkillScope;
 
 /// `duration_ms`, `tool_count`, and `error_type` are status-specific; pass `None` when not applicable.
@@ -128,95 +127,6 @@ impl HookRegInfo {
 }
 
 #[derive(Debug)]
-pub(crate) struct SessionHarnessMetrics {
-    pub session_id: String,
-    pub client_identifier: Option<String>,
-    pub model_id: String,
-    pub agent_name: String,
-    pub permission_mode: codel_logging::enums::PermissionMode,
-    pub mcp_server_names: Vec<String>,
-    pub lsp_server_names: Vec<String>,
-    pub memory_enabled: bool,
-    pub memory_retrieval_mode: codel_logging::events::MemoryRetrievalMode,
-    pub auto_update: Option<bool>,
-    pub cwd: String,
-    /// Filled from the built agent's bridge so `into_event` doesn't re-walk the disk.
-    pub skill_names: Vec<String>,
-    /// Resolved vendor-compat config, so recorded AGENTS.md names match what the session actually discovers.
-    pub compat: codel_tools::types::compat::CompatConfig,
-    /// `[paths]` config, for the same reason as `compat`.
-    pub paths_config: codel_agent::prompt::paths::PathsConfig,
-    pub plugin_registry: Option<std::sync::Arc<codel_agent::plugins::PluginRegistry>>,
-    pub plugin_names: Vec<String>,
-}
-
-impl SessionHarnessMetrics {
-    pub(crate) async fn into_event(self, hooks: Vec<HookRegInfo>) -> SessionHarness {
-        // One `plugin.loaded` span per enabled plugin at session start.
-        if let Some(registry) = self.plugin_registry.as_deref() {
-            for plugin in registry.enabled_plugins() {
-                codel_logging::event_span!(
-                    "plugin.loaded",
-                    plugin_name = %plugin.name,
-                    plugin_version = %plugin.version.as_deref().unwrap_or(""),
-                    plugin_scope = plugin.scope.id_label(),
-                    has_hooks = plugin.has_hooks,
-                    has_mcp = plugin.mcp_server_count > 0,
-                    skill_count = plugin.skill_count as i64,
-                    agent_count = plugin.agent_count as i64,
-                    command_path_count = plugin.command_dirs.len() as i64,
-                );
-            }
-        }
-
-        // One `hook.registered` span per configured hook at session start.
-        for h in &hooks {
-            codel_logging::event_span!(
-                "hook.registered",
-                hook_name = %h.name,
-                hook_event = %h.event,
-                hook_type = %h.hook_type,
-                hook_source = %h.source,
-            );
-        }
-        let hook_names: Vec<String> = hooks.into_iter().map(|h| h.name).collect();
-
-        let agents_md_dir_names = codel_agent::prompt::agents_md::read_agents_config_with_paths(
-            &self.cwd,
-            self.compat,
-            &self.paths_config,
-            crate::agent::folder_trust::project_scope_allowed(std::path::Path::new(&self.cwd)),
-        )
-        .await
-        .iter()
-        .filter_map(|f| {
-            std::path::Path::new(&f.file_path)
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-        })
-        .collect();
-        SessionHarness {
-            session_id: self.session_id,
-            client_identifier: self.client_identifier,
-            model_id: self.model_id,
-            agent_name: self.agent_name,
-            permission_mode: self.permission_mode,
-            mcp_server_names: self.mcp_server_names,
-            plugin_names: self.plugin_names,
-            skill_names: self.skill_names,
-            lsp_server_names: self.lsp_server_names,
-            hook_names,
-            agents_md_dir_names,
-            memory_enabled: self.memory_enabled,
-            memory_retrieval_mode: self.memory_retrieval_mode,
-            // Same signal `SessionNew` carries; recomputed here because this event is built off-thread, after spawn (cheap: repo discovery)
-            is_git_repo: codel_logging::context::collect_git_context(&self.cwd).is_git_repo,
-            auto_update: self.auto_update,
-        }
-    }
-}
-
 #[cfg(test)]
 mod is_same_skill_file_tests {
     use super::is_same_skill_file;

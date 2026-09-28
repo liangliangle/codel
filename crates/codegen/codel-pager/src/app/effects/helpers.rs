@@ -201,11 +201,7 @@ pub(super) async fn bounded_clipboard_probe(
     match clipboard_probe_stage(deadline, work).await {
         Ok(outcome) => outcome,
         Err(dropped) => {
-            crate::clipboard::log_clipboard_probe_dropped(
-                dropped.reason,
-                dropped.image.as_ref(),
-                started,
-            );
+            
             let attachment = match dropped.reason {
                 ClipboardProbeDropReason::ReadFailed
                 | ClipboardProbeDropReason::Timeout

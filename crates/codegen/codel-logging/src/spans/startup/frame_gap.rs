@@ -60,7 +60,6 @@ pub(crate) fn reset_frame_gap() {
 /// Process init runs before the subscriber, and the first-frame wait runs after the phases close.
 pub(crate) fn record_launch_gap(name: &'static str, elapsed: Duration) {
     crate::instrumentation::emit_startup_timing(name, elapsed);
-    let key = name.strip_prefix("startup.").unwrap_or(name);
 }
 
 /// The [last completed phase, ready] segment, recorded once from whichever ready signal fires first.

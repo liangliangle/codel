@@ -111,19 +111,3 @@ pub fn work_is_idle() -> bool {
         .all(|gauge| gauge.get() == 0)
 }
 
-#[derive(serde::Serialize)]
-#[serde(transparent)]
-pub(crate) struct ActivitySnapshot(std::collections::BTreeMap<&'static str, u32>);
-
-impl ActivitySnapshot {
-    pub(crate) fn read() -> Self {
-        Self(
-            GAUGES
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .iter()
-                .map(|gauge| (gauge.name, gauge.get()))
-                .collect(),
-        )
-    }
-}

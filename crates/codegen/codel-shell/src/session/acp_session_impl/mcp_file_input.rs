@@ -25,13 +25,6 @@ const MAX_BATCH_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BATCH_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const FILE_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn log_file_event<T: codel_logging::TelemetryEvent>(event: T) {
-    #[cfg(test)]
-    if tests::record_event(&event) {
-        return;
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct McpFileSource {
     pub(super) path: PathBuf,
@@ -56,10 +49,7 @@ impl McpFileSource {
         kind: codel_logging::events::McpFileInputKind,
         model_id: String,
     ) -> Self {
-        log_file_event(codel_logging::events::McpFileInputUsed {
-            kind,
-            model_id: model_id.clone(),
-        });
+        
         McpFileSource {
             path,
             kind,
@@ -135,18 +125,7 @@ impl McpFileSource {
         {
             return;
         }
-        log_file_event(codel_logging::events::McpFileInputCompleted {
-            kind: self.kind,
-            outcome: if success {
-                codel_logging::events::McpFileInputOutcome::Success
-            } else {
-                codel_logging::events::McpFileInputOutcome::Failed
-            },
-            source_bytes: self.bytes as u64,
-            snapshot_bytes: self.snapshot_bytes as u64,
-            duration_ms: self.started.elapsed().as_millis() as u64,
-            model_id: self.model_id.clone(),
-        });
+        
     }
 
     fn log_limit(
@@ -155,12 +134,7 @@ impl McpFileSource {
         limit: usize,
         observed: usize,
     ) {
-        log_file_event(codel_logging::events::McpFileInputLimitHit {
-            kind,
-            limit_bytes: limit as u64,
-            observed_bytes: observed as u64,
-            model_id: self.model_id.clone(),
-        });
+        
     }
 }
 

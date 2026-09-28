@@ -1148,14 +1148,10 @@ async fn replay_acp_state_after_reconnect(
         .cloned()
         .or_else(|| restored.last().cloned())
 }
-/// Flush observability, then exit. Used by the agent/headless signal handler.
+/// Flush local logs, then exit. Used by the agent/headless signal handler.
 /// Does NOT write terminal escape codes; agent mode never enables TUI modes.
 /// The TUI has its own signal handler (`app::signal_handler`) that does the full crossterm teardown.
 fn shutdown_and_flush_telemetry(exit_code: i32) -> ! {
-    {
-        let _exit_span = tracing::info_span!("teardown.process_exit").entered();
-        codel_logging::sentry::flush_on_shutdown();
-    }
     codel_logging::debug_log::flush();
     finalize_span_profile();
     std::process::exit(exit_code);
@@ -2045,12 +2041,6 @@ fn main() {
         );
         std::process::exit(2);
     }
-    let _sentry_guard = codel_logging::sentry::init(codel_logging::sentry::Config {
-        client: "codel-pager",
-        client_version: PAGER_CLIENT_VERSION,
-        release: env!("VERSION_WITH_COMMIT"),
-        disabled: codel_shell::agent::config::is_error_reporting_disabled_sync(),
-    });
     codel_pager::docs::extract_user_guide_docs(&codel_shell::util::codel_home::codel_home());
     codel_crash_handler::install_terminal_restore_only();
     if codel_shell::util::config::load_crash_handler_enabled_sync() {
@@ -2090,7 +2080,6 @@ fn main() {
             None => format!("Error: {e:#}"),
         };
         codel_pager::best_effort_stderr::eprint_line(&report);
-        drop(_sentry_guard);
         std::process::exit(1);
     }
     finalize_span_profile();
@@ -2628,7 +2617,6 @@ async fn run_update_command(
                 agent_cfg.codel_com_config.clone(),
                 agent_cfg.endpoints.proxy_url(),
             ));
-        codel_shell::agent::init::update_telemetry_config(&agent_cfg, &auth_manager);
     }
     let result = auto_update::run_update(
         force_reinstall,
@@ -2641,8 +2629,6 @@ async fn run_update_command(
     if let Ok(Some(installed_version)) = &result {
         signal_leaders_to_relaunch(installed_version).await;
     }
-    codel_logging::session_ctx::drain_pending(codel_logging::session_ctx::CLI_DRAIN)
-        .await;
     result?;
     Ok(())
 }

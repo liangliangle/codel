@@ -2425,7 +2425,7 @@ impl DashboardState {
             text,
         );
         if completion == ClipboardPasteCompletion::FullMiss && ctx.source.is_clipboard_key() {
-            crate::clipboard::log_paste_key_empty_host_clipboard(ctx.target.surface_str());
+            
         }
         completion
     }

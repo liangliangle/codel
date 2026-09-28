@@ -48,7 +48,6 @@ pub(crate) enum PostTurnPlanCommit {
 /// Telemetry for every way a plan review resolves ("build", "abandon", "revise").
 fn log_plan_submit(action: &str) {
     use codel_logging::events::PlanSubmit;
-    use codel_logging::session_ctx::log_event;
 }
 impl AgentView {
     /// Resolve the absolute path to the plan file for this session.

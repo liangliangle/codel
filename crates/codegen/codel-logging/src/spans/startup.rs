@@ -289,8 +289,8 @@ impl StartupTimer {
             .unwrap_or_else(|e| e.into_inner())
             .push((key.to_owned(), duration_ms(elapsed)));
     }
-    /// Drains this attempt's sub-timers exactly once and emits them with `outcome` and this attempt's auth mode.
-    fn drain_sub_timers(&self, outcome: StartupOutcome) {
+    /// Drains this attempt's sub-timers exactly once, keeping the watermark for the next attempt.
+    fn drain_sub_timers(&self, _outcome: StartupOutcome) {
         if self.sub_timers_drained.swap(true, Ordering::Relaxed) {
             return;
         }
@@ -431,8 +431,8 @@ impl StartupTimer {
         &self,
         connect_target: AgentKind,
         outcome: StartupOutcome,
-        timeout_secs: Option<u64>,
-        embedded_fallback: bool,
+        _timeout_secs: Option<u64>,
+        _embedded_fallback: bool,
     ) {
         if outcome == StartupOutcome::Ok {
             self.close_open_phase();

@@ -116,7 +116,6 @@ use crate::app::app_view::{ActiveView, AppView, AuthState};
 use crate::app::consent::ConsentState;
 use crate::scrollback::types::DisplayMode;
 use crate::views::session_picker::CONTENT_EXPAND_OFFSET;
-use codel_logging::session_ctx::log_event;
 /// Dispatch an action: mutate state, return effects to execute.
 /// The returned `Vec<Effect>` may be empty (pure state mutation) or contain async work that the event loop should spawn.
 /// Do not extract a returning arm into a handler: as a delegation its `return`s become plain arm values and start flowing through the tail.

@@ -302,7 +302,6 @@ pub async fn run_stdio_agent(
     agent_cancel.cancel();
     crate::terminal::pty_session::close_all().await;
     crate::upload::drain_pending_uploads(PERSISTENT_EXIT_DRAIN).await;
-    codel_logging::session_ctx::drain_at_process_exit().await;
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     result
 }

@@ -595,35 +595,6 @@ impl MvpAgent {
         let deployment_key = cfg.endpoints.deployment_key.clone();
         Some((base_url, user_token, alpha_test_key, deployment_key))
     }
-    pub(super) fn ensure_telemetry_client(&self) {
-        let cfg = self.cfg.borrow();
-        let mode = cfg.resolve_telemetry_mode().value;
-        if !mode.is_disabled() {
-            let Some(auth) = self
-                .auth_manager
-                .current()
-                .filter(|a| {
-                    a.is_codel_auth() || a.auth_mode == codel_login::AuthMode::ApiKey
-                }) else {
-                return;
-            };
-            let (user_id, team_id) = if auth.is_codel_auth() {
-                (Some(auth.user_id), auth.team_id)
-            } else {
-                (None, auth.team_id)
-            };
-            codel_logging::client::init_if_needed(
-                cfg.telemetry.clone(),
-                mode,
-                user_id,
-                team_id,
-                cfg.endpoints.deployment_key.clone(),
-                self.origin_client_info_from_meta(None),
-                codel_version::VERSION.to_owned(),
-                crate::http::shared_client(),
-            );
-        }
-    }
     pub(crate) fn feedback_client(&self) -> Option<FeedbackClient> {
         let (base_url, user_token, alpha_test_key, deployment_key) = self
             .feedback_credentials()?;
@@ -1639,46 +1610,17 @@ impl MvpAgent {
         };
         tracing::info!("post-auth settings refreshed");
         self.store_remote_settings(settings);
-        let (
-            telemetry_config,
-            telemetry_mode,
-            codel_user_id,
-            codel_team_id,
-            deployment_key,
-        ) = {
+        {
             let cfg = self.cfg.borrow();
             crate::util::config::cache_remote_mcp_startup_timeout_secs(
                 cfg.remote_settings.as_ref().and_then(|s| s.mcp_startup_timeout_secs),
             );
-            let telemetry_mode = cfg.resolve_telemetry_mode();
             let trace_upload = cfg.resolve_trace_upload();
             tracing::info!(
-                telemetry = %telemetry_mode,
                 trace_upload = %trace_upload,
                 "post-auth data capture config re-resolved",
             );
-            let codel_user_id = is_codel.then(|| user_id.clone());
-            let codel_team_id = is_codel.then(|| team_id.clone()).flatten();
-            let telemetry_config = cfg.telemetry.clone();
-            let deployment_key = cfg.endpoints.deployment_key.clone();
-            (
-                telemetry_config,
-                telemetry_mode.value,
-                codel_user_id,
-                codel_team_id,
-                deployment_key,
-            )
-        };
-        codel_logging::client::init(
-            telemetry_config,
-            telemetry_mode,
-            codel_user_id,
-            codel_team_id,
-            deployment_key,
-            self.origin_client_info_from_meta(None),
-            codel_version::VERSION.to_owned(),
-            crate::http::shared_client(),
-        );
+        }
         self.on_remote_settings_changed();
         if remote_was_absent {
             self.run_deferred_remote_work();

@@ -3,7 +3,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::events::PromptLatency;
-use crate::session_ctx::log_event;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TurnPhases {

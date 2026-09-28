@@ -1241,7 +1241,7 @@ pub(crate) async fn spawn_session_actor(
         .as_ref()
         .map(|ctx| phase_region_under(SubagentSpawnPhase::ToolSetup, &ctx.parent));
     let (tool_setup_timer, tool_setup_step_span) = spawn_await_step!("tool_setup");
-    let (harness_metrics, scheduler_handle_for_handle, toolset) = async {
+    let (scheduler_handle_for_handle, toolset) = async {
         let reservations_for_bridge = task_completion_reservations.clone();
         agent
             .tool_bridge()
@@ -1251,48 +1251,6 @@ pub(crate) async fn spawn_session_actor(
             })
             .await;
         let memory_retrieval_mode = configured_memory_retrieval_mode(memory_config.as_ref());
-        let harness_metrics = if !startup_hints.is_subagent && telemetry_enabled {
-            let plugin_names = plugin_registry
-                .as_ref()
-                .map(|reg| {
-                    reg.active_plugins()
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            Some(super::telemetry::SessionHarnessMetrics {
-                session_id: session_info.id.0.to_string(),
-                client_identifier: session_client_identifier.clone(),
-                model_id: session_model_id.0.to_string(),
-                agent_name: initial_agent_name,
-                permission_mode: if session_yolo_mode {
-                    codel_logging::enums::PermissionMode::AlwaysApprove
-                } else if session_auto_mode
-                    && crate::util::config::auto_permission_mode_enabled_from_disk()
-                {
-                    codel_logging::enums::PermissionMode::Auto
-                } else {
-                    codel_logging::enums::PermissionMode::Ask
-                },
-                mcp_server_names: mcp_servers
-                    .iter()
-                    .map(|s| mcp_server_name(s).to_owned())
-                    .collect(),
-                lsp_server_names: tool_context.lsp_server_names.clone(),
-                memory_enabled: memory_config.as_ref().is_some_and(|config| config.enabled),
-                memory_retrieval_mode,
-                auto_update,
-                cwd: tool_context.cwd.as_str().to_owned(),
-                skill_names: agent.tool_bridge().skill_discovery_snapshot_names().await,
-                compat,
-                paths_config,
-                plugin_registry: plugin_registry.clone(),
-                plugin_names,
-            })
-        } else {
-            None
-        };
         let resolved_task_output =
             codel_tools::reminders::task_completion::resolve_task_output_tool_name(
                 agent.tool_bridge(),
@@ -1326,7 +1284,7 @@ pub(crate) async fn spawn_session_actor(
             .cloned()
         };
         let toolset = agent.tool_bridge().toolset();
-        (harness_metrics, scheduler_handle_for_handle, toolset)
+        (scheduler_handle_for_handle, toolset)
     }
     .instrument(tool_setup_step_span)
     .await;
@@ -2163,13 +2121,11 @@ pub(crate) async fn spawn_session_actor(
             ) && let Ok(files) = storage.list_memory_files()
             {
                 let reindex_start = std::time::Instant::now();
-                let (mut total_added, mut total_updated, mut total_removed) = (0, 0, 0);
+                let mut total_added = 0;
                 for file in &files {
                     let source = storage.classify_source(file);
                     if let Ok(stats) = index.reindex_file(file, source) {
                         total_added += stats.added;
-                        total_updated += stats.updated;
-                        total_removed += stats.removed;
                     }
                 }
                 tracing::info!(
@@ -2310,23 +2266,6 @@ pub(crate) async fn spawn_session_actor(
         session.session_info.id.0.to_string(),
         session.tool_context.prompt_index.clone(),
     );
-    if let Some(metrics) = harness_metrics {
-        let hooks: Vec<super::telemetry::HookRegInfo> = session
-            .hook_registry
-            .borrow()
-            .as_ref()
-            .map(|reg| {
-                reg.all_hooks()
-                    .iter()
-                    .map(|s| super::telemetry::HookRegInfo::from_spec(s))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let telemetry_enabled = session.telemetry_enabled;
-        tokio::spawn(async move {
-            let ev = metrics.into_event(hooks).await;
-        });
-    }
     let hosting = SESSIONS_ACTIVE.enter();
     tokio::task::spawn_local(async move {
         let _hosting = hosting;
@@ -2799,7 +2738,6 @@ pub(crate) async fn spawn_session_on_thread(
                 let _ = session_done_rx.await;
             };
             local.block_on(&rt, actor_main);
-            rt.block_on(codel_logging::session_ctx::drain_at_session_exit());
         });
     let join_handle = match join_handle {
         Ok(h) => h,

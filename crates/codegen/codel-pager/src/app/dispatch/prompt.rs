@@ -24,7 +24,6 @@ use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{MemoryCommandKind, SessionEvent};
 use crate::slash::command::DoctorRequest;
 use agent_client_protocol as acp;
-use codel_logging::session_ctx::log_event;
 
 /// Shared by every submit guard that refuses while the session reconnects.
 pub(super) const RECONNECTING_NOTICE: &str = "Reconnecting, please wait...";
@@ -783,7 +782,6 @@ pub(super) fn dispatch_send_prompt_submission(
                 };
                 {
                     use codel_logging::events::{PagerCommandSource, PagerSlashCommand};
-                    use codel_logging::session_ctx::log_event;
                     let source = if is_builtin {
                         PagerCommandSource::Builtin
                     } else {

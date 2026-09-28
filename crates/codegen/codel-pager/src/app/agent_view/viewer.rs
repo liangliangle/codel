@@ -12,7 +12,6 @@ use crate::views::file_search::line_viewer::{LineViewerState, PlanViewerItem};
 use crate::views::list_pane::ListItem;
 use crate::views::plan_approval_view::PlanApprovalFocus;
 use codel_logging::events::{BlockViewerOpened, BlockViewerQuoted};
-use codel_logging::session_ctx::log_event;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

@@ -96,14 +96,6 @@ pub fn set_identity(identity: ProcessIdentity) {
     let _ = IDENTITY.set(identity);
 }
 
-pub(crate) fn identity() -> Option<ProcessIdentity> {
-    IDENTITY.get().copied()
-}
-
-pub(crate) fn entrypoint() -> Option<Entrypoint> {
-    identity().map(|i| i.entrypoint)
-}
-
 static RELEASE_CHANNEL: OnceLock<ReleaseChannel> = OnceLock::new();
 
 /// The updater is the source of truth for the channel but depends on this crate, so entry points pass the channel in.
@@ -112,10 +104,6 @@ pub fn set_release_channel(channel: ReleaseChannel) {
         return;
     }
     let _ = RELEASE_CHANNEL.set(channel);
-}
-
-pub(crate) fn release_channel() -> Option<ReleaseChannel> {
-    RELEASE_CHANNEL.get().copied()
 }
 
 #[cfg(test)]

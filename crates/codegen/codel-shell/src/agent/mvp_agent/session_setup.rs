@@ -729,32 +729,6 @@ impl MvpAgent {
             remote_settings.as_ref(),
         );
         let bridge_attach = BridgeAttach::NotAttached;
-        let product_analytics = self.product_analytics_enabled();
-        if product_analytics {
-            let sid = session_id.0.to_string();
-            let ci = client_identifier.clone();
-            let cv = self.client_version();
-            let cwd_str = cwd.as_str().to_owned();
-            let perm = if session_yolo_mode {
-                codel_logging::enums::PermissionMode::AlwaysApprove
-            } else if session_auto_mode
-                && crate::util::config::auto_permission_mode_enabled_from_disk()
-            {
-                codel_logging::enums::PermissionMode::Auto
-            } else {
-                codel_logging::enums::PermissionMode::Ask
-            };
-            tokio::spawn(async move {
-                let git = codel_logging::context::collect_git_context(&cwd_str);
-                let ev = codel_logging::events::SessionNew {
-                    session_id: sid,
-                    client_identifier: ci,
-                    client_version: cv,
-                    is_git_repo: git.is_git_repo,
-                    permission_mode: perm,
-                };
-            });
-        }
         if let Some(model_id) = resolved_custom_model {
             self.report_setup_phase(SessionSetupPhase::ModelSwitch);
             let switch_effort = match effort_route {

@@ -17,9 +17,7 @@ use crate::version::{
 };
 use crate::winget::{UPGRADE_COMMAND, WINGET};
 pub use codel_logging::events::CliUpdateTrigger;
-use codel_logging::events::{
-    CliUpdate, CliUpdateChannel, CliUpdateErrorKind, CliUpdateInstaller, CliUpdateOutcome,
-};
+use codel_logging::events::CliUpdateErrorKind;
 use codel_shell::util::codel_home::{codel_application, codel_home};
 use codel_shell::util::config;
 
@@ -117,13 +115,6 @@ fn corrected_arch(
     } else {
         arch
     }
-}
-
-/// Artifact platform from [`detect_platform`]; falls back to the compile-time values for combos the updater does not support.
-fn platform_label() -> String {
-    detect_platform()
-        .map(|(os, arch)| format!("{os}-{arch}"))
-        .unwrap_or_else(|_| format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH))
 }
 
 /// Typed phase marker for telemetry classification.
@@ -455,9 +446,6 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
             CliUpdateTrigger::LeaderConverge,
         )
         .await?;
-        // The leader relaunches right after a successful converge and would die with the event still in flight
-        // Failures keep it alive, so successes would under-report. The install is already done.
-        codel_logging::session_ctx::drain_pending(codel_logging::session_ctx::CLI_DRAIN).await;
         outcome.installed = Some(target.clone());
     }
 
@@ -870,12 +858,6 @@ async fn run_update_subcommand(
     // One trigger representation end to end: the enum crosses the process boundary as --trigger=<value> (FromStr on the other side)
     cmd.arg("update");
     cmd.arg(format!("--trigger={}", trigger.as_ref()));
-    // Hand the resolved telemetry mode to the child, which cannot see the remote-settings layer (requirement pins still beat env)
-    // None at the startup spawns: they run before the settings prefetch, when this process knows no more than the child
-    // Waiting would let telemetry delay an update
-    if let Some(mode) = codel_logging::client::current_mode() {
-        cmd.env("CODEL_TELEMETRY_ENABLED", mode.to_string());
-    }
     match run_mode {
         UpdateRunMode::Blocking => {
             // stderr must be null, not piped: `.status()` does not drain pipes, so if the child writes more than the OS pipe buffer
@@ -960,13 +942,8 @@ pub async fn run_install_script(
     installer: &str,
     target: Option<&str>,
     update_config: &UpdateConfig,
-    trigger: CliUpdateTrigger,
+    _trigger: CliUpdateTrigger,
 ) -> Result<()> {
-    // What's on disk is being replaced, not this (possibly stale) process's version; npm has no trustworthy disk version, so it falls back
-    let from_version =
-        disk_version_for_installer(installer).unwrap_or_else(get_installed_codel_version);
-    let started = Instant::now();
-    // Internal reports the version it actually activated; npm/gh-release resolve their own artifact, so the requested target stands in
     let result: Result<Option<String>> = match installer {
         "npm" => install_npm(
             target,
@@ -978,19 +955,9 @@ pub async fn run_install_script(
         WINGET => Err(anyhow::anyhow!("this install is managed by WinGet")),
         _ => install_internal(target, update_config).await.map(Some),
     };
-    // Measured before the success-only cache sweep, so the sweep cannot inflate success durations
-    let duration_ms = started.elapsed().as_millis() as u64;
     if result.is_ok() {
         remove_stale_models_cache().await;
     }
-    let (outcome, error_kind) = match &result {
-        Ok(_) => (CliUpdateOutcome::Success, None),
-        Err(e) => (CliUpdateOutcome::Failed, Some(classify_install_error(e))),
-    };
-    let to_version = match &result {
-        Ok(Some(installed)) => Some(installed.clone()),
-        _ => target.map(str::to_string),
-    };
 
     result.map(|_| ()).map_err(|e| {
         anyhow::anyhow!(

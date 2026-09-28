@@ -5,7 +5,6 @@ use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::app_view::AppView;
 use agent_client_protocol as acp;
-use codel_logging::session_ctx::log_event;
 
 /// Max times the MCP list is re-read after an install while waiting for the just-installed plugin's MCP servers to reach a terminal state.
 /// Probes are ~1s apart (`Effect::RetryPluginCtaMcps`), so the budget bounds the wait at ~15s before a final no-auth verdict is forced.

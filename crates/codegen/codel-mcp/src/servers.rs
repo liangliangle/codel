@@ -1664,26 +1664,6 @@ impl codel_tool_runtime::Tool for McpErasedTool {
         call_span.span().record("auth_retry", auth_retry_attempted);
         call_span.close();
 
-        // Protocol, init and input errors keep `failure` unset: only the server's silence is counted.
-        let failure = match &dispatch_result {
-            Ok(_) => None,
-            Err(_) if is_timeout => Some(codel_logging::events::McpCallFailure::Timeout),
-            Err(e) if e.kind == codel_tool_runtime::ToolErrorKind::NetworkError => {
-                Some(codel_logging::events::McpCallFailure::Transport)
-            }
-            Err(_) => None,
-        };
-        // Telemetry labels a server may put in `structuredContent`; read before the content moves.
-        let (outcome, mode) = match &dispatch_result {
-            Ok(call_result) => {
-                let structured = call_result.structured_content.as_ref();
-                (
-                    structured_label(structured, "outcome"),
-                    structured_label(structured, "mode"),
-                )
-            }
-            Err(_) => (None, None),
-        };
         let result = dispatch_result.map(|call_result| {
             let mut mcp_out = mcp_output_from_call_result(
                 tool.clone(),
@@ -1722,25 +1702,6 @@ impl codel_tool_runtime::Tool for McpErasedTool {
     }
 }
 
-/// Caps server-provided telemetry labels at 64 bytes, leaving headroom above known codes
-/// such as `permission_required`. This is a conservative policy choice, not a protocol limit;
-/// raising it forwards longer server strings to telemetry.
-const STRUCTURED_LABEL_MAX_LEN: usize = 64;
-
-/// A label-shaped string under `key` in a result's `structuredContent`, for telemetry.
-/// Only `[A-Za-z0-9_.-]` strings count: an object or number there is data for the model,
-/// and free text (an email, a name, a token) must not reach the analytics sinks.
-fn structured_label(structured: Option<&serde_json::Value>, key: &str) -> Option<String> {
-    structured?
-        .get(key)?
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= STRUCTURED_LABEL_MAX_LEN)
-        .filter(|s| {
-            s.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-        })
-        .map(str::to_owned)
-}
 
 /// Check whether a `ServiceError` indicates the underlying transport has died and a fresh connection could recover it.
 fn is_retriable_transport_error(err: &ServiceError) -> bool {
@@ -4755,9 +4716,8 @@ pub async fn start_mcp_server(
                 tracing::info!(server = %name, ?mc, "MCP stdio: meta config override");
             }
 
-            let (startup_timeout, _, _) = McpClient::load_timeouts(overrides, meta_config);
+            let _ = McpClient::load_timeouts(overrides, meta_config);
             let command_str = command.to_string_lossy().into_owned();
-            let spawn_start = std::time::Instant::now();
             // Scoped to the sync spawn-planning prologue: the timer's
             // Chrome-mode span guard must not cross the spawn await below.
             let cmd = {

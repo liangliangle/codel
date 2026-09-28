@@ -205,11 +205,10 @@ impl ClipboardProvider for SystemClipboard {
     }
 }
 
-/// Per-leg outcome of a routed clipboard write (for telemetry and trust).
+/// Per-leg outcome of a routed clipboard write (for the copy decision and trust).
 pub(crate) struct ClipboardWriteLegs {
     /// Whether the route enabled the native leg.
     pub(crate) route_native: bool,
-    route_label: String,
     cli_tools_tried: String,
     pub(crate) cli_ok_tools: String,
     pub(crate) wl_copy_ok: bool,
@@ -225,7 +224,6 @@ pub(crate) struct ClipboardWriteLegs {
 fn clipboard_write_with_route(text: &str, route: &ClipboardRoute) -> ClipboardWriteLegs {
     let mut legs = ClipboardWriteLegs {
         route_native: route.native,
-        route_label: route.to_string(),
         cli_tools_tried: String::new(),
         cli_ok_tools: String::new(),
         wl_copy_ok: false,
@@ -394,9 +392,8 @@ fn decision_for_legs(legs: &ClipboardWriteLegs, text: &str) -> ClipboardFeedback
     trust::resolve_copy_decision(legs, text, clipboard_environment(legs))
 }
 
-/// Write text and return a toast; emits `codel-shell-clipboard_copy` when enabled.
+/// Write text and return a toast.
 pub fn copy_text(text: &str) -> CopyResult {
-    let started = std::time::Instant::now();
     let route = clipboard_route();
     let legs = clipboard_write_with_route(text, route);
     let feedback = decision_for_legs(&legs, text);
@@ -408,8 +405,7 @@ pub fn copy_text(text: &str) -> CopyResult {
         );
     }
     let result = feedback.to_result();
-    let toast_kind: &'static str = feedback.into();
-    log_clipboard_copy_event(text, route, &legs, feedback, toast_kind, started);
+    
     result
 }
 
@@ -594,19 +590,6 @@ pub fn copy_text_or_file(text: &str) -> CopyDelivery {
     resolve_delivery(clipboard, file)
 }
 
-fn log_clipboard_copy_event(
-    text: &str,
-    route: &ClipboardRoute,
-    legs: &ClipboardWriteLegs,
-    feedback: ClipboardFeedback,
-    toast_kind: &'static str,
-    started: std::time::Instant,
-) {
-    if !codel_logging::client::is_enabled() {
-        return;
-    }
-}
-
 /// Return the parenthetical stats suffix used in clipboard success messages.
 /// Format: " (N chars, M lines)" with proper pluralization.
 pub fn clipboard_stats_suffix(text: &str) -> String {
@@ -689,28 +672,7 @@ pub fn clipboard_text_is_pasteable(text: Option<&str>) -> bool {
 /// Telemetry when a paste key was pressed but the host clipboard had nothing pasteable.
 /// Callers still consume the key.
 /// Emits structured logs and a product analytics event when telemetry is enabled.
-pub fn log_paste_key_empty_host_clipboard(surface: &str) {
-    let terminal = crate::terminal::terminal_context().telemetry_snapshot();
-    // Structured warn for the product telemetry pipeline.
-    tracing::warn!(
-        terminal.brand = %terminal.brand,
-        terminal.multiplexer = %terminal.multiplexer,
-        terminal.is_ssh = terminal.is_ssh,
-        terminal.term_var = %terminal.term_var,
-        terminal.xtversion = %terminal.xtversion,
-        terminal.clipboard_route = %terminal.clipboard_route,
-        terminal.clipboard_native_tool = %terminal.clipboard_native_tool,
-        terminal.host_os = %terminal.host_os,
-        terminal.display_server = %terminal.display_server,
-        paste.surface = %surface,
-        "paste_key_empty_host_clipboard"
-    );
-    if !codel_logging::client::is_enabled() {
-        return;
-    }
-}
-
-fn lone_http_url_trimmed(t: &str) -> bool {
+pub fn lone_http_url_trimmed(t: &str) -> bool {
     !t.is_empty() && !t.contains('\n') && (t.starts_with("http://") || t.starts_with("https://"))
 }
 
@@ -948,74 +910,12 @@ pub fn guarded_pasteboard_read(
     outcome.map_err(|reason| dropped(reason, None))
 }
 
-/// Keyed blake3 of the raster bytes: same bytes twice vs two images within one run; the per-process key keeps images unlinkable across users.
-fn image_fingerprint(image: &ImageData) -> String {
-    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
-    let key = KEY.get_or_init(|| {
-        let mut key = [0u8; 32];
-        key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        key
-    });
-    blake3::keyed_hash(key, &image.data).to_hex().to_string()
-}
-
-fn read_path_telemetry(
-    path: codel_shared::clipboard::ClipboardReadPath,
-) -> codel_logging::events::ClipboardReadPath {
-    use codel_logging::events::ClipboardReadPath as Path;
-    use codel_shared::clipboard::ClipboardReadPath as Shared;
-    match path {
-        Shared::Native => Path::Native,
-        Shared::Osascript => Path::Osascript,
-        Shared::Arboard => Path::Arboard,
-        Shared::LinuxCli => Path::LinuxCli,
-    }
-}
-
-/// One clipboard-read event. No-op, and no terminal-context detection, when telemetry is disabled.
-fn log_clipboard_paste_event(
-    probe: &str,
-    outcome: &str,
-    image: Option<&ImageData>,
-    read_path: Option<codel_shared::clipboard::ClipboardReadPath>,
-    started: std::time::Instant,
-) {
-    if !codel_logging::client::is_enabled() {
-        return;
-    }
-}
-
-/// One `clipboard_paste_probe_dropped` event; `image` is the raster read and then discarded, if any.
-pub fn log_clipboard_probe_dropped(
-    reason: ClipboardProbeDropReason,
-    image: Option<&ImageData>,
-    started: std::time::Instant,
-) {
-    if !codel_logging::client::is_enabled() {
-        return;
-    }
-}
-
 /// Read file URLs and image from the system clipboard in one macOS `osascript`.
 ///
 /// On non-macOS this composes separate arboard reads.
 fn system_clipboard_get_attachments() -> Result<AttachmentsProbeResult, ClipboardProbeDropReason> {
-    let started = std::time::Instant::now();
     match codel_shared::clipboard::get_attachments() {
         Ok(att) => {
-            let outcome = match (&att.image, &att.file_urls) {
-                (Some(_), _) => "image",
-                (None, Some(_)) => "file_urls",
-                (None, None) => "empty",
-            };
-            log_clipboard_paste_event(
-                "attachments",
-                outcome,
-                att.image.as_ref(),
-                Some(att.read_path),
-                started,
-            );
             Ok(AttachmentsProbeResult {
                 file_urls: att.file_urls,
                 image: att.image,
@@ -1023,7 +923,7 @@ fn system_clipboard_get_attachments() -> Result<AttachmentsProbeResult, Clipboar
         }
         Err(e) => {
             tracing::debug!("clipboard attachments read failed: {e}");
-            log_clipboard_paste_event("attachments", "error", None, None, started);
+            
             Err(read_drop_reason(&e))
         }
     }
@@ -1085,26 +985,14 @@ pub fn prewarm_image_probe() {
 
 /// Read an image while preserving an empty-versus-error distinction.
 fn system_clipboard_get_image_result() -> Result<Option<ImageData>, ClipboardProbeDropReason> {
-    let started = std::time::Instant::now();
     match codel_shared::clipboard::get_image() {
         Ok(read) => {
-            let outcome = if read.image.is_some() {
-                "image"
-            } else {
-                "empty"
-            };
-            log_clipboard_paste_event(
-                "image",
-                outcome,
-                read.image.as_ref(),
-                Some(read.read_path),
-                started,
-            );
+            
             Ok(read.image)
         }
         Err(e) => {
             tracing::debug!("clipboard image read failed: {e}");
-            log_clipboard_paste_event("image", "error", None, None, started);
+            
             Err(read_drop_reason(&e))
         }
     }

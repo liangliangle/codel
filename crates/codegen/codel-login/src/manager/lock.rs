@@ -17,7 +17,6 @@ use std::time::Duration as StdDuration;
 use fs2::FileExt;
 
 use codel_logging::events::{AuthLockTimeout, AuthLockWait};
-use codel_logging::session_ctx::log_event;
 
 use crate::storage::AuthFileLock;
 use crate::unified_log;

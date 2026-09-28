@@ -841,7 +841,6 @@ impl SessionActor {
         let turn_idx = self.chat_state_handle.get_prompt_index().await as u64;
 
         let current_prompt_index = self.chat_state_handle.get_prompt_index().await;
-        codel_logging::session_ctx::begin_prompt_id();
         let mut chunk_meta = serde_json::Map::new();
         chunk_meta.insert("modelId".into(), serde_json::json!(model_id));
         chunk_meta.insert(

@@ -219,7 +219,6 @@ fn flush_telemetry_and_exit(exit_code: i32) -> ! {
         codel_tty_utils::global_process_scope().kill_all();
         codel_tty_utils::restore_native_stderr();
         crate::app::status_line::metrics::global().report_health();
-        codel_logging::sentry::flush_on_shutdown();
     }
     // Flush the --debug firehose on TUI signal exit (this path bypasses main's flush).
     codel_logging::debug_log::flush();

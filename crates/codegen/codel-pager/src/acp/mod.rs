@@ -323,7 +323,6 @@ pub async fn connect_via_leader(
         leader: LeaderMode::Attached,
         interactivity: Interactivity::Interactive,
     });
-    codel_shell::agent::init::update_telemetry_config(&agent_config, &auth_manager);
     let endpoint = AgentEndpoint {
         tx: bridge.channel.tx,
         rx: bridge.channel.rx,

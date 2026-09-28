@@ -665,7 +665,6 @@ impl ModelsManager {
     /// Auth identity changed: invalidate the disk cache and refresh the catalog.
     pub(crate) async fn on_auth_changed(&self) {
         let config = self.inner.cfg.read().clone();
-        crate::agent::init::update_telemetry_config(&config, &self.inner.auth_manager);
         self.inner.cache.invalidate();
         // Fetches and the etag from the previous identity are stale now.
         {

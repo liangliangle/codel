@@ -55,7 +55,6 @@ use codel_login::backend::AuthBackend as _;
 use crate::config::StorageMode;
 use crate::extensions::notification::{SessionNotification, SessionUpdate};
 use codel_logging::id::{agent_id, agent_instance_id};
-use codel_logging::session_ctx::log_event;
 use codel_workspace::file_system::{AcpSessionFs, CodebaseIndexManager, LocalFs};
 use codel_workspace::permission::{ClientType, PermissionEvent};
 use crate::sampling::Client as OaiCompatClient;

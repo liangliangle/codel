@@ -428,9 +428,8 @@ fn resolve_config(
     }
     cfg
 }
-/// Initialize process-level singletons (deployment sync, built-in metadata,
-/// telemetry). `Once`-guarded: only the first call takes effect.
-/// Telemetry user ID is updated separately via [`update_telemetry_config`].
+/// Initialize process-level singletons (deployment sync, built-in metadata).
+/// `Once`-guarded: only the first call takes effect.
 fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -447,13 +446,11 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
         if cfg.resolve_official_marketplace_auto_register().value {
             crate::extensions::marketplace::ensure_official_marketplace_source(&codel_home);
         }
-        let telemetry_mode = cfg.resolve_telemetry_mode();
         let trace_upload = cfg.resolve_trace_upload();
         let feedback = cfg.feature(config::Feature::Feedback);
         let feedback_url = cfg.endpoints.resolve_feedback_base_url();
         let trace_upload_url = cfg.endpoints.resolve_trace_upload_url();
         tracing::info!(
-            telemetry = %telemetry_mode,
             trace_upload = %trace_upload,
             feedback = %feedback,
             feedback_url = %feedback_url,
@@ -464,36 +461,7 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
             trace_upload_region = cfg.endpoints.trace_upload_region.as_deref().unwrap_or("none"),
             "data capture config resolved",
         );
-        if telemetry_mode.value.is_disabled() && trace_upload.value {
-            tracing::info!(
-                "Telemetry disabled but trace uploads enabled: \
-                 session artifacts will be uploaded, analytics events will not"
-            );
-        }
-        update_telemetry_config(cfg, auth_manager);
     });
-}
-/// Apply current telemetry config + auth identity. Tears down the client
-/// when telemetry is disabled, so it's safe to call repeatedly.
-pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager) {
-    let user_agent = crate::http::process_user_agent_string();
-    if reqwest::header::HeaderValue::from_str(&user_agent).is_err() {
-        tracing::warn!("telemetry init skipped: CODEL_CLIENT_NAME yields an invalid user agent");
-        return;
-    }
-    let codel_auth = auth_manager.current().filter(|a| a.is_codel_auth());
-    let user_id = codel_auth.as_ref().map(|a| a.user_id.clone());
-    let team_id = codel_auth.as_ref().and_then(|a| a.team_id.clone());
-    codel_logging::client::init(
-        config.telemetry.clone(),
-        config.resolve_telemetry_mode().value,
-        user_id,
-        team_id,
-        config.endpoints.deployment_key.clone(),
-        crate::http::origin_client_info_from_env(),
-        codel_version::VERSION.to_owned(),
-        crate::http::shared_client(),
-    );
 }
 
 #[cfg(test)]

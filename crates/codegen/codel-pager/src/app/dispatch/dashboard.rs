@@ -1138,7 +1138,6 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
         let reg = dashboard.dispatch.slash_controller.registry();
         {
             use codel_logging::events::{PagerCommandSource, PagerSlashCommand};
-            use codel_logging::session_ctx::log_event;
             let source = if reg.is_builtin(invocation.token) {
                 PagerCommandSource::Builtin
             } else {

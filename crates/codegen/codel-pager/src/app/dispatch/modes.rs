@@ -6,7 +6,6 @@ use super::settings::ui::{refresh_open_settings_modals, save_success_toast};
 use crate::app::actions::Effect;
 use crate::app::app_view::{ActiveView, AppView};
 use agent_client_protocol as acp;
-use codel_logging::session_ctx::log_event;
 use codel_tools::types::SessionMode;
 
 /// Show the current plan: if a plan file exists, open it in the preview overlay popover.

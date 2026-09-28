@@ -233,20 +233,6 @@ async fn log_session_ended(session: &SessionActor) {
     let model_id = session.current_model_id().await;
     if let Some(signals) = session.signals_handle().snapshot().await {}
 }
-const SESSION_END_EMIT_BUDGET: Duration = Duration::from_secs(1);
-async fn emit_session_end_timings(timer: &SharedSessionEndTimer, is_subagent: bool) {
-    if is_subagent {
-        return;
-    }
-    let mut event = codel_logging::events::SessionEndTimings::default();
-    timer.write_event_phases(&mut event);
-    event.total_ms = Some(timer.elapsed_ms());
-    let _ = tokio::time::timeout(
-        SESSION_END_EMIT_BUDGET,
-        codel_logging::session_ctx::log_event_now(event),
-    )
-    .await;
-}
 /// The deferred startup jobs, owned by the run loop so a session ending mid-startup aborts them instead of leaving them detached.
 struct StartupTasks {
     _mcp_init_prompt_promote: crate::util::AbortOnDrop,
@@ -328,13 +314,7 @@ impl StartupTasks {
             tracing::info!("session_context_snapshot: skipped (subagent)");
             None
         } else {
-            let s = session.clone();
-            Some(crate::util::AbortOnDrop(tokio::task::spawn_local(
-                instrument_task!("session.context_snapshot", Parent::Inherit, async move {
-                    s.wait_for_mcp_initialized().await;
-                    s.emit_session_context_snapshot().await;
-                }),
-            )))
+            None
         };
         Self {
             _mcp_init_prompt_promote: mcp_init_prompt_promote,
@@ -672,8 +652,6 @@ pub(super) async fn run_session(
                         shutdown_workflows(&session, &end_timer).await;
                         turn_end_queue.drain().await;
                         finish_session_exit_feedback(&session, &end_timer).await;
-                        emit_session_end_timings(&end_timer, session.startup_hints.is_subagent)
-                            .await;
                         return;
                     };
 
@@ -2276,8 +2254,6 @@ pub(super) async fn run_session(
                             log_session_ended(&session).await;
                             turn_end_queue.drain().await;
                             finish_session_exit_feedback(&session, &end_timer).await;
-                            emit_session_end_timings(&end_timer, session.startup_hints.is_subagent)
-                                .await;
                             return;
                         }
                     }
@@ -2311,8 +2287,6 @@ pub(super) async fn run_session(
                         shutdown_workflows(&session, &end_timer).await;
                         turn_end_queue.drain().await;
                         finish_session_exit_feedback(&session, &end_timer).await;
-                        emit_session_end_timings(&end_timer, session.startup_hints.is_subagent)
-                            .await;
                         return;
                     };
                     // Flush any buffered turn deltas before `handle_completion` emits the durable `TurnCompleted`

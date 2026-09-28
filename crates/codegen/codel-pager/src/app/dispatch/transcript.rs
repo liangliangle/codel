@@ -7,7 +7,6 @@ use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::block::{BlockContent, RenderBlock};
 use crate::scrollback::blocks::ToolCallBlock;
 use agent_client_protocol as acp;
-use codel_logging::session_ctx::log_event;
 
 /// Copy the selected block's content to the system clipboard.
 ///

@@ -230,10 +230,6 @@ pub(super) fn dispatch_submit_feedback_modal(
     // First validated Write submit with an offer available: ask inside the modal instead of sending.
     if trace_choice.is_none() && offer_trace {
         modal.begin_trace_step();
-        // Funnel denominator for the in-modal trace step; logged once when Write actually advances.
-        codel_logging::session_ctx::log_event(codel_logging::events::FeedbackTraceCardShown {
-            reenables_sharing: trace_reenables_sharing,
-        });
         return vec![];
     }
     let draft = draft_id

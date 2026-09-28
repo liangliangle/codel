@@ -1157,7 +1157,6 @@ pub async fn run(
     );
     crate::unified_log::flush_blocking().await;
     drop(agent_guard);
-    codel_logging::session_ctx::drain_at_process_exit().await;
     codel_tty_utils::global_process_scope().kill_all();
     crate::app::status_line::metrics::global().report_health();
     let terminal_reading = !matches!(restore_result, Ok(WriterJoin::TimedOut));
