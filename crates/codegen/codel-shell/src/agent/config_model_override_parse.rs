@@ -705,17 +705,12 @@ mod tests {
     }
 
     #[test]
-    fn fully_populated_override_round_trips_with_only_the_shadowing_warning() {
+    fn fully_populated_override_round_trips_without_warnings() {
         let serialized = toml::Value::try_from(fully_populated_override()).unwrap();
         let (models, warnings) = parse_single_entry(serialized.as_table().unwrap().clone());
-        // The exhaustive literal deliberately sets `api_key`, `env_key`, AND `auth_provider`: the one legal-but-warned combination
-        // Any other warning (skipped/unknown field) still fails the guard
-        let unexpected: Vec<_> = warnings
-            .iter()
-            .filter(|w| w.kind != ConfigWarningKind::ConflictingFields)
-            .collect();
-        assert_eq!(unexpected, Vec::<&ConfigWarning>::new());
-        assert_eq!(warnings.len(), 1);
+        // The exhaustive literal sets every field this fork still understands, so nothing is
+        // skipped and nothing conflicts: any warning means a field regressed to unknown.
+        assert_eq!(warnings, Vec::<ConfigWarning>::new());
         let reparsed = toml::Value::try_from(models.get("m").unwrap()).unwrap();
         assert_eq!(reparsed, serialized, "round-trip must be lossless");
     }
