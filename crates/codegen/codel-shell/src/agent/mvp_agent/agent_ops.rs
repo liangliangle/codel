@@ -3619,11 +3619,6 @@ impl MvpAgent {
         let upload_method = match upload_method {
             Some(method) => method,
             None => {
-                codel_logging::session_ctx::log_session_event(crate::agent::session_metrics::TraceUploadSkipped {
-                    session_id: session_info.id.0.to_string(),
-                    turn_number,
-                    reason: upload_reason.as_ref().to_owned(),
-                });
                 return None;
             }
         };
@@ -3634,11 +3629,6 @@ impl MvpAgent {
                     match cfg.endpoints.resolve_trace_bucket_url() {
                         Some(resolved) => Some(resolved.value),
                         None => {
-                            codel_logging::session_ctx::log_session_event(crate::agent::session_metrics::TraceUploadSkipped {
-                                session_id: session_info.id.0.to_string(),
-                                turn_number,
-                                reason: "no_trace_bucket_configured".to_owned(),
-                            });
                             return None;
                         }
                     }

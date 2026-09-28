@@ -137,7 +137,7 @@ async fn draft_op<T: Send + 'static>(
             Err(draft_op_error(&error)),
         ),
     };
-    log_event_dual(telemetry_enabled, draft_op_event(session_id, op, outcome));
+
     response
 }
 

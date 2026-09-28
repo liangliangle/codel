@@ -15,13 +15,13 @@ use crate::agent::mvp_agent::{LocalRef, MvpAgent};
 use crate::extensions::notification::{SessionNotification, SessionUpdate};
 use crate::session::SessionCommand;
 use agent_client_protocol as acp;
-use tokio::sync::mpsc;
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use codel_logging::region::Region;
 use codel_tools::implementations::codel_build::task::coordinator::{self, ChildCompletion};
 use codel_tools::implementations::codel_build::task::types::{
     SubagentRequest, SubagentResult, SubagentSnapshot,
 };
+use tokio::sync::mpsc;
 /// Floor keeps the pool responsive when `available_parallelism` is tiny.
 const MIN_WORKER_THREADS: usize = 2;
 /// Four suffice for 32 children (each runs on its own OS thread); `CODEL_SUBAGENT_WORKER_THREADS` overrides.
@@ -89,8 +89,7 @@ pub(crate) async fn join_worker_task<T>(task: tokio::task::JoinHandle<T>, panic_
 }
 impl coordinator::ChildRunner for ShellChildRunner {
     type Control = crate::agent::subagent::ShellChildRuntime;
-    type RootControl =
-        codel_tools::implementations::codel_build::task::root_control::NoRootControl;
+    type RootControl = codel_tools::implementations::codel_build::task::root_control::NoRootControl;
     type CompletionData = crate::agent::subagent::ShellCompletionData;
     type RunFuture = coordinator::LocalBoxFuture<coordinator::ChildRunOutput<Self::CompletionData>>;
     type ValidateFuture = coordinator::LocalBoxFuture<
@@ -331,10 +330,8 @@ impl coordinator::ChildRunner for ShellChildRunner {
 }
 /// Coordinator limit sink; the coordinator cannot link telemetry directly.
 fn log_limit_notice(notice: coordinator::SubagentLimitNotice) {
+    use codel_logging::events::{SubagentLimitDisposition, SubagentLimitHit, SubagentOwnerKind};
     use coordinator::{LimitedSpawnOrigin, SubagentLimitDecision};
-    use codel_logging::events::{
-        SubagentLimitDisposition, SubagentLimitHit, SubagentOwnerKind,
-    };
     let (disposition, limit) = match notice.decision {
         SubagentLimitDecision::QueuedAtConcurrentLimit { limit } => {
             (SubagentLimitDisposition::Queued, limit as u64)
@@ -343,17 +340,6 @@ fn log_limit_notice(notice: coordinator::SubagentLimitNotice) {
             (SubagentLimitDisposition::Failed, limit as u64)
         }
     };
-    codel_logging::session_ctx::log_event(SubagentLimitHit::session_concurrent(
-        notice.parent_session_id,
-        disposition,
-        limit,
-        u32::try_from(notice.running).unwrap_or(u32::MAX),
-        u32::try_from(notice.queue_depth).unwrap_or(u32::MAX),
-        match notice.origin {
-            LimitedSpawnOrigin::SchedulerLoop => SubagentOwnerKind::SchedulerLoop,
-            LimitedSpawnOrigin::Task => SubagentOwnerKind::Task,
-        },
-    ));
 }
 /// Wire the shared subagent coordinator actor onto the current `LocalSet`. Builds the `ShellChildRunner`, attaches the limit sink, and `spawn_local`s the `SubagentCoordinator` draining `rx`.
 /// Coordinator/runner construction lives here in the boundary module. `MvpAgent::start_subagent_coordinator` owns the parent state (the event receiver and concurrency limits) it feeds in.

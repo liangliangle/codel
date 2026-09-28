@@ -16,12 +16,12 @@ use crate::version::{
     is_stable_channel, is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
 };
 use crate::winget::{UPGRADE_COMMAND, WINGET};
-use codel_shell::util::config;
-use codel_shell::util::codel_home::{codel_application, codel_home};
 pub use codel_logging::events::CliUpdateTrigger;
 use codel_logging::events::{
     CliUpdate, CliUpdateChannel, CliUpdateErrorKind, CliUpdateInstaller, CliUpdateOutcome,
 };
+use codel_shell::util::codel_home::{codel_application, codel_home};
+use codel_shell::util::config;
 
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateRunMode {
@@ -457,8 +457,7 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
         .await?;
         // The leader relaunches right after a successful converge and would die with the event still in flight
         // Failures keep it alive, so successes would under-report. The install is already done.
-        codel_logging::session_ctx::drain_pending(codel_logging::session_ctx::CLI_DRAIN)
-            .await;
+        codel_logging::session_ctx::drain_pending(codel_logging::session_ctx::CLI_DRAIN).await;
         outcome.installed = Some(target.clone());
     }
 
@@ -992,18 +991,7 @@ pub async fn run_install_script(
         Ok(Some(installed)) => Some(installed.clone()),
         _ => target.map(str::to_string),
     };
-    codel_logging::session_ctx::log_event(CliUpdate {
-        outcome,
-        trigger,
-        from_version,
-        to_version,
-        channel: CliUpdateChannel::from_channel_str(&update_config.channel),
-        installer: CliUpdateInstaller::from_installer_str(installer),
-        platform: platform_label(),
-        rosetta: running_under_rosetta_on_apple_silicon(),
-        duration_ms,
-        error_kind,
-    });
+
     result.map(|_| ()).map_err(|e| {
         anyhow::anyhow!(
             "Auto-update failed: {:#}\n\n{}",
@@ -1728,7 +1716,10 @@ async fn regenerate_completions(binary: &std::path::Path, codel_home: &std::path
     let completions: &[(&str, std::path::PathBuf)] = &[
         ("bash", codel_home.join("completions/bash/codel.bash")),
         ("zsh", codel_home.join("completions/zsh/_codel")),
-        ("fish", user_home.join(".config/fish/completions/codel.fish")),
+        (
+            "fish",
+            user_home.join(".config/fish/completions/codel.fish"),
+        ),
     ];
 
     for (shell, dest) in completions {

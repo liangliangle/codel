@@ -56,10 +56,9 @@ fn stop_cron_from_scheduled(
 ) -> StopSessionCron {
     StopSessionCron {
         id: task.id.clone(),
-        schedule:
-            codel_tools::implementations::codel_build::scheduler::interval::interval_to_human(
-                task.interval_secs,
-            ),
+        schedule: codel_tools::implementations::codel_build::scheduler::interval::interval_to_human(
+            task.interval_secs,
+        ),
         recurring: task.recurring,
         prompt: clip_stop_entry_text(&task.prompt),
     }
@@ -365,10 +364,6 @@ impl SessionActor {
                 block.hook_name, block.reason
             ))
             .await;
-            codel_logging::session_ctx::log_event(codel_logging::events::HookBlocked {
-                hook_name: block.hook_name.clone(),
-                cause: codel_logging::events::HookBlockCause::StopBlocked,
-            });
         }
         if blocks.is_empty() {
             for context in additional_context {
@@ -414,9 +409,8 @@ mod stop_gate_snapshot_tests {
 
     #[test]
     fn task_snapshot_maps_to_stop_entry() {
-        let shell = stop_entry_from_task(&task_snapshot(
-            codel_tools::computer::types::TaskKind::Bash,
-        ));
+        let shell =
+            stop_entry_from_task(&task_snapshot(codel_tools::computer::types::TaskKind::Bash));
         assert_eq!(shell.r#type, BackgroundTaskType::Shell);
         assert_eq!(shell.command.as_deref(), Some("tail -f /var/log/syslog"));
         assert!(shell.description.is_none());
@@ -473,13 +467,12 @@ mod stop_gate_snapshot_tests {
 
     #[test]
     fn scheduled_task_maps_to_stop_cron() {
-        let task =
-            codel_tools::implementations::codel_build::scheduler::types::ScheduledTask::new(
-                300,
-                "check the build".into(),
-                true,
-                false,
-            );
+        let task = codel_tools::implementations::codel_build::scheduler::types::ScheduledTask::new(
+            300,
+            "check the build".into(),
+            true,
+            false,
+        );
         let cron = stop_cron_from_scheduled(&task);
         assert_eq!(cron.schedule, "every 5 minutes");
         assert!(cron.recurring);

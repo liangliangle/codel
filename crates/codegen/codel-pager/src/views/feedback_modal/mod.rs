@@ -541,17 +541,8 @@ impl FeedbackModalState {
         self.error = None;
     }
 
-    fn report_trace_outcome(
-        &mut self,
-        choice: codel_logging::events::FeedbackTraceConsentChoice,
-    ) {
+    fn report_trace_outcome(&mut self, choice: codel_logging::events::FeedbackTraceConsentChoice) {
         if !self.trace_outcome_reported {
-            codel_logging::session_ctx::log_event(
-                codel_logging::events::FeedbackTraceConsentSelected {
-                    choice,
-                    reenables_sharing: false,
-                },
-            );
             self.trace_outcome_reported = true;
         }
     }
@@ -573,9 +564,7 @@ impl FeedbackModalState {
 
     fn report_dismissed_trace_card(&mut self) {
         if self.in_trace_step() {
-            self.report_trace_outcome(
-                codel_logging::events::FeedbackTraceConsentChoice::Dismissed,
-            );
+            self.report_trace_outcome(codel_logging::events::FeedbackTraceConsentChoice::Dismissed);
         }
     }
 

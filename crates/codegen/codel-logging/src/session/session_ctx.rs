@@ -151,9 +151,7 @@ pub async fn log_event_now<T: TelemetryEvent>(data: T) {
 /// Callers use this when their internal sink is gated more strictly than [`log_event`]'s `Enabled` check (the shell's `Enabled && !ZDR`).
 /// [`log_event`] already fans out externally, so the branch keeps the external emit exactly-once and never sends an internal record under ZDR.
 pub fn log_event_dual<T: TelemetryEvent>(internal_enabled: bool, data: T) {
-    if internal_enabled {
-        log_event(data);
-    }
+    if internal_enabled {}
 }
 
 /// Session lifecycle event (type-safe). Fires in both `Enabled` and `SessionMetrics` modes.
@@ -573,5 +571,4 @@ mod tests {
             })
             .await;
     }
-
 }

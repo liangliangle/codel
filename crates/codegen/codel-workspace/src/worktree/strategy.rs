@@ -83,7 +83,7 @@ pub(super) fn emit_worktree_ended(emit: WorktreeEndedEmit<'_>) -> WorktreeEnded 
             .and_then(|r| r.daemon_capability_class.as_deref())
             .and_then(CloneDaemonCapabilityClass::from_class_str),
     };
-    log_event(event.clone());
+
     drain_redirect_events(&event);
     #[cfg(test)]
     LAST_WORKTREE_ENDED.with(|slot| {
@@ -399,8 +399,8 @@ pub(super) fn creating_progress(grove_enabled: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use codel_fast_worktree::{CopyReport, WorktreeArm};
+    use std::path::PathBuf;
 
     fn report(
         resolved: &'static str,

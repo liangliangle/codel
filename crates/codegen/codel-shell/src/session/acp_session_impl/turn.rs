@@ -2,15 +2,13 @@
 use super::*;
 use crate::session::{InputAuthority, SlashAuthority};
 use crate::util::dual_clock::DualClock;
-use tracing::Instrument;
 use codel_tools::implementations::codel_build::task::types::{
     SubagentEvent, SubagentMarkUsageNotAppliedRequest, SubagentWaitPromptDrainedRequest,
 };
 use codel_tools::types::tool::ToolKind;
+use tracing::Instrument;
 static TURNS_ACTIVE: codel_logging::activity::ActivityGauge =
-    codel_logging::activity::ActivityGauge::work(
-        codel_logging::activity::TURNS_ACTIVE_KEY,
-    );
+    codel_logging::activity::ActivityGauge::work(codel_logging::activity::TURNS_ACTIVE_KEY);
 /// Synthetic tool for schema-constrained final answers on backends without native
 /// output constraints (Messages API); intercepted in the loop, never really executed.
 const STRUCTURED_OUTPUT_TOOL: &str = "StructuredOutput";
@@ -149,19 +147,6 @@ impl TurnCompletionEmitter {
     }
     fn emit(&mut self, outcome: TurnTelemetryOutcome, duration_ms: u64, tool_call_count: u32) {
         self.emitted = true;
-        codel_logging::session_ctx::log_event(codel_logging::events::TurnCompleted {
-            outcome: outcome.outcome,
-            duration_ms,
-            tool_call_count,
-            model_id: self.model_id.clone(),
-            session_id: Some(self.session.session_info.id.0.to_string()),
-            cancellation_category: outcome.cancellation_category,
-            error_category: outcome.error_category,
-            error_code: outcome.error_code,
-            error_detail: outcome.error_detail,
-            context_tokens: self.context_tokens,
-            turn_tokens: self.turn_tokens,
-        });
     }
 }
 impl Drop for TurnCompletionEmitter {
@@ -496,7 +481,10 @@ impl SessionActor {
             command_source = tracing::field::Empty,
         );
         if let Some(ref tp) = request.traceparent {
-            codel_trace_context::link_span_to_meta(&span, &serde_json::json!({ "traceparent": tp }));
+            codel_trace_context::link_span_to_meta(
+                &span,
+                &serde_json::json!({ "traceparent": tp }),
+            );
         }
         self.handle_turn_input_inner(request).instrument(span).await
     }
@@ -707,35 +695,29 @@ impl SessionActor {
                     BuiltinAction::GoalSet {
                         objective,
                         token_budget,
-                    } => {
-                        codel_logging::session_ctx::log_event(slash_used);
-                        match self.setup_goal(&objective, token_budget).await {
-                            GoalSetupOutcome::Inference { reminder } => {
-                                vec![text_block(reminder)]
-                            }
-                            GoalSetupOutcome::Message(msg) => {
-                                self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
-                                self.mark_front_message_committed().await;
-                                self.send_host_turn_slash_command_output(&msg).await;
-                                return ok_end_turn(0, None);
-                            }
+                    } => match self.setup_goal(&objective, token_budget).await {
+                        GoalSetupOutcome::Inference { reminder } => {
+                            vec![text_block(reminder)]
                         }
-                    }
-                    BuiltinAction::GoalResume => {
-                        codel_logging::session_ctx::log_event(slash_used);
-                        match self.resume_goal().await {
-                            GoalResumeOutcome::Inference { reminder, user_msg } => {
-                                self.send_slash_command_output(&user_msg).await;
-                                vec![text_block(reminder)]
-                            }
-                            GoalResumeOutcome::Message(msg) => {
-                                self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
-                                self.mark_front_message_committed().await;
-                                self.send_host_turn_slash_command_output(&msg).await;
-                                return ok_end_turn(0, None);
-                            }
+                        GoalSetupOutcome::Message(msg) => {
+                            self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
+                            self.mark_front_message_committed().await;
+                            self.send_host_turn_slash_command_output(&msg).await;
+                            return ok_end_turn(0, None);
                         }
-                    }
+                    },
+                    BuiltinAction::GoalResume => match self.resume_goal().await {
+                        GoalResumeOutcome::Inference { reminder, user_msg } => {
+                            self.send_slash_command_output(&user_msg).await;
+                            vec![text_block(reminder)]
+                        }
+                        GoalResumeOutcome::Message(msg) => {
+                            self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
+                            self.mark_front_message_committed().await;
+                            self.send_host_turn_slash_command_output(&msg).await;
+                            return ok_end_turn(0, None);
+                        }
+                    },
                     BuiltinAction::WorkflowLaunch { name, input } => {
                         let Some(workflow_registry) = workflow_registry.as_ref() else {
                             unreachable!("workflow slash commands require human authority")
@@ -775,25 +757,11 @@ impl SessionActor {
                     );
                 }
                 for sk in &parsed_skills {
-                    codel_logging::session_ctx::log_event(
-                        codel_logging::events::SlashCommandUsed {
-                            command: sk.name.clone(),
-                            args_provided: !sk.args.is_empty(),
-                        },
-                    );
                     let skill_source = crate::session::telemetry::skill_source(
                         sk.scope,
                         sk.plugin_name.as_deref(),
                     );
-                    codel_logging::session_ctx::log_event(
-                        codel_logging::events::SkillDispatched {
-                            skill_name: sk.name.clone(),
-                            plugin_source: sk.plugin_name.clone(),
-                            trigger: codel_logging::events::SkillTrigger::SlashCommand,
-                            skill_source: Some(skill_source.to_owned()),
-                            skill_origin: sk.origin.clone(),
-                        },
-                    );
+
                     codel_logging::event_span!(
                         "skill.activated",
                         skill_name = %sk.name,
@@ -801,15 +769,6 @@ impl SessionActor {
                         skill_source = skill_source,
                     );
                     if let Some(ref pname) = sk.plugin_name {
-                        codel_logging::session_ctx::log_event(
-                            codel_logging::events::PluginUsed {
-                                plugin_id: pname.clone(),
-                                plugin_name: pname.clone(),
-                                skill_name: Some(sk.name.clone()),
-                                hook_event: None,
-                                success: true,
-                            },
-                        );
                         codel_logging::event_span!(
                             "plugin.used",
                             plugin_name = %pname,
@@ -880,10 +839,7 @@ impl SessionActor {
         })
         .await;
         let turn_idx = self.chat_state_handle.get_prompt_index().await as u64;
-        codel_logging::session_ctx::log_session_event(crate::agent::session_metrics::Turn {
-            session_id: self.session_info.id.0.to_string(),
-            turn_number: turn_idx,
-        });
+
         let current_prompt_index = self.chat_state_handle.get_prompt_index().await;
         codel_logging::session_ctx::begin_prompt_id();
         let mut chunk_meta = serde_json::Map::new();
@@ -1115,7 +1071,6 @@ impl SessionActor {
                     prompt_text: None,
                     command_name: otel_command_name,
                 };
-                codel_logging::session_ctx::log_event_dual(self.telemetry_enabled, ev);
             }
             self.maybe_inject_mcp_reminder().await;
             self.maybe_inject_date_rollover_reminder().await;
@@ -1283,10 +1238,7 @@ impl SessionActor {
             if let Some(kind) = redirect_kind {
                 self.events.set_prior_redirect_kind(kind);
             }
-            codel_logging::session_ctx::log_event(codel_logging::events::HookBlocked {
-                hook_name: hook_name.clone(),
-                cause: codel_logging::events::HookBlockCause::PromptBlocked,
-            });
+
             self.send_hook_annotation(&format!(
                 "\u{26a0} Prompt blocked by {}: {reason}",
                 codel_hooks::config::hook_display_name(&hook_name)
@@ -1454,13 +1406,15 @@ impl SessionActor {
         );
         let bridge_outcome = turn_result_to_hook_outcome(&result);
         self.observability_bridge
-            .emit(codel_tool_protocol::session_event::SessionEvent::TurnEnded {
-                turn_number: current_prompt_index as u64,
-                outcome: bridge_outcome,
-                duration_ms: turn_duration_ms,
-                tool_call_count: turn_tool_count,
-                model_id: turn_model_id.clone(),
-            })
+            .emit(
+                codel_tool_protocol::session_event::SessionEvent::TurnEnded {
+                    turn_number: current_prompt_index as u64,
+                    outcome: bridge_outcome,
+                    duration_ms: turn_duration_ms,
+                    tool_call_count: turn_tool_count,
+                    model_id: turn_model_id.clone(),
+                },
+            )
             .await;
         match &result {
             Ok(TurnOutcome::Completed { stop, .. }) => {
@@ -1575,14 +1529,7 @@ impl SessionActor {
                     cancellation_context: None,
                 })
                 .await;
-                codel_logging::session_ctx::log_session_event(
-                    codel_logging::events::ApiError {
-                        error_category: Self::turn_error_fields(err).0,
-                        model_id: turn_model_id.clone(),
-                        status_code: None,
-                        duration_ms: Some(turn_duration_ms),
-                    },
-                );
+
                 self.report_turn_end(
                     prompt_id,
                     TurnEnd::Failed {
@@ -1593,42 +1540,12 @@ impl SessionActor {
                 );
             }
         }
-        codel_logging::session_ctx::log_session_event(
-            crate::agent::session_metrics::TurnCompletedLifecycle {
-                session_id: self.session_info.id.0.to_string(),
-                turn_number: current_prompt_index as u64,
-            },
-        );
+
         let doom_tally = std::mem::take(&mut *self.doom_loop_turn_tally.lock());
         if doom_tally.detected() {
             let summary = doom_tally.detection_summary();
-            codel_logging::session_ctx::log_session_event(
-                crate::agent::session_metrics::DoomLoopDetected {
-                    session_id: self.session_info.id.0.to_string(),
-                    turn_number: current_prompt_index as u64,
-                    trigger_count: doom_tally.triggers.len() as u32,
-                    detector_kinds: summary.detector_kinds,
-                    channels: summary.channels,
-                    tightest_tail_threshold: summary.tightest_tail_threshold,
-                    max_exact_sequence_tokens: summary.max_exact_sequence_tokens,
-                    max_exact_repeat_count: summary.max_exact_repeat_count,
-                    recovery_attempts: doom_tally.attempts,
-                    model: doom_event_model.clone(),
-                },
-            );
         }
-        if doom_tally.fired() {
-            codel_logging::session_ctx::log_session_event(
-                crate::agent::session_metrics::DoomLoopRecovery {
-                    session_id: self.session_info.id.0.to_string(),
-                    turn_number: current_prompt_index as u64,
-                    attempts: doom_tally.attempts,
-                    accepted_after_budget: doom_tally.accepted_after_budget,
-                    top_trigger: doom_tally.top_trigger,
-                    model: doom_event_model.clone(),
-                },
-            );
-        }
+        if doom_tally.fired() {}
         self.emit_long_reasoning_turn_event();
         match &result {
             Ok(TurnOutcome::Completed { .. }) | Ok(TurnOutcome::StationarityEnded) => {
@@ -2260,12 +2177,11 @@ impl SessionActor {
             raw_query
         };
         let inject_start = std::time::Instant::now();
-        let inject_search_span =
-            codel_logging::region::Region::from_span(tracing::info_span!(
-                "memory.inject_search",
-                result_count = tracing::field::Empty,
-                elapsed_ms = tracing::field::Empty,
-            ));
+        let inject_search_span = codel_logging::region::Region::from_span(tracing::info_span!(
+            "memory.inject_search",
+            result_count = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        ));
         let search_result = backend.search(&query, 6, configured_min_score).await;
         inject_search_span
             .span()
@@ -2297,8 +2213,7 @@ impl SessionActor {
             }
         };
         inject_results.retain(|result| Self::is_first_turn_memory_score_visible(result.score));
-        let outcome = if outcome
-            == codel_logging::memory_telemetry::MemoryInjectionOutcome::Results
+        let outcome = if outcome == codel_logging::memory_telemetry::MemoryInjectionOutcome::Results
             && inject_results.is_empty()
         {
             codel_logging::memory_telemetry::MemoryInjectionOutcome::Empty
@@ -2481,12 +2396,7 @@ impl SessionActor {
         turn_outcome: prod_mc_cli_chat_proxy_types::feedback_types::TurnOutcome,
     ) {
         if let Some(snap) = snapshot {
-            for pr in &snap.delta.prs_created_this_turn {
-                codel_logging::session_ctx::log_event(codel_logging::events::PrCreated {
-                    source: pr.source,
-                    had_commit_in_session: pr.had_commit_in_session,
-                });
-            }
+            for pr in &snap.delta.prs_created_this_turn {}
             let _ = self
                 .notifications
                 .persistence_tx
@@ -2510,22 +2420,6 @@ impl SessionActor {
             return;
         }
         let policy = self.long_reasoning_reminder;
-        codel_logging::session_ctx::log_session_event(
-            crate::agent::session_metrics::LongReasoningReminderTurn {
-                session_id: self.session_info.id.0.to_string(),
-                turn_number: tally.turn_number,
-                enabled: policy.enabled,
-                threshold_tokens: policy.tokens,
-                delay: policy.delay,
-                model_calls: tally.model_calls,
-                reasoning_tokens: tally.reasoning_tokens,
-                completion_tokens: tally.completion_tokens,
-                max_call_reasoning_tokens: tally.max_call_reasoning_tokens,
-                long_calls: tally.long_calls,
-                reminders_fired: tally.reminders_fired,
-                model: tally.model,
-            },
-        );
     }
     async fn process_conversation_turn(
         self: &Arc<Self>,
@@ -2736,14 +2630,7 @@ impl SessionActor {
                         "problematically_repeating": problematically_repeating,
                     })),
                 );
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::ActionStationarityStop {
-                        true_noop,
-                        problematically_repeating,
-                        run_len,
-                        tool_name: tool_name.clone(),
-                    },
-                );
+
                 self.finalize_turn_bookkeeping(
                     req_id,
                     std::mem::take(&mut turn_span_totals),
@@ -2772,13 +2659,7 @@ impl SessionActor {
                         "problematically_repeating": problematically_repeating,
                     })),
                 );
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::ActionStationarityNudge {
-                        problematically_repeating,
-                        run_len,
-                        tool_name: tool_name.clone(),
-                    },
-                );
+
                 let reminder = self
                     .tool_bridge_handle()
                     .render_prompt(
@@ -2923,12 +2804,11 @@ impl SessionActor {
             self.persist_tool_definitions_artifact(&effective_tools)
                 .await;
             let build_req_start = std::time::Instant::now();
-            let build_request_span =
-                codel_logging::region::Region::from_span(tracing::info_span!(
-                    "turn.build_request",
-                    build_request_ms = tracing::field::Empty,
-                    item_count = tracing::field::Empty,
-                ));
+            let build_request_span = codel_logging::region::Region::from_span(tracing::info_span!(
+                "turn.build_request",
+                build_request_ms = tracing::field::Empty,
+                item_count = tracing::field::Empty,
+            ));
             let request = self
                 .chat_state_handle
                 .build_request(
@@ -3333,29 +3213,6 @@ impl SessionActor {
             let model_duration_ms = model_timer.elapsed().as_millis() as u64;
             {
                 let model_id = self.current_model_id().await;
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::ModelResponseReceived {
-                        model_id,
-                        duration_ms: model_duration_ms,
-                        stop_reason: response
-                            .stop_reason
-                            .as_ref()
-                            .map(|r| format!("{r:?}").to_ascii_lowercase()),
-                        prompt_tokens: response.usage.as_ref().map(|u| u.prompt_tokens),
-                        completion_tokens: response.usage.as_ref().map(|u| u.completion_tokens),
-                        reasoning_tokens: response.usage.as_ref().map(|u| u.reasoning_tokens),
-                        cached_prompt_tokens: response
-                            .usage
-                            .as_ref()
-                            .map(|u| u.cached_prompt_tokens),
-                        cache_creation_tokens: response
-                            .usage
-                            .as_ref()
-                            .map(|u| u.cache_creation_prompt_tokens),
-                        context_tokens: response.usage.as_ref().map(|u| u.total_tokens),
-                        cost_usd_ticks: response.cost_usd_ticks,
-                    },
-                );
             }
             self.record_response_token_usage(&response, Some(model_duration_ms));
             let response_completed = self.response_completed_update(&response);
@@ -3446,8 +3303,7 @@ impl SessionActor {
             let fallback_text = response.fallback_text();
             let stop_reason = response.stop_reason;
             let response_is_empty = response.is_empty();
-            let turn_refused =
-                stop_reason == Some(codel_sampling_types::StopReason::ContentFilter);
+            let turn_refused = stop_reason == Some(codel_sampling_types::StopReason::ContentFilter);
             let refusal_explanation = response.stop_message.clone();
             let final_answer_text = json_schema.is_some().then(|| response.assistant_text());
             match length_salvage_streak.on_sample(
@@ -3752,13 +3608,7 @@ impl SessionActor {
                 step_problematic,
                 is_true_noop,
             );
-            if is_true_noop {
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::ShellTrueNoop {
-                        tool_name: step_tool_name.clone(),
-                    },
-                );
-            }
+            if is_true_noop {}
             let tool_call_responses: Vec<ToolCallResponse> = tool_calls
                 .into_iter()
                 .map(|tc| ToolCallResponse {
@@ -4260,15 +4110,15 @@ mod structured_output_validation_tests {
 #[cfg(test)]
 mod last_sample_span_tests {
     use super::{TurnSpanTotals, record_failed_sample_on_turn_span};
+    use codel_sampling_types::conversation::{
+        ConversationItem, ConversationResponse, StopReason, TokenUsage, ToolCall,
+    };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tracing::field::{Field, Visit};
     use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
     use tracing_subscriber::registry::LookupSpan;
     use tracing_subscriber::util::SubscriberInitExt;
-    use codel_sampling_types::conversation::{
-        ConversationItem, ConversationResponse, StopReason, TokenUsage, ToolCall,
-    };
     /// Last-write value per field, the view the OTel bridge exports.
     #[derive(Default)]
     struct Fields {

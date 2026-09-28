@@ -38,15 +38,6 @@ impl AgentView {
             return;
         }
         let (chars, words) = crate::views::prompt_suggestion::suggestion_size(&full);
-        codel_logging::session_ctx::log_event(codel_logging::events::PromptSuggestion {
-            action: codel_logging::events::PromptSuggestionAction::Shown,
-            chars,
-            words,
-            model: None,
-            latency_ms: None,
-            request_id: None,
-            session_id: self.session.session_id.as_ref().map(|s| s.0.to_string()),
-        });
     }
 
     /// Notify the suggestion controller that the prompt text changed.
@@ -494,11 +485,7 @@ impl AgentView {
         };
         let plugin_id = name.clone();
         self.plugin_cta.dismissed.insert(plugin_id.clone());
-        codel_logging::session_ctx::log_event(
-            codel_logging::events::PluginCtaDismissed {
-                plugin_name: plugin_id.clone(),
-            },
-        );
+
         self.plugin_cta.phase = CtaPhase::Hidden;
         self.plugin_cta.hit_connect.clear();
         self.plugin_cta.hit_dismiss.clear();
@@ -522,12 +509,7 @@ impl AgentView {
             } => (plugin_relative_path.clone(), name.clone(), true),
             _ => return,
         };
-        codel_logging::session_ctx::log_event(
-            codel_logging::events::PluginCtaConnectClicked {
-                plugin_name: name.clone(),
-                is_retry,
-            },
-        );
+
         let Some(session_id) = self.session.session_id.clone() else {
             return;
         };

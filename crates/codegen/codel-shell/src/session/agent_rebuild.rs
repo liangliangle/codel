@@ -32,10 +32,6 @@ use crate::agent::remote_config::task_model_policy::{
     LatchedTaskModelSelection, TaskModelPolicyInputs, latch_task_model_presentation,
     presentation_applied_event, rejection_sink,
 };
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedSender;
 use codel_agent::config::AgentDefinition;
 use codel_agent::error::AgentBuildError;
 use codel_agent::prompt::context::PromptAudience;
@@ -57,6 +53,10 @@ use codel_tools::notification::ToolNotificationHandle;
 use codel_tools::types::SharedApiKeyProvider;
 use codel_tools::types::compat::CompatConfig;
 use codel_tools::types::memory_backend::MemoryBackend;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
 /// Shell-resolved per-tool `ToolConfig.params` JSON maps.
 /// The struct keeps the spawn functions to a single argument instead of adjacent identically-typed positional arguments a caller could transpose.
 #[derive(Debug, Clone, Default)]
@@ -143,9 +143,8 @@ pub(crate) struct AgentRebuildSpec {
     pub attribution_callback: Option<codel_tools::SharedAttributionCallback>,
     pub tool_params_json: ResolvedToolParamsJson,
     pub subagent_event_tx: Option<UnboundedSender<SubagentEvent>>,
-    pub subagent_coordinator_sender: Option<
-        codel_tools::implementations::codel_build::task::backend::SubagentCoordinatorSender,
-    >,
+    pub subagent_coordinator_sender:
+        Option<codel_tools::implementations::codel_build::task::backend::SubagentCoordinatorSender>,
     pub agent_message_sender: Option<AgentMessageSender>,
     pub monitor_event_buffer: Option<MonitorEventBuffer>,
     pub user_question_tx: UnboundedSender<UserQuestionRequest>,
@@ -385,11 +384,7 @@ impl AgentRebuildSpec {
         crate::waterfall::mark(session_id_str, crate::waterfall::stage::SB_BUILDER_DONE);
         let agent_build_elapsed = build_phase_start.elapsed();
         task_model_selection.set(presentation.selection);
-        codel_logging::session_ctx::log_event(presentation_applied_event(
-            &presentation,
-            task_model_policy,
-            *prompt_audience,
-        ));
+
         let model_validator = models_manager.clone();
         agent
             .tool_bridge()

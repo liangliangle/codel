@@ -11,12 +11,12 @@ use crate::views::btw_overlay::BTW_OVERLAY_ENTRY_IDX;
 use crate::views::file_search::line_viewer::{LineViewerState, PlanViewerItem};
 use crate::views::list_pane::ListItem;
 use crate::views::plan_approval_view::PlanApprovalFocus;
+use codel_logging::events::{BlockViewerOpened, BlockViewerQuoted};
+use codel_logging::session_ctx::log_event;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use codel_logging::events::{BlockViewerOpened, BlockViewerQuoted};
-use codel_logging::session_ctx::log_event;
 
 pub(crate) enum IdleEnterQuote {
     NotHandled,
@@ -1000,9 +1000,6 @@ impl AgentView {
     }
 
     pub(crate) fn show_block_viewer(&mut self, pane: BlockViewerPane) {
-        log_event(BlockViewerOpened {
-            kind: pane.kind.telemetry_kind(),
-        });
         self.block_viewer = Some(pane);
     }
 
@@ -1021,9 +1018,7 @@ impl AgentView {
         if quoted.is_empty() {
             return IdleEnterQuote::ConsumedEmpty;
         }
-        log_event(BlockViewerQuoted {
-            kind: viewer.kind.telemetry_kind(),
-        });
+
         self.dismiss_block_viewer();
         IdleEnterQuote::Quoted(quoted)
     }

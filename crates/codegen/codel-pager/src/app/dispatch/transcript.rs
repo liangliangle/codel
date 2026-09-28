@@ -490,10 +490,6 @@ pub(super) fn dispatch_open_extensions_modal(
     let mut modal = ExtensionsModalState::new(tab);
     modal.session_team_id = app.team_id.clone();
     agent.extensions_modal = Some(modal);
-    log_event(codel_logging::events::ExtensionsModalOpened {
-        trigger,
-        tab: tab.telemetry_tab(),
-    });
 
     let Some(session_id) = agent.session.session_id.clone() else {
         // Tabs default to Loading; the fetch fires on SessionCreated.

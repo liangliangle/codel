@@ -105,13 +105,6 @@ impl NotificationService {
                 self.terminal_ctx,
                 &self.escape_writer,
             );
-            codel_logging::session_ctx::log_event(
-                codel_logging::events::NotificationEmitted {
-                    protocol: self.protocol.into(),
-                    event_kind: event.kind.into(),
-                    was_focused: self.focus_tracker.is_focused(),
-                },
-            );
         }
     }
 

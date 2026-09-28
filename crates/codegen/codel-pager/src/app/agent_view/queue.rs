@@ -89,10 +89,6 @@ impl AgentView {
         if matches!(outcome, InputOutcome::Action(_))
             && self.ephemeral_tip.current_key() == Some(crate::tips::send_now::SEND_NOW_TIP_KEY)
         {
-            codel_logging::session_ctx::log_event(codel_logging::events::ContextualTip {
-                tip: codel_logging::events::ContextualTipKind::SendNow,
-                action: codel_logging::events::ContextualTipAction::Accepted,
-            });
             self.ephemeral_tip
                 .clear(crate::tips::send_now::SEND_NOW_TIP_KEY);
         }

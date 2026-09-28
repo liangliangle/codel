@@ -476,11 +476,6 @@ pub fn log_shortcut_used(key: &KeyEvent, action_id: ActionId, context: &str) {
     let Some(action) = shortcut_used_action_label(action_id) else {
         return;
     };
-    codel_logging::session_ctx::log_event(codel_logging::events::ShortcutUsed {
-        key: KeyShortcut::from(*key).display_telemetry(),
-        action: action.to_string(),
-        context: context.to_string(),
-    });
 }
 
 /// Stable product-event labels for the allowlisted actions. `None` means do not emit.

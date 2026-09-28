@@ -42,14 +42,8 @@ impl SessionActor {
             skills_count = counts.skills_count,
             "session_context_snapshot: emitted"
         );
-        codel_logging::session_ctx::log_session_event(session_context_snapshot(
-            self.session_info.id.0.to_string(),
-            &info,
-            &counts,
-            &tokens,
-        ));
-        codel_logging::session_ctx::drain_pending(codel_logging::session_ctx::CLI_DRAIN)
-            .await;
+
+        codel_logging::session_ctx::drain_pending(codel_logging::session_ctx::CLI_DRAIN).await;
     }
 
     async fn tokenize_api_key(&self) -> Option<String> {

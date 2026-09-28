@@ -22,7 +22,6 @@ use crate::session::two_pass::{
     note_for_two_pass_pass2, split_conversation_for_two_pass,
 };
 use agent_client_protocol as acp;
-use std::sync::Arc;
 use codel_chat_state::compaction_image_context::CompactionImageContext;
 use codel_chat_state::compaction_utils::{
     CompactedHistoryInput, CompactionAttempt, build_compacted_history, is_degenerate_summary,
@@ -30,6 +29,7 @@ use codel_chat_state::compaction_utils::{
     validate_compacted_history,
 };
 use codel_sampling_types::{ApiBackend, ConversationItem};
+use std::sync::Arc;
 /// Prefix on the early-guard failure payloads below; the user-facing normalizer strips it (the renderer prepends its own headline).
 const COMPACTION_FAILED_GUARD_PREFIX: &str = "Compaction failed: ";
 /// Human-readable "next fire" for a scheduled loop in the compaction reminder.
@@ -683,13 +683,7 @@ impl SessionActor {
                 context_window,
                 "auto-compaction suppressed after deterministic compaction failure"
             );
-            codel_logging::session_ctx::log_event(
-                codel_logging::events::AutoCompactSuppressed {
-                    reason: reason.into(),
-                    estimated_tokens,
-                    context_window,
-                },
-            );
+
             self.send_codel_notification(
                 crate::extensions::notification::SessionUpdate::AutoCompactFailed {
                     error: Self::suppress_notification_message(reason, detail),
@@ -1216,18 +1210,7 @@ impl SessionActor {
                         };
                         if let Some(stage) = next_stage {
                             input_overflow_rejections += 1;
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::CompactionRetryDegraded {
-                                    trigger,
-                                    reason: "input_overflow",
-                                    from_stage: Some(input_stage.into()),
-                                    to_stage: Some(stage.into()),
-                                    summary_chars: None,
-                                    attempt: observer.attempt_count(),
-                                    context_window,
-                                    compaction_id: compaction.compaction_id.clone(),
-                                },
-                            );
+
                             tracing::warn!(
                                 session_id = %self.session_info.id.0,
                                 ?stage,
@@ -2309,10 +2292,7 @@ impl SessionActor {
         self.record_compaction_variant();
         let tokens_before = self.chat_state_handle.get_total_tokens().await;
         tracing::Span::current().record("pre_tokens", tokens_before as i64);
-        codel_logging::session_ctx::log_event(codel_logging::events::AutoCompactFired {
-            tokens_before: trigger_info.tokens_used,
-            percentage: trigger_info.percentage,
-        });
+
         self.signals_handle()
             .record_compaction(trigger_info.tokens_used);
         let reason = if trigger_info.reason_override == Some(MODEL_FAMILY_SWITCH_COMPACT_BANNER) {

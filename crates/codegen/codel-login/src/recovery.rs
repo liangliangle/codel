@@ -11,8 +11,8 @@ use crate::error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 use crate::manager::AuthManager;
 use crate::model::CodelAuth;
 use crate::token_type::TokenType;
-use std::sync::Arc;
 use codel_logging::events::{AuthTokenKind, ManualAuth, ManualAuthReason, ManualAuthSurface};
+use std::sync::Arc;
 /// `manual_auth` KPI reason for a terminal `AuthError`, or `None` when it doesn't force a manual re-login.
 /// Lives here (not on `AuthError`) so the error model stays telemetry-free.
 pub fn manual_auth_reason(err: &AuthError) -> Option<ManualAuthReason> {
@@ -149,7 +149,6 @@ impl ManualAuthTracker {
             self.emit_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        codel_logging::session_ctx::log_event(event);
     }
     #[cfg(test)]
     pub fn emit_count_for_test(&self) -> u32 {

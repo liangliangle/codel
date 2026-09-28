@@ -7,8 +7,8 @@ use super::{
     bootstrap_with_cancel, hold_bootstrap_gate_for_tests, startup_settings_deadline,
 };
 use crate::managed_config::LaunchProfile;
-use tokio_util::sync::CancellationToken;
 use codel_login::{AuthManager, CodelComConfig};
+use tokio_util::sync::CancellationToken;
 
 #[test]
 fn startup_settings_deadline_selects_by_profile() {

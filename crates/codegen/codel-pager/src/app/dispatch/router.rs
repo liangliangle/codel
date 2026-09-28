@@ -1017,10 +1017,7 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             ) {
                 let url = url.to_owned();
                 let promo_id = promo.id.clone();
-                log_event(codel_logging::events::AnnouncementCtaClicked {
-                    id: promo_id,
-                    source: surface,
-                });
+
                 open_url_or_show(app, &url);
             }
             vec![]
@@ -1642,7 +1639,9 @@ pub(super) fn dispatch_action_result(
                 if let Some(ref mut modal) = agent.extensions_modal {
                     if !outcome.message.trim().is_empty() && modal.result_notice.is_none() {
                         let entry_index = match modal.last_plugins_action {
-                            Some(codel_hooks_plugins_types::PluginsAction::Uninstall { .. }) => None,
+                            Some(codel_hooks_plugins_types::PluginsAction::Uninstall {
+                                ..
+                            }) => None,
                             _ => modal.pending_entry_index,
                         };
                         modal.result_notice =

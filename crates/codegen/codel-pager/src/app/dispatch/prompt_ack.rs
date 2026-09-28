@@ -12,10 +12,10 @@ use crate::app::app_view::AppView;
 use crate::app::cancel_latency::TurnEnd;
 use crate::app::prompt_ack::{PromptAckDeadlines, PromptAckOutcome};
 use crate::scrollback::block::RenderBlock;
-use std::time::{Duration, Instant};
 use codel_logging::events::{
     PromptAckDisposition, PromptAckPromptKind, PromptAckSurface, PromptAckTimeoutFired,
 };
+use std::time::{Duration, Instant};
 
 const PROMPT_ACK_TIMEOUT_TOAST_RESTORED: &str = "Prompt not accepted, text restored";
 const PROMPT_ACK_TIMEOUT_TOAST_STOPPED: &str = "Prompt not accepted, turn stopped";
@@ -193,13 +193,6 @@ fn fire_fail_safe(
             "shared_queue_len": agent.shared_queue.len(),
         })),
     );
-    codel_logging::session_ctx::log_event(PromptAckTimeoutFired {
-        limit_ms: deadlines.hard.as_millis() as u64,
-        waited_ms: waited.as_millis() as u64,
-        surface: PromptAckSurface::Tui,
-        disposition,
-        prompt_kind,
-    });
 
     // Not a user cancel: no gesture, so no resend record; the shell trims the prompt if it lands late
     Some(emit_cancel_turn(

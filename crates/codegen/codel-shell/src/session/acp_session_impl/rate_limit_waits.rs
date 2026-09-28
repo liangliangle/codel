@@ -2,10 +2,8 @@
 
 use std::time::Duration;
 
+use codel_logging::events::{RateLimitWaitOutcome as ReportedOutcome, SubagentRateLimitWaited};
 use codel_sampler::{SamplingErrorInfo, SamplingErrorKind};
-use codel_logging::events::{
-    RateLimitWaitOutcome as ReportedOutcome, SubagentRateLimitWaited,
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RateLimitWaitConfig {
@@ -224,9 +222,7 @@ impl BudgetState {
 /// Reported from `Drop` so a cancel (task abort) still records its waits.
 impl Drop for RateLimitWaitBudget {
     fn drop(&mut self) {
-        if let Some(event) = self.telemetry_event() {
-            codel_logging::session_ctx::log_event(event);
-        }
+        if let Some(event) = self.telemetry_event() {}
     }
 }
 

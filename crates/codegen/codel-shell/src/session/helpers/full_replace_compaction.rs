@@ -16,9 +16,9 @@ use codel_compaction::{
     CompactionPrompt, CompactionSampleError, CompactionSampler, FullReplaceAttemptOutcome,
     FullReplaceObserver, LlmCompactionOutput,
 };
+use codel_logging::events::{CompactionRetryDegraded, CompactionTrigger};
 use codel_sampler::SamplerConfig as SamplingConfig;
 use codel_sampling_types::{ConversationItem, HostedTool, ToolSpec};
-use codel_logging::events::{CompactionRetryDegraded, CompactionTrigger};
 
 use codel_chat_state::compaction_utils::{
     CompactionAttempt, MAX_CAPTURED_SUMMARY_CHARS, bound_captured_output,
@@ -302,16 +302,6 @@ impl FullReplaceObserver for ShellFullReplaceObserver {
                     self.estimated_input_tokens
                 ));
                 if *will_retry {
-                    codel_logging::session_ctx::log_event(CompactionRetryDegraded {
-                        trigger: self.trigger,
-                        reason: "degenerate_summary",
-                        from_stage: None,
-                        to_stage: None,
-                        summary_chars: Some(summary_chars as u64),
-                        attempt,
-                        context_window: self.context_window,
-                        compaction_id: self.compaction_id.clone(),
-                    });
                     tracing::warn!(
                         session_id = %self.session_id,
                         attempt,

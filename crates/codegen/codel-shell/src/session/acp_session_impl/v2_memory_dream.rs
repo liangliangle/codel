@@ -39,8 +39,8 @@ struct V2DreamModelFailure {
 fn classify_consolidation_error(
     error: &codel_memory::V2ConsolidationError,
 ) -> codel_logging::memory_telemetry::MemoryV2FailureClass {
-    use codel_memory::V2ConsolidationError;
     use codel_logging::memory_telemetry::MemoryV2FailureClass;
+    use codel_memory::V2ConsolidationError;
     match error {
         V2ConsolidationError::Busy | V2ConsolidationError::StaleLease => {
             MemoryV2FailureClass::Lease
@@ -308,16 +308,6 @@ fn emit_v2_dream_lifecycle(
     started_at: std::time::Instant,
     failure_class: Option<codel_logging::memory_telemetry::MemoryV2FailureClass>,
 ) {
-    codel_logging::session_ctx::log_event(
-        codel_logging::memory_telemetry::MemoryV2DreamLifecycle {
-            disposition,
-            observation_count,
-            topic_change_count,
-            latency_ms: started_at.elapsed().as_millis() as u64,
-            failure_class,
-            usage: codel_logging::memory_telemetry::MemoryV2ModelUsage::default(),
-        },
-    );
 }
 
 fn emit_v2_dream_lifecycle_with_usage(
@@ -330,16 +320,6 @@ fn emit_v2_dream_lifecycle_with_usage(
     usage: codel_logging::memory_telemetry::MemoryV2ModelUsage,
 ) {
     session.memory.record_dream_usage(&usage);
-    codel_logging::session_ctx::log_event(
-        codel_logging::memory_telemetry::MemoryV2DreamLifecycle {
-            disposition,
-            observation_count,
-            topic_change_count,
-            latency_ms: started_at.elapsed().as_millis() as u64,
-            failure_class,
-            usage,
-        },
-    );
 }
 
 fn parse_v2_dream_plan(response: &str) -> Result<Vec<codel_memory::TopicOperation>, String> {
@@ -514,14 +494,7 @@ impl SessionActor {
             })
             .await
             {
-                Ok(Ok(result)) => {
-                    codel_logging::session_ctx::log_event(
-                        codel_logging::memory_telemetry::MemoryV2GcCompleted {
-                            archived_observations_removed: result.archived_observations_removed,
-                            terminal_jobs_removed: result.terminal_jobs_removed,
-                        },
-                    );
-                }
+                Ok(Ok(result)) => {}
                 Ok(Err(error)) => {
                     let reason = match &error {
                         codel_memory::V2MaintenanceError::ActiveLease => {
@@ -537,17 +510,9 @@ impl SessionActor {
                         _ => MemoryV2FailureClass::Storage,
                     };
                     tracing::warn!(error = %error, "memory-v2 maintenance failed");
-                    codel_logging::session_ctx::log_event(MemoryV2FailClosed {
-                        component: MemoryV2Component::GarbageCollection,
-                        reason,
-                    });
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, "memory-v2 maintenance task panicked");
-                    codel_logging::session_ctx::log_event(MemoryV2FailClosed {
-                        component: MemoryV2Component::GarbageCollection,
-                        reason: MemoryV2FailureClass::Convergence,
-                    });
                 }
             }
         }
@@ -644,10 +609,6 @@ impl SessionActor {
             MemoryV2Component, MemoryV2FailClosed, MemoryV2FailureClass,
         };
         if !v2_dream_invocation_enabled(self.memory.v2_config, invocation) {
-            codel_logging::session_ctx::log_event(MemoryV2FailClosed {
-                component: MemoryV2Component::Dream,
-                reason: MemoryV2FailureClass::Disabled,
-            });
             return MemoryDreamResponse::new(MemoryDreamDisposition::Disabled);
         }
         let cancel = cancel.child_token();
@@ -715,9 +676,7 @@ impl SessionActor {
         cancel: &tokio_util::sync::CancellationToken,
         clock: codel_memory::SharedV2Clock,
     ) -> V2DreamPass {
-        use codel_logging::memory_telemetry::{
-            MemoryV2DreamDisposition, MemoryV2FailureClass,
-        };
+        use codel_logging::memory_telemetry::{MemoryV2DreamDisposition, MemoryV2FailureClass};
         let cancelled = |coalesced| V2DreamPass {
             outcome: MemoryDreamResponse::new(MemoryDreamDisposition::Cancelled),
             coalesced,
@@ -1079,13 +1038,8 @@ impl SessionActor {
     async fn run_v2_dream_model_call(
         &self,
         input: &str,
-    ) -> Result<
-        (
-            String,
-            codel_logging::memory_telemetry::MemoryV2ModelUsage,
-        ),
-        V2DreamModelFailure,
-    > {
+    ) -> Result<(String, codel_logging::memory_telemetry::MemoryV2ModelUsage), V2DreamModelFailure>
+    {
         use codel_logging::memory_telemetry::MemoryV2FailureClass;
         const V2_DREAM_SYSTEM_PROMPT: &str = "Consolidate only the supplied claimed observations \
             into the supplied curated topics. Topics are reference notes for a future agent that has \

@@ -54,13 +54,11 @@ pub(super) fn plugin_cta_candidates(
         Some(name) => sources.iter().position(|s| s.source_name == name),
         None => sources
             .iter()
-            .position(|s| {
-                codel_plugin_marketplace::is_official_source_url(&s.source_url_or_path)
-            })
+            .position(|s| codel_plugin_marketplace::is_official_source_url(&s.source_url_or_path))
             .or_else(|| {
-                sources.iter().position(|s| {
-                    s.source_name == codel_plugin_marketplace::OFFICIAL_SOURCE_NAME
-                })
+                sources
+                    .iter()
+                    .position(|s| s.source_name == codel_plugin_marketplace::OFFICIAL_SOURCE_NAME)
             }),
     };
     let Some(idx) = winner else {
@@ -191,11 +189,7 @@ pub(super) fn handle_cta_plugin_install_done(
     let name = name.clone();
     let session_id = agent.session.session_id.clone();
     let error_category = cta_install_error_category(&result);
-    log_event(codel_logging::events::PluginCtaInstalled {
-        plugin_name: name.clone(),
-        success: error_category.is_none(),
-        error_category,
-    });
+
     // Ok(requires_reload) on success; Err(message) otherwise.
     let install_result = match result {
         Ok(outcome) if outcome.status == codel_hooks_plugins_types::OutcomeStatus::Success => {
@@ -261,7 +255,9 @@ pub(super) fn handle_cta_plugin_reload_done(
     let session_id = agent.session.session_id.clone();
     // Mirror the install handler: a non-Success outcome is a failure, not a reason to advance to the steps after install
     let reload_result = match result {
-        Ok(outcome) if outcome.status == codel_hooks_plugins_types::OutcomeStatus::Success => Ok(()),
+        Ok(outcome) if outcome.status == codel_hooks_plugins_types::OutcomeStatus::Success => {
+            Ok(())
+        }
         Ok(outcome) => Err(crate::app::effects::sanitize_user_error(&outcome.message)),
         Err(e) => Err(e),
     };
@@ -356,10 +352,7 @@ pub(super) fn handle_plugin_cta_mcps_loaded(
                 modal.mcps_data = TabDataState::Loaded(servers);
                 agent.agents_modal = None;
                 agent.extensions_modal = Some(modal);
-                log_event(codel_logging::events::ExtensionsModalOpened {
-                    trigger: codel_logging::events::ExtensionsModalTrigger::AuthHandoff,
-                    tab: ExtensionsTab::McpServers.telemetry_tab(),
-                });
+
                 agent.plugin_cta.phase = CtaPhase::Hidden;
                 if let Some(session_id) = session_id.clone() {
                     if let Some(modal) = agent.extensions_modal.as_mut() {
@@ -453,9 +446,6 @@ pub(super) fn handle_plugin_cta_catalog_loaded(
                     if let Some(plugin_name) =
                         cta_impression_plugin_name(&agent.plugin_cta.phase, &new_phase)
                     {
-                        log_event(codel_logging::events::PluginCtaImpression {
-                            plugin_name: plugin_name.to_string(),
-                        });
                     }
                     if matches!(new_phase, CtaPhase::Hidden) {
                         agent.plugin_cta.hit_connect.clear();
@@ -506,11 +496,7 @@ pub(super) fn handle_plugin_cta_debounce_expired(
         &prompt_text,
         |name| agent.plugin_cta.dismissed.contains(name),
     );
-    if let Some(plugin_name) = cta_impression_plugin_name(&agent.plugin_cta.phase, &new_phase) {
-        log_event(codel_logging::events::PluginCtaImpression {
-            plugin_name: plugin_name.to_string(),
-        });
-    }
+    if let Some(plugin_name) = cta_impression_plugin_name(&agent.plugin_cta.phase, &new_phase) {}
     agent.plugin_cta.phase = new_phase;
     vec![]
 }

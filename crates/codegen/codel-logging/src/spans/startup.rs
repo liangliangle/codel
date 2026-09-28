@@ -301,11 +301,6 @@ impl StartupTimer {
         if timings.is_empty() {
             return;
         }
-        crate::session_ctx::log_event(crate::events::StartupSubTimers {
-            timings,
-            outcome,
-            auth_mode: self.auth_mode(),
-        });
     }
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
@@ -455,17 +450,7 @@ impl StartupTimer {
             "auth_mode": self.auth_mode(),
         });
         crate::unified_log::info(CONNECT_FINISHED_MSG, None, Some(ctx));
-        crate::session_ctx::log_event(crate::events::AgentConnect {
-            connect_target,
-            outcome,
-            stuck_in,
-            phases,
-            phase_durations_ms: self.phase_durations_ms(),
-            elapsed_ms,
-            timeout_secs,
-            embedded_fallback,
-            auth_mode: self.auth_mode(),
-        });
+
         if outcome != StartupOutcome::Ok {
             self.drain_sub_timers(outcome);
         }
@@ -515,7 +500,7 @@ pub fn record_interactive_frame() -> bool {
     if let Ok(record) = serde_json::to_value(&event) {
         crate::unified_log::info(STARTUP_INTERACTIVE_MSG, None, Some(record));
     }
-    crate::session_ctx::log_event(event);
+
     true
 }
 /// Whether a benchmark asked to quit after the first confirmed frame.
@@ -672,7 +657,6 @@ pub(crate) fn report_total(outcome: StartupOutcome) {
     if let Ok(record) = serde_json::to_value(&event) {
         crate::unified_log::info(STARTUP_COMPLETE_MSG, None, Some(record));
     }
-    crate::session_ctx::log_event(event);
 }
 /// Whole milliseconds, saturating instead of wrapping on the (never-reached) overflow, matching `subagent_spawn`.
 fn duration_ms(d: Duration) -> u64 {

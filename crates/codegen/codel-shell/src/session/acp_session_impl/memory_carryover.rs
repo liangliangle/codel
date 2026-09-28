@@ -6,12 +6,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use codel_logging::memory_telemetry::{
+    MemoryV2CarryoverCompleted, MemoryV2CarryoverOutcome, MemoryV2Scope,
+};
 use codel_memory::{
     V2CarryoverOutcome, V2MemoryAccessPolicy, V2MemoryScope, carry_over_legacy_memory,
     legacy_memory_file,
-};
-use codel_logging::memory_telemetry::{
-    MemoryV2CarryoverCompleted, MemoryV2CarryoverOutcome, MemoryV2Scope,
 };
 
 use crate::session::memory::MemoryStorage;
@@ -40,12 +40,7 @@ pub(crate) async fn carry_over_legacy_memory_into_v2(
         let source = legacy_memory_file(legacy_root, scope, &workspace_dir_name);
         let access = access.clone();
         let result = tokio::task::spawn_blocking(move || {
-            carry_over_legacy_memory(
-                &scope_dir,
-                &source,
-                &access,
-                &codel_memory::SystemV2Clock,
-            )
+            carry_over_legacy_memory(&scope_dir, &source, &access, &codel_memory::SystemV2Clock)
         })
         .await
         .map_err(|join_error| join_error.to_string())
@@ -64,14 +59,6 @@ pub(crate) async fn carry_over_legacy_memory_into_v2(
                     sections_skipped = report.sections_skipped,
                     "MEMORY_CARRYOVER: carried legacy notes into memory-v2"
                 );
-                codel_logging::session_ctx::log_event(MemoryV2CarryoverCompleted {
-                    scope: telemetry_scope,
-                    outcome: MemoryV2CarryoverOutcome::Imported,
-                    topics_created: report.topics_created,
-                    topics_appended: report.topics_appended,
-                    sections_skipped: report.sections_skipped,
-                    bytes_written: report.bytes_written,
-                });
             }
             Ok(
                 V2CarryoverOutcome::MissingSource
@@ -85,11 +72,6 @@ pub(crate) async fn carry_over_legacy_memory_into_v2(
                     error = %error,
                     "MEMORY_CARRYOVER: legacy carry-over failed; memory stays enabled"
                 );
-                codel_logging::session_ctx::log_event(MemoryV2CarryoverCompleted {
-                    scope: telemetry_scope,
-                    outcome: MemoryV2CarryoverOutcome::Failed,
-                    ..MemoryV2CarryoverCompleted::default()
-                });
             }
         }
     }

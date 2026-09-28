@@ -221,7 +221,6 @@ pub(crate) async fn submit_feedback_workflow(
             feedback_span.record("rating", rating);
         }
         feedback_span.in_scope(|| {});
-        codel_logging::session_ctx::log_event(event);
     }
 
     outcome
@@ -1341,8 +1340,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_with_upload_queue_drains() {
         use crate::session::repo_changes::{TraceExportConfig, UploadMethod};
-        use std::sync::Arc;
         use codel_file_utils::queue::{TraceExportSource, UploadQueue, UploadRetryPolicy};
+        use std::sync::Arc;
 
         struct MockResolver;
         impl TraceExportSource for MockResolver {
@@ -1661,9 +1660,9 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_empty_queue_uses_short_drain_budget() {
         use crate::session::repo_changes::{TraceExportConfig, UploadMethod};
+        use codel_file_utils::queue::{TraceExportSource, UploadQueue, UploadRetryPolicy};
         use std::sync::Arc;
         use std::time::Instant;
-        use codel_file_utils::queue::{TraceExportSource, UploadQueue, UploadRetryPolicy};
 
         struct MockResolver;
         impl TraceExportSource for MockResolver {
@@ -1705,9 +1704,9 @@ mod tests {
     async fn test_shutdown_nonempty_queue_clamps_drain_and_leaves_durable_pair() {
         use crate::session::repo_changes::{TraceExportConfig, UploadMethod};
         use axum::{Router, body::Body, http::StatusCode, response::IntoResponse, routing::post};
+        use codel_file_utils::queue::{TraceExportSource, UploadQueue, UploadRetryPolicy};
         use std::sync::Arc;
         use std::time::Instant;
-        use codel_file_utils::queue::{TraceExportSource, UploadQueue, UploadRetryPolicy};
 
         async fn slow_handler(_body: Body) -> impl IntoResponse {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -1880,9 +1879,9 @@ mod tests {
     #[tokio::test]
     async fn test_is_auth_permanently_failed_reads_auth_manager() {
         use crate::agent::feedback_client::FeedbackClient;
-        use std::sync::Arc;
         use codel_login::error::RefreshTokenFailedReason;
         use codel_login::{AuthManager, CodelAuth, CodelComConfig};
+        use std::sync::Arc;
 
         let dir = tempfile::tempdir().unwrap();
         let am = Arc::new(AuthManager::new(dir.path(), CodelComConfig::default()));
@@ -1915,8 +1914,8 @@ mod tests {
     #[tokio::test]
     async fn test_has_token_refresher_requires_refresher_attached() {
         use crate::agent::feedback_client::FeedbackClient;
-        use std::sync::Arc;
         use codel_login::{AuthManager, CodelComConfig};
+        use std::sync::Arc;
 
         let envelope = serde_json::json!({
             "structured_feedback": {
@@ -2020,8 +2019,7 @@ mod author_identity_tests {
     async fn env_var_identity_reaches_the_wire_end_to_end() {
         let _email =
             codel_test_support::env::EnvGuard::set("CODEL_TEST_WORK_EMAIL", "ada@corp.example");
-        let _name =
-            codel_test_support::env::EnvGuard::set("CODEL_TEST_WORK_NAME", "Ada Lovelace");
+        let _name = codel_test_support::env::EnvGuard::set("CODEL_TEST_WORK_NAME", "Ada Lovelace");
 
         // The loader expands `$VAR` at load, exactly as a trusted config tier ships it.
         let mut value = toml::from_str::<toml::Value>(

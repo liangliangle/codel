@@ -24,12 +24,6 @@ pub async fn handle(_agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
                 preference_count = req.preferences.len() as i64,
             );
 
-            log_event(RolloutSurvey {
-                session_id: req.session_id.clone(),
-                preferences: req.preferences.clone(),
-                has_feedback: !req.feedback.is_empty(),
-            });
-
             tracing::info!(
                 "Rollout survey received for session {}: preferences={:?}, feedback={}",
                 req.session_id,

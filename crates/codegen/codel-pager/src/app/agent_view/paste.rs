@@ -196,14 +196,7 @@ impl AgentView {
                             crate::app::actions::Effect::PreparePromptImagePreview { preparation },
                         );
                     }
-                    if ctx.source.tip_showing() {
-                        codel_logging::session_ctx::log_event(
-                            codel_logging::events::ContextualTip {
-                                tip: codel_logging::events::ContextualTipKind::ImageInput,
-                                action: codel_logging::events::ContextualTipAction::Accepted,
-                            },
-                        );
-                    }
+                    if ctx.source.tip_showing() {}
                     self.prompt.refresh_slash(&self.session.models);
                     ClipboardPasteCompletion::Handled
                 }

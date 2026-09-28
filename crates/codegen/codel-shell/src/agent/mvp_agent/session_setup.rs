@@ -199,14 +199,6 @@ fn log_session_started(
     setup_duration: std::time::Duration,
     restored_from_disk: bool,
 ) {
-    codel_logging::session_ctx::log_session_event(
-        crate::agent::session_metrics::SessionStarted::new(
-            session_id.0.to_string(),
-            kind,
-            setup_duration,
-            restored_from_disk,
-        ),
-    );
 }
 impl MvpAgent {
     /// Read this client's capabilities, falling back to the agent's own state where the request says nothing.
@@ -358,11 +350,7 @@ impl MvpAgent {
                     params.into(),
                 ));
         }
-        codel_logging::unified_log::info(
-            "session.setup.phase",
-            session_id.as_deref(),
-            Some(ctx),
-        );
+        codel_logging::unified_log::info("session.setup.phase", session_id.as_deref(), Some(ctx));
     }
     /// Scopes `SESSION_SETUP_CONTEXT` to this create so only `session/new` reports phases.
     pub(super) async fn new_session_inner(
@@ -765,7 +753,6 @@ impl MvpAgent {
                     is_git_repo: git.is_git_repo,
                     permission_mode: perm,
                 };
-                codel_logging::session_ctx::log_event_dual(product_analytics, ev);
             });
         }
         if let Some(model_id) = resolved_custom_model {
@@ -977,8 +964,7 @@ impl MvpAgent {
         let mut load_timer = crate::instrumentation_timer!("session.load_session");
         load_timer.with_field("session_id", session_id.0.as_ref());
         load_timer.with_field("cwd", cwd.as_str());
-        let git_root =
-            codel_workspace::session::git::find_git_root_from_path(cwd.as_path()).ok();
+        let git_root = codel_workspace::session::git::find_git_root_from_path(cwd.as_path()).ok();
         if let Some(root) = git_root {
             tokio::task::spawn_blocking(move || {
                 crate::session::worktree_pool::cleanup_stale_pool_worktrees(Some(&root));
@@ -1390,26 +1376,7 @@ impl MvpAgent {
                 let _ = handle.cmd_tx.send(SessionCommand::RestorePlanApproval);
             }
         }
-        if self.product_analytics_enabled() {
-            log_event(codel_logging::events::SessionLoad {
-                session_id: session_id.0.to_string(),
-                compaction_count: restored.compaction_count,
-                turn_count: restored.turn_count,
-                tool_call_count: restored.tool_call_count,
-                plan_mode_state: restored.plan_mode_state,
-                permission_mode: if session_yolo_mode {
-                    codel_logging::enums::PermissionMode::AlwaysApprove
-                } else if session_auto_mode
-                    && crate::util::config::auto_permission_mode_enabled_from_disk()
-                {
-                    codel_logging::enums::PermissionMode::Auto
-                } else {
-                    codel_logging::enums::PermissionMode::Ask
-                },
-                model_id: summary.current_model_id.0.to_string(),
-                restored_from_disk: true,
-            });
-        }
+        if self.product_analytics_enabled() {}
         log_session_started(
             &session_id,
             op.start_kind(),
@@ -1430,11 +1397,10 @@ impl MvpAgent {
         if restore_code_requested && registry_client_for_restore.is_none() {
             codel_workspace::session::git::warn_registry_disabled_restore(session_id.0.as_ref());
         }
-        let restore_checkout_allowed =
-            codel_workspace::session::git::restore_code_checkout_allowed(
-                cwd.as_path(),
-                Some(summary.info.cwd.as_str()),
-            );
+        let restore_checkout_allowed = codel_workspace::session::git::restore_code_checkout_allowed(
+            cwd.as_path(),
+            Some(summary.info.cwd.as_str()),
+        );
         if restore_code_requested
             && !restore_checkout_allowed
             && let Some(ref target_sha) = summary.head_commit

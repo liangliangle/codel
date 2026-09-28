@@ -16,20 +16,18 @@ use crate::agent::remote_config::task_model_policy::{
     TaskModelSelection, selection_telemetry_kind,
 };
 use crate::upload::trace::PromptMetadataParams;
-use codel_sampling_types::ReasoningEffort;
 use codel_logging::events::{SubagentModelOverrideRejected, SubagentModelRejectionReason};
 use codel_logging::region;
 use codel_logging::region::Parent;
 use codel_logging::subagent_spawn::{SubagentSpawnPhase, phase_region};
+use codel_sampling_types::ReasoningEffort;
 use codel_tools::implementations::codel_build::task::model_policy;
 use codel_tools::implementations::codel_build::task::types::ActiveAgentMessageSource;
 use codel_tools::implementations::codel_build::task::types::SubagentCapabilityModeExt;
 use codel_tools::implementations::{codel_build, opencode};
 use codel_tools::types::tool::ToolKind;
 static SUBAGENTS_ACTIVE: codel_logging::activity::ActivityGauge =
-    codel_logging::activity::ActivityGauge::work(
-        codel_logging::activity::SUBAGENTS_ACTIVE_KEY,
-    );
+    codel_logging::activity::ActivityGauge::work(codel_logging::activity::SUBAGENTS_ACTIVE_KEY);
 /// Bounds each parent-side await in the child completion path. The parent's biased select polls its event channels ahead of `cmd_rx`, so a busy turn can starve `cmd_rx` and park a completed child (leaking its session thread, fs watchers, and fds) forever.
 pub(super) const PARENT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// `PARENT_ACK_TIMEOUT`-bounded acks in the completion path: usage fold,
@@ -580,11 +578,6 @@ pub(crate) async fn run_shell_child(
     {
         let message = match error {
             TaskModelAdmissionError::HiddenSelection => {
-                codel_logging::session_ctx::log_event(SubagentModelOverrideRejected {
-                    parent_session_id: request.parent_session_id.clone(),
-                    owner: telemetry_owner_kind(&request),
-                    reason: SubagentModelRejectionReason::HiddenSelection,
-                });
                 model_policy::hidden_selection_message(model_policy::MODEL_PARAM)
             }
             TaskModelAdmissionError::Unavailable(message) => message,
@@ -1434,28 +1427,7 @@ pub(crate) async fn run_shell_child(
         SUBAGENTS_ACTIVE.get() >= 1,
         "SubagentLaunched must stamp a self-inclusive count"
     );
-    codel_logging::session_ctx::log_event(codel_logging::events::SubagentLaunched {
-        subagent_id: request.id.clone(),
-        parent_session_id: request.parent_session_id.clone(),
-        subagent_type: request.subagent_type.clone(),
-        owner: telemetry_owner_kind(&request),
-        model_selection: match request.runtime_overrides.model_override_provenance {
-            ModelOverrideProvenance::Tool { selection } => {
-                Some(selection_telemetry_kind(selection))
-            }
-            ModelOverrideProvenance::Harness => None,
-        },
-        workflow_run_id: request.owner.workflow_run_id().map(str::to_string),
-        queued_ms: queued_for.map(|queued| u64::try_from(queued.as_millis()).unwrap_or(u64::MAX)),
-        session_running: u32::try_from(session_running).unwrap_or(u32::MAX),
-        persona: request.runtime_overrides.persona.clone(),
-        fork_context: matches!(context_source, InitialContextSource::Forked),
-        resume_from: request.resume_from.clone(),
-        isolated_worktree: worktree_path.is_some(),
-        mcp_inherited_count,
-        mcp_owned_count,
-        skills_inherited_count,
-    });
+
     let wake_model_id = effective_model_id.clone();
     let wake_agent_name = definition.name.clone();
     let wake_reasoning_effort = effective_sampling_config.reasoning_effort;
@@ -2273,7 +2245,7 @@ pub(crate) async fn run_shell_child(
         ready_to_first_turn_ms: None,
     };
     spawn_timer.write_event_phases(&mut completed);
-    codel_logging::session_ctx::log_event(completed);
+
     match (
         &ctx.parent_terminal_backend,
         &ctx.parent_notification_handle,

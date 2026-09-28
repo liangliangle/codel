@@ -63,24 +63,7 @@ impl SessionActor {
             if entered && turn_in_flight {
                 self.activate_plan_mode_mid_turn().await;
             }
-            codel_logging::session_ctx::log_event(
-                codel_logging::events::PlanModeToggled {
-                    enabled: true,
-                    trigger: codel_logging::events::PlanModeTrigger::User,
-                    turn_in_flight,
-                    was_previously_active: !entered,
-                    from_mode: Some(if entered {
-                        if self.permissions.is_yolo_mode() {
-                            "bypass_permissions"
-                        } else {
-                            "default"
-                        }
-                        .to_owned()
-                    } else {
-                        "plan".to_owned()
-                    }),
-                },
-            );
+
             if entered {
                 codel_logging::event_span!(
                     "session.permission_mode_changed",
@@ -108,15 +91,7 @@ impl SessionActor {
                 turn_in_flight,
                 "Plan mode toggled OFF"
             );
-            codel_logging::session_ctx::log_event(
-                codel_logging::events::PlanModeToggled {
-                    enabled: false,
-                    trigger: codel_logging::events::PlanModeTrigger::User,
-                    turn_in_flight,
-                    was_previously_active: true,
-                    from_mode: Some("plan".into()),
-                },
-            );
+
             codel_logging::event_span!(
                 "session.permission_mode_changed",
                 from_mode = "plan",

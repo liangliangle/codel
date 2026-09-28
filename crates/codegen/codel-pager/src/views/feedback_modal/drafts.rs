@@ -1,7 +1,7 @@
 //! Drafts tab: the stored-draft list, its request/completion handshake, and the unsaved-Write guard.
 
-use crossterm::event::{KeyCode, KeyEvent};
 use codel_feedback::{derive_title, post_text};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{
     DRAFT_DOUBLE_CLICK_TIMEOUT, FeedbackCompositionId, FeedbackDraft, FeedbackDraftId,

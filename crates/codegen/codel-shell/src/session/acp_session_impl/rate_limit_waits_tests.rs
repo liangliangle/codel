@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use pretty_assertions::assert_eq;
 use codel_sampler::{SamplingErrorInfo, SamplingErrorKind};
+use pretty_assertions::assert_eq;
 
 use codel_logging::events::RateLimitWaitOutcome;
 

@@ -61,11 +61,6 @@ pub(crate) fn reset_frame_gap() {
 pub(crate) fn record_launch_gap(name: &'static str, elapsed: Duration) {
     crate::instrumentation::emit_startup_timing(name, elapsed);
     let key = name.strip_prefix("startup.").unwrap_or(name);
-    crate::session_ctx::log_event(crate::events::StartupSubTimers {
-        timings: vec![(key.to_owned(), duration_ms(elapsed))],
-        outcome: StartupOutcome::Ok,
-        auth_mode: *STARTUP_AUTH_MODE.lock().unwrap_or_else(|e| e.into_inner()),
-    });
 }
 
 /// The [last completed phase, ready] segment, recorded once from whichever ready signal fires first.

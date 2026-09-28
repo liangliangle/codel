@@ -5,11 +5,11 @@
 
 use std::time::Duration;
 
-use toml::Value as TomlValue;
 use codel_shell::util::config::{
     DISPLAY_REFRESH_DEFAULT_CADENCE_MS, MotionCadence, RemoteSettings, resolve_display_refresh,
     resolve_motion_cadence,
 };
+use toml::Value as TomlValue;
 
 /// Inclusive bounds for motion cadence env knobs (`CODEL_MIN_DRAW_MS`, `CODEL_SCROLL_CADENCE_MS`).
 const CADENCE_ENV_MIN_MS: u64 = 1;
@@ -126,7 +126,6 @@ fn spawn_terminal_and_display_refresh_telemetry(tel: StartupTel) {
         )
         .entered();
         tracing::info!("terminal environment detected");
-        codel_logging::session_ctx::log_event(t.clone());
 
         let (outcome, hz, source, skip_reason, duration_ms) = match tel.plan {
             ProbePlan::Disabled => ("skipped", None, "none".into(), "disabled".into(), 0_u64),
@@ -166,21 +165,6 @@ fn spawn_terminal_and_display_refresh_telemetry(tel: StartupTel) {
             effective_scroll_cadence_ms = scroll_i,
             auto_cadence_reason = c.reason,
             "display refresh probed"
-        );
-        codel_logging::session_ctx::log_event(
-            codel_logging::events::DisplayRefreshProbe {
-                terminal: t,
-                outcome: outcome.to_string(),
-                hz: hz_i,
-                source,
-                skip_reason,
-                duration_ms: duration_ms_i,
-                auto_cadence_enabled: tel.auto_cadence_enabled,
-                auto_cadence_applied: c.auto_applied,
-                effective_min_draw_ms: min_draw_i,
-                effective_scroll_cadence_ms: scroll_i,
-                auto_cadence_reason: c.reason.to_string(),
-            },
         );
     });
 }

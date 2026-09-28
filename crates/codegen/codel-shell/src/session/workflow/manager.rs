@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
-use codel_sampling_types::ReasoningEffort;
 use codel_logging::events::{WorkflowRunStarted, WorkflowSourceKind};
+use codel_sampling_types::ReasoningEffort;
 use codel_tools::implementations::codel_build::workflow::WorkflowControl;
 use codel_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use super::host_service::{
     HostDrainOutcome, TelemetryHook, WorkflowHostParams, spawn_workflow_host_service,
@@ -23,9 +23,7 @@ pub(crate) const WORKFLOW_MAX_ACTIVE_RUNS_PER_SESSION: usize = 4;
 pub(crate) const WORKFLOW_DEFAULT_AGENT_BUDGET: u64 = codel_workflow::DEFAULT_AGENT_BUDGET;
 
 static WORKFLOW_RUNS_ACTIVE: codel_logging::activity::ActivityGauge =
-    codel_logging::activity::ActivityGauge::work(
-        codel_logging::activity::WORKFLOW_RUNS_ACTIVE_KEY,
-    );
+    codel_logging::activity::ActivityGauge::work(codel_logging::activity::WORKFLOW_RUNS_ACTIVE_KEY);
 
 struct ActiveRun {
     cancel: CancellationToken,
@@ -849,15 +847,6 @@ fn log_run_started(
     max_concurrent_agents: usize,
     resumed: bool,
 ) {
-    codel_logging::session_ctx::log_event(WorkflowRunStarted {
-        run_id: run_id.to_owned(),
-        parent_session_id: parent_session_id.to_owned(),
-        source,
-        workflow_name: workflow_name.map(str::to_owned),
-        agent_budget: state.agent_budget,
-        max_concurrent_agents: u32::try_from(max_concurrent_agents).unwrap_or(u32::MAX),
-        resumed,
-    });
 }
 
 struct RunEndMetadata<'a> {
@@ -871,23 +860,7 @@ struct RunEndMetadata<'a> {
     agent_budget: Option<u64>,
 }
 
-fn log_run_ended(episode: RunEndMetadata<'_>, stats: &super::host_service::WorkflowAgentStats) {
-    codel_logging::session_ctx::log_event(codel_logging::events::WorkflowRunEnded {
-        run_id: episode.run_id.to_owned(),
-        parent_session_id: episode.parent_session_id.to_owned(),
-        source: episode.source,
-        workflow_name: episode.workflow_name.map(str::to_owned),
-        status: episode.status,
-        duration_ms: episode.duration_ms,
-        agents_used: episode.agents_used,
-        agent_budget: episode.agent_budget,
-        agents_failed: stats.agents_failed.load(Ordering::Relaxed),
-        peak_concurrent_agents: stats.peak_concurrent.load(Ordering::Relaxed),
-        slot_waits: stats.slot_waits.load(Ordering::Relaxed),
-        slot_wait_ms_total: stats.slot_wait_ms_total.load(Ordering::Relaxed),
-        slot_wait_ms_max: stats.slot_wait_ms_max.load(Ordering::Relaxed),
-    });
-}
+fn log_run_ended(episode: RunEndMetadata<'_>, stats: &super::host_service::WorkflowAgentStats) {}
 
 /// Exhaustive so a new tracker status forces a decision here.
 fn run_ended_status(

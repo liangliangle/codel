@@ -47,9 +47,7 @@ impl SessionActor {
         &self,
         bridge: &codel_tools::bridge::ToolBridge,
     ) -> Result<(), String> {
-        use codel_tools::implementations::memory::{
-            MEMORY_GET_TOOL_NAME, MEMORY_SEARCH_TOOL_NAME,
-        };
+        use codel_tools::implementations::memory::{MEMORY_GET_TOOL_NAME, MEMORY_SEARCH_TOOL_NAME};
 
         bridge
             .register_mcp_tools(
@@ -74,40 +72,6 @@ impl SessionActor {
         total_chunks_at_end: usize,
         session_end_result: &str,
     ) {
-        codel_logging::session_ctx::log_event(
-            codel_logging::memory_telemetry::MemorySessionSummary {
-                session_id: self.session_info.id.to_string(),
-                memory_enabled: self.memory.is_enabled(),
-                memory_mode: match self.memory.mode() {
-                    Some(crate::config::MemoryMode::V2) => {
-                        codel_logging::memory_telemetry::MemoryMode::V2
-                    }
-                    Some(crate::config::MemoryMode::Legacy) | None => {
-                        codel_logging::memory_telemetry::MemoryMode::Legacy
-                    }
-                },
-                session_duration_secs: self.session_start.elapsed().as_secs(),
-                flush_count: telem.flush_count,
-                flush_success_count: telem.flush_success_count,
-                flush_error_count: telem.flush_error_count,
-                tool_search_count: telem.tool_search_count,
-                injection_count: telem.injection_count,
-                recovery_search_count: telem.compaction_recovery_count,
-                total_chunks_at_end,
-                chunks_added_this_session: telem.chunks_added as usize,
-                session_end_result: session_end_result.to_owned(),
-                dream_count: telem.dream_count,
-                dream_success_count: telem.dream_success_count,
-                dream_error_count: telem.dream_error_count,
-                capture_prompt_tokens: telem.capture_prompt_tokens,
-                capture_completion_tokens: telem.capture_completion_tokens,
-                capture_cost_usd_ticks: telem.capture_cost_usd_ticks,
-                dream_prompt_tokens: telem.dream_prompt_tokens,
-                dream_completion_tokens: telem.dream_completion_tokens,
-                dream_cost_usd_ticks: telem.dream_cost_usd_ticks,
-                injected_bytes: telem.injected_bytes,
-            },
-        );
     }
 
     /// Session-end memory save and summary telemetry, shared by the Shutdown and channel-closed arms.
@@ -577,14 +541,6 @@ impl SessionActor {
                 Some(snapshot) => snapshot,
                 None => self.snapshot_memory_flush_state().await,
             };
-            codel_logging::session_ctx::log_event(
-                codel_logging::memory_telemetry::MemoryFlushStart {
-                    session_id: self.session_info.id.to_string(),
-                    trigger: trigger.to_owned(),
-                    conversation_len: counts.total,
-                    user_message_count: counts.user,
-                },
-            );
             tracing::info!(
                 target: codel_logging::memory_log::TARGET,
                 "MEMORY_FLUSH: conversation has {user} user, {assistant} assistant, {tool} tool messages ({total} total)",
@@ -791,17 +747,6 @@ impl SessionActor {
             "error"
         };
         self.memory.record_flush_result(flush_outcome);
-        codel_logging::session_ctx::log_event(
-            codel_logging::memory_telemetry::MemoryFlushComplete {
-                session_id: self.session_info.id.to_string(),
-                trigger: trigger.to_owned(),
-                outcome: flush_outcome.to_owned(),
-                duration_ms: flush_start.elapsed().as_millis() as u64,
-                response_length: response_len,
-                accepted_length: accepted_len,
-                was_truncated,
-            },
-        );
 
         let flush_trigger = match trigger {
             "slash_command" => codel_logging::events::MemoryFlushTrigger::SlashCommand,
@@ -809,12 +754,6 @@ impl SessionActor {
             "pre_compaction" => codel_logging::events::MemoryFlushTrigger::PreCompaction,
             _ => codel_logging::events::MemoryFlushTrigger::UserRequested,
         };
-        codel_logging::session_ctx::log_event(codel_logging::events::MemoryFlushed {
-            trigger: flush_trigger,
-            success: flush_outcome == "written",
-            duration_ms: flush_start.elapsed().as_millis() as u64,
-            response_length: response_len,
-        });
 
         self.memory.release_flush_lock();
         self.send_codel_notification(CodelSessionUpdate::MemoryFlushCompleted {
@@ -832,7 +771,9 @@ impl SessionActor {
             self.chat_state_handle.get_conversation(),
         );
         let chat_history =
-            codel_chat_state::compaction_utils::prepare_conversation_for_summarization(conversation);
+            codel_chat_state::compaction_utils::prepare_conversation_for_summarization(
+                conversation,
+            );
         MemoryFlushSnapshot {
             counts,
             chat_history,

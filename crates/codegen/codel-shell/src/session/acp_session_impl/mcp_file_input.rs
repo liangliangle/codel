@@ -1,12 +1,6 @@
 //! Source-authorized MCP loading and immutable dispatch payloads.
 
 use agent_client_protocol as acp;
-use serde_json::Value;
-use std::{
-    io,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
 use codel_tools::{
     implementations::use_tool::{
         InlineMcpInvocation, UseToolInput, parse_arguments_file, validate_mcp_target,
@@ -17,6 +11,12 @@ use codel_tools::{
     },
 };
 use codel_workspace::permission::{AccessKind, Decision, PermissionRequest};
+use serde_json::Value;
+use std::{
+    io,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use crate::session::acp_session::{PreparedToolCall, SessionActor, ToolLoop};
 
@@ -30,7 +30,6 @@ fn log_file_event<T: codel_logging::TelemetryEvent>(event: T) {
     if tests::record_event(&event) {
         return;
     }
-    codel_logging::session_ctx::log_event(event);
 }
 
 #[derive(Debug)]
@@ -418,8 +417,7 @@ impl SessionActor {
         }
         let operation_start = tokio::time::Instant::now();
         let resolved = tokio::time::timeout(FILE_OPERATION_TIMEOUT, async {
-            let (physical, _) =
-                codel_tools::util::read_policy::resolve_read_path(&logical).await;
+            let (physical, _) = codel_tools::util::read_policy::resolve_read_path(&logical).await;
             codel_tools::util::read_policy::validate_read_paths(
                 &resources,
                 &logical,

@@ -3,14 +3,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
 use codel_tools::implementations::codel_build::task::backend::{ChannelBackend, SubagentBackend};
 use codel_tools::implementations::codel_build::task::types::{
     ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
     SubagentOwner, SubagentRequest, SubagentRuntimeOverrides,
 };
 use codel_workflow::{AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest};
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use super::notify::WorkflowNotifySender;
 use super::schema_contract::{
@@ -391,19 +391,7 @@ impl HostService {
                 if self.params.cancel.is_cancelled() {
                     return Err(HostError::Cancelled);
                 }
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::SubagentLimitHit::workflow_run_concurrent(
-                        self.params.parent_session_id.clone(),
-                        self.params.run_id.clone(),
-                        self.params.max_concurrent_agents as u64,
-                        // Slots in use; the active_agents counter lags spawn setup and is racy here
-                        (self
-                            .params
-                            .max_concurrent_agents
-                            .saturating_sub(self.agent_slots.available_permits()))
-                            as u32,
-                    ),
-                );
+
                 let wait_started_at = std::time::Instant::now();
                 let permit = tokio::select! {
                     biased;

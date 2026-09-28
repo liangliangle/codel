@@ -82,13 +82,7 @@ pub(super) async fn abort_unacknowledged_prompt(
             "surface": PromptAckSurface::Headless,
         })),
     );
-    codel_logging::session_ctx::log_event(PromptAckTimeoutFired {
-        limit_ms: deadlines.hard.as_millis() as u64,
-        waited_ms: waited.as_millis() as u64,
-        surface: PromptAckSurface::Headless,
-        disposition: PromptAckDisposition::NotRestorable,
-        prompt_kind: PromptAckPromptKind::Prompt,
-    });
+
     // A prompt that lands late is trimmed shell-side instead of running unobserved
     let cancel = acp::CancelNotification::new(session_id.clone()).meta(Some(
         crate::app::cancel_notification_meta(

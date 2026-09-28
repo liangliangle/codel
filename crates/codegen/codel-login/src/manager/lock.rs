@@ -454,10 +454,6 @@ pub async fn try_lock_auth_file_async(
         let ticket = flock_wait::join(&lock_path);
         match tokio::time::timeout(remaining, ticket.claim()).await {
             Ok(Some(Ok(file))) => {
-                log_event(AuthLockWait {
-                    wait_ms: contended_at.elapsed().as_millis() as u64,
-                    budget_ms: timeout.as_millis() as u64,
-                });
                 return LockAcquire::Acquired(lock_guard(file, heartbeat));
             }
             Ok(Some(Err(e))) => {
@@ -482,10 +478,6 @@ pub async fn try_lock_auth_file_async(
         Err(error) => return LockAcquire::Failed { error },
     };
     if let Some(file) = late_acquire {
-        log_event(AuthLockWait {
-            wait_ms: contended_at.elapsed().as_millis() as u64,
-            budget_ms: timeout.as_millis() as u64,
-        });
         unified_log::info(
             &format!(
                 "auth lock: acquired after deadline race ({}ms budget already exhausted)",
@@ -518,10 +510,7 @@ pub async fn try_lock_auth_file_async(
             "holder_age_secs": holder.and_then(|h| h.age_secs),
         })),
     );
-    log_event(AuthLockTimeout {
-        budget_ms: timeout.as_millis() as u64,
-        holder_state: holder.map(|h| h.state.label()),
-    });
+
     LockAcquire::TimedOut { holder }
 }
 

@@ -153,17 +153,7 @@ pub(crate) fn presentation_applied_event(
 }
 
 pub(crate) fn rejection_sink(parent_session_id: String) -> TaskModelRejectionSink {
-    TaskModelRejectionSink::new(move |rejection| {
-        codel_logging::session_ctx::log_event(SubagentModelOverrideRejected {
-            parent_session_id: parent_session_id.clone(),
-            owner: SubagentOwnerKind::Task,
-            reason: match rejection {
-                TaskModelRejection::HiddenSelection => {
-                    SubagentModelRejectionReason::HiddenSelection
-                }
-            },
-        });
-    })
+    TaskModelRejectionSink::new(move |rejection| {})
 }
 
 /// The live agent's selection, shared so fork snapshots and workflow spawns never reclassify.

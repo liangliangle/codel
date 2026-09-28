@@ -1182,9 +1182,7 @@ impl AgentView {
         } else {
             "interview_submit"
         };
-        codel_logging::session_ctx::log_event(codel_logging::events::PlanSubmit {
-            action: action.to_string(),
-        });
+
         InputOutcome::Changed
     }
     /// Map a screen position to a permission option index.
@@ -1980,14 +1978,12 @@ mod question_no_freeform_tests {
     use crate::app::agent_view::AgentView;
     use crate::views::prompt_widget::StashedPrompt;
     use crate::views::question_view::{QuestionFocus, QuestionSelection, QuestionViewState};
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
     /// Fixed options, single-select; shaped like the free-usage upsell.
     fn upsell_question() -> Question {
         let opt = |label: &str, desc: &str| QuestionOption {
@@ -2351,10 +2347,8 @@ mod question_answer_focus_tests {
     use crate::app::app_view::InputOutcome;
     use crate::views::prompt_widget::StashedPrompt;
     use crate::views::question_view::{QuestionFocus, QuestionSelection, QuestionViewState};
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
     fn question(prompt: &str, labels: &[&str]) -> Question {
         Question {
             question: prompt.into(),

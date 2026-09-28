@@ -6106,9 +6106,7 @@ fn install_question_overlay(
     n_questions: usize,
 ) {
     use crate::views::question_view::QuestionViewState;
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let questions: Vec<Question> = (0..n_questions)
         .map(|i| Question {
             question: format!("Q{i}?"),

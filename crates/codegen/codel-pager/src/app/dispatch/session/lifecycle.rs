@@ -26,8 +26,8 @@ use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
 use crate::scrollback::state::ScrollbackState;
 use agent_client_protocol as acp;
-use std::time::Instant;
 use codel_shell::sampling::types::ReasoningEffort;
+use std::time::Instant;
 /// A deferred model switch to apply once the session exists, plus any effort error to report.
 /// `switch` is still populated when a `-m` model was stashed even if the effort token failed, so an invalid effort never drops the CLI model override.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,9 +187,7 @@ pub(in crate::app::dispatch) fn dispatch_new_session(app: &mut AppView) -> Vec<E
 /// The answer routes to [`dispatch_new_session_inner`] or [`dispatch_new_worktree_session`].
 pub(in crate::app::dispatch) fn open_new_session_question(app: &mut AppView) -> Vec<Effect> {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -244,9 +242,7 @@ pub(in crate::app::dispatch) fn open_agent_type_mismatch_question(
     model_name: &str,
 ) -> Vec<Effect> {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -515,9 +511,7 @@ pub(in crate::app::dispatch) fn open_delete_current_session_question(
     app: &mut AppView,
 ) -> Vec<Effect> {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -787,12 +781,7 @@ fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
     agent.prompt.set_contextual_hints(undo, plan_mode);
     agent.set_session_recap_available(recap);
     agent.set_voice_mode_available(voice);
-    agent.apply_app_scoped_gates(
-        sharing_enabled,
-        chat_mode,
-        screen_mode,
-        &announcements,
-    );
+    agent.apply_app_scoped_gates(sharing_enabled, chat_mode, screen_mode, &announcements);
     agent
         .prompt
         .slash_controller
@@ -1696,15 +1685,7 @@ fn report_session_create_failed(
             )
         })
         .unwrap_or_default();
-    codel_logging::session_ctx::log_event(codel_logging::events::SessionCreateFailed {
-        outcome: if timed_out {
-            codel_logging::startup::StartupOutcome::Timeout
-        } else {
-            codel_logging::startup::StartupOutcome::Error
-        },
-        stuck_phase: phase.map(|p| <&'static str>::from(&p).to_owned()),
-        elapsed_ms,
-    });
+
     phase.and_then(|p| p.get_message())
 }
 /// Failed plain `CreateSession`: drop orphan placeholders, clear the starting-session spinner, and report the error.

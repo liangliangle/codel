@@ -216,10 +216,16 @@ async fn test_reconcile_agent_repoints_diverged_agent() {
     std::fs::write(downloads.join("codel-0.2.101-macos-aarch64"), "new").unwrap();
     std::fs::write(downloads.join("codel-0.1.199-macos-aarch64"), "old").unwrap();
 
-    std::os::unix::fs::symlink("../downloads/codel-0.2.101-macos-aarch64", bin.join("codel"))
-        .unwrap();
-    std::os::unix::fs::symlink("../downloads/codel-0.1.199-macos-aarch64", bin.join("agent"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        "../downloads/codel-0.2.101-macos-aarch64",
+        bin.join("codel"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../downloads/codel-0.1.199-macos-aarch64",
+        bin.join("agent"),
+    )
+    .unwrap();
 
     reconcile_agent_to_codel(&bin).await;
 
@@ -238,8 +244,11 @@ async fn test_reconcile_agent_heals_legacy_unversioned_agent() {
     std::fs::write(downloads.join("codel-0.2.101-macos-aarch64"), "new").unwrap();
     std::fs::write(downloads.join("codel-macos-aarch64"), "legacy").unwrap();
 
-    std::os::unix::fs::symlink("../downloads/codel-0.2.101-macos-aarch64", bin.join("codel"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        "../downloads/codel-0.2.101-macos-aarch64",
+        bin.join("codel"),
+    )
+    .unwrap();
     std::os::unix::fs::symlink("../downloads/codel-macos-aarch64", bin.join("agent")).unwrap();
 
     reconcile_agent_to_codel(&bin).await;
@@ -256,8 +265,11 @@ async fn test_reconcile_agent_heals_legacy_unversioned_agent() {
 async fn test_reconcile_agent_creates_missing_agent() {
     let (_dir, bin, downloads) = managed_layout();
     std::fs::write(downloads.join("codel-0.2.101-macos-aarch64"), "new").unwrap();
-    std::os::unix::fs::symlink("../downloads/codel-0.2.101-macos-aarch64", bin.join("codel"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        "../downloads/codel-0.2.101-macos-aarch64",
+        bin.join("codel"),
+    )
+    .unwrap();
 
     reconcile_agent_to_codel(&bin).await;
 
@@ -292,11 +304,17 @@ async fn test_reconcile_agent_noop_when_consistent() {
 #[tokio::test]
 async fn test_reconcile_agent_skips_when_codel_dangling() {
     let (_dir, bin, downloads) = managed_layout();
-    std::os::unix::fs::symlink("../downloads/codel-0.2.101-macos-aarch64", bin.join("codel"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        "../downloads/codel-0.2.101-macos-aarch64",
+        bin.join("codel"),
+    )
+    .unwrap();
     std::fs::write(downloads.join("codel-0.1.199-macos-aarch64"), "old").unwrap();
-    std::os::unix::fs::symlink("../downloads/codel-0.1.199-macos-aarch64", bin.join("agent"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        "../downloads/codel-0.1.199-macos-aarch64",
+        bin.join("agent"),
+    )
+    .unwrap();
 
     reconcile_agent_to_codel(&bin).await;
 
@@ -312,8 +330,11 @@ async fn test_reconcile_agent_skips_when_codel_not_symlink() {
     let (_dir, bin, downloads) = managed_layout();
     std::fs::write(bin.join("codel"), "copy-binary").unwrap();
     std::fs::write(downloads.join("codel-0.1.199-macos-aarch64"), "old").unwrap();
-    std::os::unix::fs::symlink("../downloads/codel-0.1.199-macos-aarch64", bin.join("agent"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        "../downloads/codel-0.1.199-macos-aarch64",
+        bin.join("agent"),
+    )
+    .unwrap();
 
     reconcile_agent_to_codel(&bin).await;
 
@@ -2420,7 +2441,10 @@ async fn download_cli_artifact_prefers_compressed_over_plain() {
 fn cli_object_candidates_try_windows_exe_first() {
     assert_eq!(
         cli_object_candidates("codel-1.2.3-windows-x86_64", true),
-        ["codel-1.2.3-windows-x86_64.exe", "codel-1.2.3-windows-x86_64"]
+        [
+            "codel-1.2.3-windows-x86_64.exe",
+            "codel-1.2.3-windows-x86_64"
+        ]
     );
     assert_eq!(
         cli_object_candidates("codel-1.2.3-linux-x86_64", false),

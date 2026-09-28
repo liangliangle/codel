@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use agent_client_protocol as acp;
 use agent_client_protocol::Client as _;
-use futures::stream::{FuturesUnordered, StreamExt as _};
-use serde_json::value::RawValue;
 use codel_hooks::event::{
     HookEventEnvelope, HookEventName, HookPayload, MAX_HOOK_FEEDBACK_CHARS, clip_text,
 };
 use codel_logging::events::{ClientHookGateOutcome, HookBlockCause};
+use futures::stream::{FuturesUnordered, StreamExt as _};
+use serde_json::value::RawValue;
 
 use super::{SessionActor, ToolLoop};
 use crate::extensions::hooks::{
@@ -107,9 +107,7 @@ fn matching_callback_ids<'a>(
 ) -> Vec<&'a str> {
     groups
         .iter()
-        .filter(|group| {
-            codel_hooks::matcher::matcher_allows(group.matcher.as_ref(), match_value)
-        })
+        .filter(|group| codel_hooks::matcher::matcher_allows(group.matcher.as_ref(), match_value))
         .flat_map(|group| group.callback_ids.iter().map(String::as_str))
         .collect()
 }
@@ -240,10 +238,6 @@ impl SessionActor {
         cause: HookBlockCause,
         detail: &str,
     ) -> Result<ToolLoop, acp::Error> {
-        codel_logging::session_ctx::log_event(codel_logging::events::HookBlocked {
-            hook_name: hook_name.clone(),
-            cause,
-        });
         self.handle_tool_not_executed(
             model_call_id,
             tool_call_id,
@@ -293,14 +287,7 @@ impl SessionActor {
                     let (response, gate_outcome) =
                         classify(self.send_hook_run(&dispatch, timeout).await);
                     let elapsed = started.elapsed();
-                    codel_logging::session_ctx::log_event(
-                        codel_logging::events::ClientHookGate {
-                            callback_id: callback_id.to_string(),
-                            tool_name: tool_name.map(str::to_string),
-                            outcome: gate_outcome,
-                            duration_ms: elapsed.as_millis() as u64,
-                        },
-                    );
+
                     (callback_id, response, elapsed, gate_outcome)
                 }
             })
@@ -505,11 +492,10 @@ impl SessionActor {
                     .system_message
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| "blocked by client hook".to_string());
-                out.blocks
-                    .push(codel_hooks::dispatcher::PostToolUseBlock {
-                        hook_name: hook_name.clone(),
-                        reason: clip_text(&reason, MAX_HOOK_FEEDBACK_CHARS),
-                    });
+                out.blocks.push(codel_hooks::dispatcher::PostToolUseBlock {
+                    hook_name: hook_name.clone(),
+                    reason: clip_text(&reason, MAX_HOOK_FEEDBACK_CHARS),
+                });
             }
             if let Some(context) = response.additional_context.filter(|c| !c.trim().is_empty()) {
                 out.additional_context

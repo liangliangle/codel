@@ -4,11 +4,6 @@ use crate::session::acp_session::{
     support::{create_test_actor, prepare_call, test_agent_with_tools},
     tool_dispatch::dispatch_tool,
 };
-use serde_json::json;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
 use codel_tools::{
     computer::{
         local::MockFs,
@@ -19,6 +14,11 @@ use codel_tools::{
         ManagedGatewayToolCallResponse, ManagedGatewayToolCaller, ManagedGatewayToolCatalog,
         ManagedGatewayToolClient, ManagedGatewayToolSource,
     },
+};
+use serde_json::json;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 tokio::task_local! {
@@ -123,10 +123,11 @@ async fn fixture(
     let (persistence, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut actor = create_test_actor(0, 256_000, 85, gateway, persistence).await;
     actor.hook_resolved_workspace_root = "/tmp".to_owned();
-    *actor.agent.borrow_mut() = test_agent_with_tools(vec![
-        codel_tools::registry::types::ToolConfig::for_tool::<UseTool>(),
-    ])
-    .await;
+    *actor.agent.borrow_mut() =
+        test_agent_with_tools(vec![codel_tools::registry::types::ToolConfig::for_tool::<
+            UseTool,
+        >()])
+        .await;
     let fs = Arc::new(CountingFs {
         files: MockFs::new(),
         reads: AtomicUsize::new(0),
@@ -172,9 +173,7 @@ fn install_client_hooks(actor: &SessionActor, events: &[codel_hooks::event::Hook
         actor.client_hooks.borrow_mut().insert(
             *event,
             vec![crate::extensions::hooks::ClientHookGroup {
-                matcher: Some(
-                    codel_hooks::matcher::HookMatcher::new("fixture__update").unwrap(),
-                ),
+                matcher: Some(codel_hooks::matcher::HookMatcher::new("fixture__update").unwrap()),
                 callback_ids: vec!["fixture-hook".to_owned()],
                 timeout: None,
             }],
@@ -314,11 +313,10 @@ async fn file_advertisement_requires_host_preparation_and_bounded_filesystem() {
                 fields.working_directory = dir.path().to_path_buf();
                 fields.bridge_state_path = dir.path().join("tool_state.json");
                 if case == "delegated" {
-                    fields.fs_backend =
-                        Arc::new(codel_workspace::file_system::AcpFsAdapter::new(
-                            actor.notifications.gateway.clone(),
-                            actor.session_info.id.clone(),
-                        ));
+                    fields.fs_backend = Arc::new(codel_workspace::file_system::AcpFsAdapter::new(
+                        actor.notifications.gateway.clone(),
+                        actor.session_info.id.clone(),
+                    ));
                 }
                 let mut config = ToolConfig::for_tool::<UseTool>();
                 if case != "default" {
@@ -889,8 +887,7 @@ async fn approval_preview_preserves_arguments_and_obeys_remaining_budget() {
                     let text = preview.get("tool_input").unwrap().as_str().unwrap();
                     assert!(text.ends_with(" [truncated]"));
                     assert!(
-                        text.len()
-                            <= codel_hooks::event::MAX_PAYLOAD_SIZE + " [truncated]".len()
+                        text.len() <= codel_hooks::event::MAX_PAYLOAD_SIZE + " [truncated]".len()
                     );
                 }
                 let ToolInput::UseTool(UseToolInput::Inline(input)) = input else {
@@ -1140,7 +1137,6 @@ async fn failed_preparations_preserve_order_and_known_byte_counts() {
         })
         .await;
 }
-
 
 #[tokio::test(flavor = "current_thread")]
 async fn source_and_resolved_approval_are_distinct_and_reject_prevents_send() {

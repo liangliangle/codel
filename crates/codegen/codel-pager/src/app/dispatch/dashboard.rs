@@ -1144,10 +1144,6 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             } else {
                 PagerCommandSource::NonBuiltin
             };
-            log_event(PagerSlashCommand {
-                command_name: invocation.token.to_string(),
-                source,
-            });
         }
         let Some(command) = reg.get(invocation.token).cloned() else {
             return dispatch_dashboard_dispatch(app, text, false);

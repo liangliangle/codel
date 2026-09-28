@@ -8,8 +8,8 @@ use crate::agent::mvp_agent::{
 use crate::sampling::EffortTarget;
 use crate::session::{SessionCommand, SessionModelSwitch};
 use agent_client_protocol::{self as acp};
-use tokio::sync::oneshot;
 use codel_sampling_types::ReasoningEffort;
+use tokio::sync::oneshot;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigNotice {
     Send,
@@ -101,15 +101,7 @@ pub(crate) async fn apply(
                 turn_count,
                 "set_session_model: agent type mismatch rejected"
             );
-            codel_logging::session_ctx::log_event(codel_logging::events::ModelSwitched {
-                session_id: session_id.0.to_string(),
-                previous_model_id: previous_model_id.to_string(),
-                new_model_id: model_id.0.to_string(),
-                success: false,
-                error_code: Some(config::MODEL_SWITCH_INCOMPATIBLE_AGENT.to_string()),
-                required_agent_type: Some(required.clone()),
-                current_agent_type: active_agent_type.clone(),
-            });
+
             let err_payload = config::ModelSwitchIncompatibleAgentError {
                 code: config::MODEL_SWITCH_INCOMPATIBLE_AGENT.to_string(),
                 active_agent_type: active_agent_type.unwrap_or_else(|| "unknown".to_owned()),
@@ -213,17 +205,7 @@ pub(crate) async fn apply(
                     error = ?e,
                     "set_session_model: zero-turn harness rebuild failed; aborting model switch"
                 );
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::ModelSwitched {
-                        session_id: session_id.0.to_string(),
-                        previous_model_id: previous_model_id.to_string(),
-                        new_model_id: model_id.0.to_string(),
-                        success: false,
-                        error_code: Some(config::MODEL_SWITCH_REBUILD_FAILED.to_string()),
-                        required_agent_type: Some(required_agent_type.clone()),
-                        current_agent_type: None,
-                    },
-                );
+
                 return Err(e);
             }
         }
@@ -262,15 +244,7 @@ pub(crate) async fn apply(
     if config_notice == ConfigNotice::Send {
         notify_config_options(agent, &session_id).await;
     }
-    codel_logging::session_ctx::log_event(codel_logging::events::ModelSwitched {
-        session_id: session_id.0.to_string(),
-        previous_model_id: previous_model_id.to_string(),
-        new_model_id: model_id.0.to_string(),
-        success: true,
-        error_code: None,
-        required_agent_type: Some(required_agent_type.clone()),
-        current_agent_type: None,
-    });
+
     if agent.cfg.borrow().mode != config::AgentMode::Leader {
         agent.models_manager.set_current_model_id(model_id.clone());
         agent

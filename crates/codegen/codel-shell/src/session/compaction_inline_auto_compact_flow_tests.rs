@@ -10,12 +10,12 @@ use super::{AutoCompactTriggerInfo, SuppressReason};
 use crate::session::acp_session::McpReminderMode;
 use crate::terminal::AsyncTerminalRunner;
 use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};
-use std::sync::OnceLock;
-use std::sync::atomic::Ordering::Relaxed;
-use tokio::sync::mpsc;
 use codel_paths::AbsPathBuf;
 use codel_workspace::file_system::MockFs;
 use codel_workspace::permission::PermissionHandle;
+use std::sync::OnceLock;
+use std::sync::atomic::Ordering::Relaxed;
+use tokio::sync::mpsc;
 #[derive(Debug)]
 struct DummyTerminal;
 #[async_trait::async_trait]

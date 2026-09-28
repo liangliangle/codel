@@ -48,7 +48,7 @@ impl TurnPhaseProfile {
             return false;
         };
         apply_phases(&mut event, &self.complete());
-        log_event(event);
+
         true
     }
 

@@ -176,22 +176,7 @@ async fn skills_at_config_path(resolved: &str, cwd: &str) -> Vec<SkillInfo> {
 const HARNESS_CHANGED_MAX_ITEMS: usize = 100;
 
 fn log_harness_changed(skills: &[SkillInfo], op: HarnessChangeOp, success: bool) {
-    for skill in skills.iter().take(HARNESS_CHANGED_MAX_ITEMS) {
-        codel_logging::session_ctx::log_event(HarnessChanged {
-            kind: HarnessSurfaceKind::Skill,
-            op,
-            name: skill.name.clone(),
-            skill_source: crate::session::telemetry::skill_source(
-                skill.scope,
-                skill.plugin_name.as_deref(),
-            )
-            .to_owned(),
-            origin: skill.origin.clone(),
-            // None here: a `[skills].paths` entry is never a plugin skill
-            plugin_source: skill.plugin_name.clone(),
-            success,
-        });
-    }
+    for skill in skills.iter().take(HARNESS_CHANGED_MAX_ITEMS) {}
 }
 
 /// Handles `~` expansion and relative path resolution against `cwd`.
@@ -350,13 +335,6 @@ pub async fn handle(
             })
             .await
             {
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::SkillAdded {
-                        added_count: 0,
-                        total_skills: 0,
-                        success: false,
-                    },
-                );
                 log_harness_changed(&changed, HarnessChangeOp::Added, false);
                 return super::to_ext_response(Err::<SkillsAddResponse, _>(anyhow::anyhow!(
                     "Failed to save config: {e}"
@@ -377,11 +355,6 @@ pub async fn handle(
                 total,
             );
 
-            codel_logging::session_ctx::log_event(codel_logging::events::SkillAdded {
-                added_count: added_count as u32,
-                total_skills: total as u32,
-                success: true,
-            });
             log_harness_changed(&changed, HarnessChangeOp::Added, true);
             super::to_ext_response(Ok(SkillsAddResponse {
                 added_count,
@@ -406,9 +379,6 @@ pub async fn handle(
             })
             .await
             {
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::SkillRemoved { success: false },
-                );
                 log_harness_changed(&changed, HarnessChangeOp::Removed, false);
                 return super::to_ext_response(Err::<SkillsRemoveResponse, _>(anyhow::anyhow!(
                     "Failed to save config: {e}"
@@ -424,9 +394,6 @@ pub async fn handle(
                 if total == 1 { "" } else { "s" },
             );
 
-            codel_logging::session_ctx::log_event(codel_logging::events::SkillRemoved {
-                success: true,
-            });
             log_harness_changed(&changed, HarnessChangeOp::Removed, true);
             super::to_ext_response(Ok(SkillsRemoveResponse {
                 path: resolved,

@@ -8,10 +8,10 @@ use crate::agent::remote_config::task_model_policy::{
     LatchedTaskModelSelection, TaskModelPolicyInputs,
 };
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
-use tracing::Instrument;
 use codel_logging::region;
 use codel_logging::region::Parent as SpanParent;
 use codel_logging::subagent_spawn::phase_region_under;
+use tracing::Instrument;
 struct SpawnStep {
     span: tracing::span::EnteredSpan,
     _timer: codel_logging::instrumentation::InstrumentationTimer,
@@ -41,9 +41,7 @@ macro_rules! spawn_await_step {
     };
 }
 static SESSIONS_ACTIVE: codel_logging::activity::ActivityGauge =
-    codel_logging::activity::ActivityGauge::residency(
-        codel_logging::activity::SESSIONS_ACTIVE_KEY,
-    );
+    codel_logging::activity::ActivityGauge::residency(codel_logging::activity::SESSIONS_ACTIVE_KEY);
 /// Drop catch-all `--allow` rules (the `--yolo` substitute, see `resolution::is_catchall_allow`) when `policy_block` is set.
 fn drop_cli_catchall_allows(
     rules: Vec<codel_workspace::permission::types::PermissionRule>,
@@ -337,8 +335,7 @@ pub(crate) async fn spawn_session_actor(
     is_chat_kind: bool,
     spawn_ctx: Option<codel_logging::subagent_spawn::SpawnPhaseContext>,
     sampling_gate: Option<Arc<tokio::sync::Semaphore>>,
-) -> Result<(SessionInitResult, tokio::sync::oneshot::Receiver<()>), codel_agent::AgentBuildError>
-{
+) -> Result<(SessionInitResult, tokio::sync::oneshot::Receiver<()>), codel_agent::AgentBuildError> {
     if max_turns == Some(0) {
         return Err(codel_agent::AgentBuildError::InvalidConfig(
             "max_turns must be greater than 0".to_string(),
@@ -1039,24 +1036,7 @@ pub(crate) async fn spawn_session_actor(
         let total_files = storage.list_memory_files().map_or(0, |f| f.len());
         memory_init_span.record("memory_chunks", total_chunks as i64);
         memory_init_span.record("memory_files", total_files as i64);
-        codel_logging::session_ctx::log_event(
-            codel_logging::memory_telemetry::MemorySessionInit {
-                session_id: session_info.id.to_string(),
-                memory_enabled: true,
-                memory_mode: codel_logging::memory_telemetry::MemoryMode::Legacy,
-                watcher_config_enabled: watcher_config.enabled,
-                watcher_started,
-                temporal_decay_enabled: mc.is_none_or(|c| c.search.temporal_decay.enabled),
-                mmr_enabled: mc.is_some_and(|c| c.search.mmr.enabled),
-                mmr_lambda: mc.map_or(0.7, |c| c.search.mmr.lambda),
-                half_life_days: mc.map_or(30.0, |c| c.search.temporal_decay.half_life_days),
-                embedding_dimensions: mc.map_or(1024, |c| c.embedding.dimensions),
-                total_chunks,
-                total_files,
-                has_global_memory_md: storage.global_memory_file().exists(),
-                has_workspace_memory_md: storage.workspace_memory_file().exists(),
-            },
-        );
+
         Some(backend)
     } else {
         if let Some(storage) = memory_storage_for_session.as_ref() {
@@ -1066,18 +1046,7 @@ pub(crate) async fn spawn_session_actor(
                 global = %storage.global_dir().display(),
                 "MEMORY_INIT: isolated v2 storage created"
             );
-            codel_logging::session_ctx::log_event(
-                codel_logging::memory_telemetry::MemorySessionInit {
-                    session_id: session_info.id.to_string(),
-                    memory_enabled: true,
-                    memory_mode: codel_logging::memory_telemetry::MemoryMode::V2,
-                    total_chunks: storage.total_chunk_count(),
-                    total_files: storage.list_memory_files().map_or(0, |files| files.len()),
-                    has_global_memory_md: storage.global_memory_file().exists(),
-                    has_workspace_memory_md: storage.workspace_memory_file().exists(),
-                    ..Default::default()
-                },
-            );
+
             let controls = memory_config
                 .as_ref()
                 .map_or_else(crate::config::MemoryV2Config::default, |config| config.v2);
@@ -1095,15 +1064,6 @@ pub(crate) async fn spawn_session_actor(
                     codel_logging::memory_telemetry::MemoryV2Rollout::Active
                 }
             };
-            codel_logging::session_ctx::log_event(
-                codel_logging::memory_telemetry::MemoryV2ControlsPinned {
-                    rollout,
-                    capture_enabled: controls.can_capture(),
-                    automatic_dream_enabled: controls.can_run_automatic_dream(),
-                    manual_dream_enabled: controls.can_run_manual_dream(),
-                    file_writes_enabled: controls.file_writes_enabled,
-                },
-            );
         } else {
             tracing::debug!(
                 target: codel_logging::memory_log::TARGET,
@@ -1291,9 +1251,7 @@ pub(crate) async fn spawn_session_actor(
             })
             .await;
         let memory_retrieval_mode = configured_memory_retrieval_mode(memory_config.as_ref());
-        let harness_metrics = if !startup_hints.is_subagent
-            && telemetry_enabled
-        {
+        let harness_metrics = if !startup_hints.is_subagent && telemetry_enabled {
             let plugin_names = plugin_registry
                 .as_ref()
                 .map(|reg| {
@@ -1363,10 +1321,9 @@ pub(crate) async fn spawn_session_actor(
         let scheduler_handle_for_handle = {
             let toolset = agent.tool_bridge().toolset();
             let res = toolset.resources.lock().await;
-            res.get::<
-                    codel_tools::implementations::codel_build::scheduler::types::SchedulerHandle,
-                >()
-                .cloned()
+            res.get::<codel_tools::implementations::codel_build::scheduler::types::SchedulerHandle>(
+            )
+            .cloned()
         };
         let toolset = agent.tool_bridge().toolset();
         (harness_metrics, scheduler_handle_for_handle, toolset)
@@ -2235,18 +2192,7 @@ pub(crate) async fn spawn_session_actor(
                 } else {
                     0
                 };
-                codel_logging::session_ctx::log_event(
-                    codel_logging::memory_telemetry::MemoryReindex {
-                        session_id: session_id_for_reindex.clone(),
-                        source: "init".to_owned(),
-                        added: total_added,
-                        updated: total_updated,
-                        removed: total_removed,
-                        embedded: embedded_count,
-                        duration_ms: reindex_start.elapsed().as_millis() as u64,
-                        trigger: "init".to_owned(),
-                    },
-                );
+
                 chunks_added_counter
                     .fetch_add(total_added as u64, std::sync::atomic::Ordering::Relaxed);
             }
@@ -2379,7 +2325,6 @@ pub(crate) async fn spawn_session_actor(
         let telemetry_enabled = session.telemetry_enabled;
         tokio::spawn(async move {
             let ev = metrics.into_event(hooks).await;
-            codel_logging::session_ctx::log_event_dual(telemetry_enabled, ev);
         });
     }
     let hosting = SESSIONS_ACTIVE.enter();
@@ -2636,9 +2581,8 @@ pub(crate) async fn spawn_session_on_thread(
     sampling_gate: Option<Arc<tokio::sync::Semaphore>>,
     spawn_trace: Option<codel_logging::startup::SpawnTraceContext>,
 ) -> Result<(SessionInitResult, SessionThread), acp::Error> {
-    let (init_tx, init_rx) = tokio::sync::oneshot::channel::<
-        Result<SessionInitResult, codel_agent::AgentBuildError>,
-    >();
+    let (init_tx, init_rx) =
+        tokio::sync::oneshot::channel::<Result<SessionInitResult, codel_agent::AgentBuildError>>();
     let sid = session_info.id.0.to_string();
     let sid_prefix = match sid.get(..sid.len().min(8)) {
         Some(prefix) => prefix,

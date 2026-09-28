@@ -9,8 +9,8 @@ use crate::views::extensions_modal::ActionVerb;
 use crate::views::feedback_modal::{FeedbackModalDisplacement, FeedbackModalOutcome};
 use crate::views::file_search::line_viewer::LineViewerState;
 use crate::views::managed_connectors_wait::{ManagedConnectorsWaitOutcome, WAIT_BACK_SHORTCUT_ID};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use codel_logging::events::ExtensionsInputMethod;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 const MAX_CONCURRENT_FEEDBACK_TRACE_UPLOADS: usize = 8;
 
@@ -449,17 +449,7 @@ impl AgentView {
         target: Option<String>,
         enabled: Option<bool>,
     ) {
-        if let Some(ref state) = self.extensions_modal {
-            codel_logging::session_ctx::log_event(
-                codel_logging::events::ExtensionsModalAction {
-                    tab: state.active_tab.telemetry_tab(),
-                    action: action.into(),
-                    input_method,
-                    target,
-                    enabled,
-                },
-            );
-        }
+        if let Some(ref state) = self.extensions_modal {}
     }
 
     fn log_extensions_modal_resolved_action(
@@ -3015,7 +3005,9 @@ mod extensions_action_target_tests {
     fn row_scoped_keys_stay_silent_when_the_list_has_no_rows() {
         let mut no_plugins = ExtensionsModalState::new(ExtensionsTab::Plugins);
         no_plugins.plugins_data =
-            TabDataState::Loaded(codel_hooks_plugins_types::PluginsListResponse { plugins: vec![] });
+            TabDataState::Loaded(codel_hooks_plugins_types::PluginsListResponse {
+                plugins: vec![],
+            });
         let mut all_filtered_out = ExtensionsModalState::new(ExtensionsTab::Plugins);
         all_filtered_out.plugins_data =
             TabDataState::Loaded(codel_hooks_plugins_types::PluginsListResponse {
@@ -3025,7 +3017,9 @@ mod extensions_action_target_tests {
         let marketplace = |sources| {
             let mut modal = ExtensionsModalState::new(ExtensionsTab::Marketplace);
             modal.marketplace_data =
-                TabDataState::Loaded(codel_hooks_plugins_types::MarketplaceListResponse { sources });
+                TabDataState::Loaded(codel_hooks_plugins_types::MarketplaceListResponse {
+                    sources,
+                });
             modal
         };
         let source = |error: Option<&str>| codel_hooks_plugins_types::MarketplaceScanResult {
@@ -4356,9 +4350,10 @@ mod extensions_modal_confirmation_tests {
         mcp.picker_state.selected = 0;
 
         let mut plugins = ExtensionsModalState::new(ExtensionsTab::Plugins);
-        plugins.plugins_data = TabDataState::Loaded(codel_hooks_plugins_types::PluginsListResponse {
-            plugins: vec![plugin_info("my-plugin")],
-        });
+        plugins.plugins_data =
+            TabDataState::Loaded(codel_hooks_plugins_types::PluginsListResponse {
+                plugins: vec![plugin_info("my-plugin")],
+            });
         plugins.entry_data_indices = vec![Some(0)];
         plugins.entry_group_keys = vec![None];
         plugins.picker_state.selected = 0;
@@ -4444,9 +4439,11 @@ mod extensions_modal_confirmation_tests {
                 modal: hooks,
                 button: ButtonAction::RemoveSelectedHook,
                 message_sub: format!("Remove hook source \"{hook_label}\"?"),
-                expected: ConfirmationAction::Hooks(codel_hooks_plugins_types::HooksAction::Remove {
-                    path: source.into(),
-                }),
+                expected: ConfirmationAction::Hooks(
+                    codel_hooks_plugins_types::HooksAction::Remove {
+                        path: source.into(),
+                    },
+                ),
                 row: 0,
             },
         ]

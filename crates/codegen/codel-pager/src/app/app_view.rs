@@ -18,12 +18,12 @@ use crate::scrollback::render::ScratchBuffer;
 use crate::views::prompt_widget::PromptWidget;
 use crate::views::welcome::WelcomePromptFocus;
 use agent_client_protocol as acp;
+use codel_acp_lib::AcpAgentTx;
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use codel_acp_lib::AcpAgentTx;
 /// State for the "New Worktree" popup dialog on the welcome screen.
 #[derive(Debug, Default)]
 pub struct NewWorktreeDialogState {
@@ -179,8 +179,7 @@ impl WorktreeMode {
     }
     /// Same as [`Self::resolve_from_hints`], for merged effective config (`toml::Value`).
     pub fn resolve_from_hints_value(hints: Option<&toml::Value>) -> (Self, Self) {
-        let (new_session, fork) =
-            codel_shell::util::config::WorktreeHintMode::resolve_pair(hints);
+        let (new_session, fork) = codel_shell::util::config::WorktreeHintMode::resolve_pair(hints);
         (new_session.into(), fork.into())
     }
     fn resolve_from_hint_strings(get_str: impl Fn(&str) -> Option<Self>) -> (Self, Self) {
@@ -1063,10 +1062,7 @@ enum UnconsumedInputScope {
 impl AppView {
     /// Finishes startup if this view still holds the obligation; does nothing after.
     pub(crate) fn finish_startup(&mut self, outcome: codel_logging::startup::StartupOutcome) {
-        codel_logging::startup::PendingStartup::finish_held(
-            &mut self.pending_startup,
-            outcome,
-        );
+        codel_logging::startup::PendingStartup::finish_held(&mut self.pending_startup, outcome);
     }
     /// Releases the obligation without recording; does nothing after finish.
     pub(crate) fn abandon_startup(&mut self) {
@@ -2883,8 +2879,7 @@ struct WelcomeInputCtx<'a> {
     /// Mirrors the render's `session_picker_loading` param: the spinner-only picker still owns input (Esc must dismiss it, not hit the hidden menu).
     sp_loading: bool,
     sp_state: &'a mut crate::views::picker::PickerState,
-    sp_content_results:
-        &'a Option<Vec<codel_shell::extensions::session_search::SearchSessionHit>>,
+    sp_content_results: &'a Option<Vec<codel_shell::extensions::session_search::SearchSessionHit>>,
     sp_content_loading: bool,
     /// The query `sp_entries` were server-fetched with (see [`crate::views::session_picker::effective_filter_query`]).
     sp_entries_query: &'a Option<String>,
@@ -3516,9 +3511,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
         }
     }
     if let Event::Paste(_text) = ev {
-        if matches!(ctx.auth_state, AuthState::Done)
-                && !ctx.is_zdr_blocked
-        {
+        if matches!(ctx.auth_state, AuthState::Done) && !ctx.is_zdr_blocked {
             *ctx.prompt_focused = true;
             return InputOutcome::ActionThenForward(Action::LeaveHome);
         }
@@ -4570,14 +4563,7 @@ impl AppView {
             if self
                 .announcement_cta_impressions_logged
                 .insert((key.clone(), surface))
-            {
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::AnnouncementCtaShown {
-                        id: id.clone(),
-                        source: surface,
-                    },
-                );
-            }
+            {}
         }
     }
     /// Interval between off-screen render-cache eviction sweeps.
@@ -4795,10 +4781,7 @@ impl AppView {
             &mut self.tip_seen_counts,
         ) {
             self.clipboard_focus_tip.note_fired(&outcome, now);
-            codel_logging::session_ctx::log_event(codel_logging::events::ContextualTip {
-                tip: codel_logging::events::ContextualTipKind::ImageInput,
-                action: codel_logging::events::ContextualTipAction::Shown,
-            });
+
             return true;
         }
         false

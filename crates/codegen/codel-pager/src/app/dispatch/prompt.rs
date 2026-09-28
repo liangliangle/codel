@@ -132,9 +132,7 @@ pub(super) fn open_doctor_fix_question(
     plan: Box<crate::diagnostics::FixPlan>,
 ) {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
 
     let Some(agent) = app.agents.get_mut(&target.agent_id) else {
         return;
@@ -412,12 +410,7 @@ pub(super) fn dispatch_show_undo_tip(app: &mut AppView) -> Vec<Effect> {
     if agent.show_ephemeral_tip(
         crate::tips::clear_detector::undo_tip(),
         &mut app.tip_seen_counts,
-    ) {
-        log_event(codel_logging::events::ContextualTip {
-            tip: codel_logging::events::ContextualTipKind::Undo,
-            action: codel_logging::events::ContextualTipAction::Shown,
-        });
-    }
+    ) {}
     vec![]
 }
 
@@ -438,12 +431,7 @@ pub(in crate::app) fn show_small_screen_tip(app: &mut AppView) {
     if agent.show_ephemeral_tip(
         crate::tips::small_screen::small_screen_tip(),
         &mut app.tip_seen_counts,
-    ) {
-        log_event(codel_logging::events::ContextualTip {
-            tip: codel_logging::events::ContextualTipKind::SmallScreen,
-            action: codel_logging::events::ContextualTipAction::Shown,
-        });
-    }
+    ) {}
 }
 
 /// Show the existing one-shot SSH discovery tip, redirected to `/doctor`.
@@ -460,12 +448,7 @@ pub(in crate::app) fn show_ssh_wrap_tip(app: &mut AppView) {
     if agent.show_ephemeral_tip(
         crate::tips::ssh_wrap::ssh_wrap_tip(),
         &mut app.tip_seen_counts,
-    ) {
-        log_event(codel_logging::events::ContextualTip {
-            tip: codel_logging::events::ContextualTipKind::SshWrap,
-            action: codel_logging::events::ContextualTipAction::Shown,
-        });
-    }
+    ) {}
 }
 
 pub(super) fn dispatch_show_plan_nudge(app: &mut AppView) -> Vec<Effect> {
@@ -483,12 +466,7 @@ pub(super) fn dispatch_show_plan_nudge(app: &mut AppView) -> Vec<Effect> {
     if agent.show_ephemeral_tip(
         crate::tips::plan_nudge::plan_nudge_tip(),
         &mut app.tip_seen_counts,
-    ) {
-        log_event(codel_logging::events::ContextualTip {
-            tip: codel_logging::events::ContextualTipKind::PlanMode,
-            action: codel_logging::events::ContextualTipAction::Shown,
-        });
-    }
+    ) {}
     vec![]
 }
 
@@ -508,12 +486,7 @@ pub(super) fn dispatch_show_word_select_tip(app: &mut AppView) -> Vec<Effect> {
     if agent.show_ephemeral_tip(
         crate::tips::word_select::word_select_tip(),
         &mut app.tip_seen_counts,
-    ) {
-        log_event(codel_logging::events::ContextualTip {
-            tip: codel_logging::events::ContextualTipKind::WordSelect,
-            action: codel_logging::events::ContextualTipAction::Shown,
-        });
-    }
+    ) {}
     // Snapshot the prompt as of this double-click (also on a same-key TTL refresh: a new double-click is a new moment)
     // Any later divergence (typed, pasted, dropped) refuses the chord and retires the tip
     // A no-show gated by the seen cap leaves the slot to another tip and skips this
@@ -537,12 +510,7 @@ pub(in crate::app) fn present_export_copy_tip(
         return false;
     }
     let shown = agent.show_ephemeral_tip(crate::tips::export_copy::export_copy_tip(), seen_counts);
-    if shown {
-        log_event(codel_logging::events::ContextualTip {
-            tip: codel_logging::events::ContextualTipKind::ExportCopy,
-            action: codel_logging::events::ContextualTipAction::Shown,
-        });
-    }
+    if shown {}
     shown
 }
 
@@ -560,10 +528,7 @@ pub(super) fn dispatch_accept_word_select_tip(app: &mut AppView) -> Vec<Effect> 
         .ephemeral_tip
         .clear(crate::tips::word_select::WORD_SELECT_TIP_KEY);
     agent.word_select_tip_prompt_snapshot = None;
-    log_event(codel_logging::events::ContextualTip {
-        tip: codel_logging::events::ContextualTipKind::WordSelect,
-        action: codel_logging::events::ContextualTipAction::Accepted,
-    });
+
     super::settings::setters::set_keep_text_selection(
         app,
         crate::appearance::TextSelection::WordSelect,
@@ -592,12 +557,7 @@ fn maybe_show_send_now_tip(app: &mut AppView) {
     if agent.show_ephemeral_tip(
         crate::tips::send_now::send_now_tip(),
         &mut app.tip_seen_counts,
-    ) {
-        log_event(codel_logging::events::ContextualTip {
-            tip: codel_logging::events::ContextualTipKind::SendNow,
-            action: codel_logging::events::ContextualTipAction::Shown,
-        });
-    }
+    ) {}
 }
 
 /// Body of [`dispatch_send_prompt`], parameterized over whether to consume the prompt textarea after the command is processed.
@@ -829,10 +789,6 @@ pub(super) fn dispatch_send_prompt_submission(
                     } else {
                         PagerCommandSource::NonBuiltin
                     };
-                    log_event(PagerSlashCommand {
-                        command_name: invocation.token.to_string(),
-                        source,
-                    });
                 }
                 if let Some(command) = command {
                     // Central screen-mode gate

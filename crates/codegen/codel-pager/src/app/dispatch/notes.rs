@@ -9,10 +9,10 @@ use crate::app::agent_view::{AgentView, PromptInputMode};
 use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{SessionEvent, ToolCallBlock};
-use std::sync::atomic::{AtomicU64, Ordering};
 use codel_feedback::{
     FeedbackDraftStore, FeedbackSource, FeedbackTaxonomy, derive_title, structured_feedback,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Monotonic counter for correlating async rewrite responses with the modal that requested them.
 /// It prevents stale results from populating a different note's review modal when the user closes and re-opens quickly.
@@ -231,11 +231,9 @@ pub(super) fn dispatch_submit_feedback_modal(
     if trace_choice.is_none() && offer_trace {
         modal.begin_trace_step();
         // Funnel denominator for the in-modal trace step; logged once when Write actually advances.
-        codel_logging::session_ctx::log_event(
-            codel_logging::events::FeedbackTraceCardShown {
-                reenables_sharing: trace_reenables_sharing,
-            },
-        );
+        codel_logging::session_ctx::log_event(codel_logging::events::FeedbackTraceCardShown {
+            reenables_sharing: trace_reenables_sharing,
+        });
         return vec![];
     }
     let draft = draft_id
@@ -335,14 +333,6 @@ pub(super) fn dispatch_enter_remember_mode(app: &mut AppView) -> Vec<Effect> {
 /// Log the trace-consent outcome carried on an immediate send exactly once.
 pub(crate) fn log_trace_consent_selected(reenables_sharing: bool, choice: FeedbackTraceChoice) {
     use codel_logging::events::{FeedbackTraceConsentChoice, FeedbackTraceConsentSelected};
-    codel_logging::session_ctx::log_event(FeedbackTraceConsentSelected {
-        choice: match choice {
-            FeedbackTraceChoice::AlwaysUpload => FeedbackTraceConsentChoice::TurnOn,
-            FeedbackTraceChoice::NeverAsk => FeedbackTraceConsentChoice::NeverAsk,
-            FeedbackTraceChoice::NoUpload => FeedbackTraceConsentChoice::NoUpload,
-        },
-        reenables_sharing,
-    });
 }
 /// The `feedback.send` unified log plus the POST effect for a committed report.
 /// This is the single writer for both, shared with the modal submit path.

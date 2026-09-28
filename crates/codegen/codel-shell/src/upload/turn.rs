@@ -1,8 +1,8 @@
 use super::drain::PendingUploadGuard;
 use crate::session::repo_changes::TraceExportConfig;
+use codel_workspace::permission::PermissionEvent;
 use futures::FutureExt as _;
 use tokio::sync::oneshot;
-use codel_workspace::permission::PermissionEvent;
 /// Request to upload a trace for a synthetic auto-wake turn.
 /// The notification bridge sends it for bash task completions; the subagent coordinator sends it for subagent completions.
 /// The `MvpAgent`'s synthetic trace handler receives it, allocates a turn number, and drives the before/after artifact uploads.
@@ -263,13 +263,7 @@ pub(crate) async fn complete_prompt_trace(
     use super::manifest::{build_manifest, resolve_upload_method, write_upload_manifest};
     let upload_method = resolve_upload_method(&ctx.gcs_config);
     let method_str = upload_method.as_ref();
-    codel_logging::session_ctx::log_session_event(
-        crate::agent::session_metrics::TraceUploadAttempted {
-            session_id: ctx.session_info.id.0.to_string(),
-            turn_number: ctx.turn_number,
-            upload_method: method_str.to_owned(),
-        },
-    );
+
     let queue_failed_count = || {
         ctx.upload_queue.as_ref().map_or(0, |q| {
             q.stats().failed.load(std::sync::atomic::Ordering::Relaxed)
@@ -322,27 +316,8 @@ pub(crate) async fn complete_prompt_trace(
         None
     };
     match terminal_failure {
-        Some((error_category, status_code)) => {
-            codel_logging::session_ctx::log_session_event(
-                crate::agent::session_metrics::TraceUploadFailed {
-                    session_id: ctx.session_info.id.0.to_string(),
-                    turn_number: ctx.turn_number,
-                    error_category,
-                    status_code,
-                    upload_method: method_str.to_owned(),
-                },
-            );
-        }
-        None => {
-            codel_logging::session_ctx::log_session_event(
-                crate::agent::session_metrics::TraceUploadSucceeded {
-                    session_id: ctx.session_info.id.0.to_string(),
-                    turn_number: ctx.turn_number,
-                    upload_method: method_str.to_owned(),
-                    fully_uploaded: true,
-                },
-            );
-        }
+        Some((error_category, status_code)) => {}
+        None => {}
     }
     match wait {
         UploadWait::Confirm => write_upload_manifest(&ctx, &manifest).await,

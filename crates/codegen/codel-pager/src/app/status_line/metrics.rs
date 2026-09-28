@@ -56,15 +56,6 @@ impl StatusLineMetrics {
             return;
         }
         self.draws_a_row.store(draws_a_row(cfg), Ordering::Relaxed);
-        codel_logging::session_ctx::log_event(
-            codel_logging::events::StatusLineConfigured {
-                kind,
-                // Answers for the row, not the section: a rejected value in a section already switched off reserves nothing
-                row_shows_a_problem: cfg.problem_to_paint().is_some(),
-                items: items_label(cfg),
-                custom_items: cfg.has_custom_items(),
-            },
-        );
     }
 
     pub(crate) fn record_ok(&self, duration_ms: u64) {
@@ -90,9 +81,7 @@ impl StatusLineMetrics {
     }
 
     pub(crate) fn report_health(&self) {
-        if let Some(event) = self.health_event() {
-            codel_logging::session_ctx::log_event(event);
-        }
+        if let Some(event) = self.health_event() {}
     }
 
     /// `None` when there is nothing to report: both exit paths call this and the first wins, and a session with no row would dilute the signal.

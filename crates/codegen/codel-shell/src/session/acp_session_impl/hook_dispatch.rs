@@ -290,8 +290,7 @@ impl SessionActor {
         let batch = self.announce_hook_run(&registry, &envelope, &ctx);
         // Prompt-gate events go through dispatch_prompt_submit_hook; dispatch_non_blocking debug-asserts observe-only
         let results =
-            codel_hooks::dispatcher::dispatch_non_blocking(&registry, event, &envelope, &ctx)
-                .await;
+            codel_hooks::dispatcher::dispatch_non_blocking(&registry, event, &envelope, &ctx).await;
         self.send_hook_execution(&batch, &results).await;
         self.emit_hook_executed_telemetry(&batch.event_name, batch.tool_name.as_deref(), &results)
             .await;
@@ -336,8 +335,7 @@ impl SessionActor {
             let ctx = self.hook_run_ctx();
             let batch = self.announce_hook_run(&registry, &envelope, &ctx);
             let result =
-                codel_hooks::dispatcher::dispatch_post_tool_use(&registry, &envelope, &ctx)
-                    .await;
+                codel_hooks::dispatcher::dispatch_post_tool_use(&registry, &envelope, &ctx).await;
             (batch, result)
         } else {
             (
@@ -455,8 +453,7 @@ impl SessionActor {
         };
         let ctx = self.hook_run_ctx();
         let batch = self.announce_hook_run(&registry, &envelope, &ctx);
-        let gate =
-            codel_hooks::dispatcher::dispatch_prompt_gate(&registry, &envelope, &ctx).await;
+        let gate = codel_hooks::dispatcher::dispatch_prompt_gate(&registry, &envelope, &ctx).await;
         self.send_hook_execution(&batch, &gate.results).await;
         self.emit_hook_executed_telemetry(&batch.event_name, None, &gate.results)
             .await;
@@ -495,13 +492,6 @@ impl SessionActor {
                 ),
                 codel_hooks::result::HookRunResult::Skipped { .. } => continue,
             };
-            codel_logging::session_ctx::log_event(codel_logging::events::HookExecuted {
-                hook_name: hook_name.clone(),
-                event: event_name.to_string(),
-                tool_name: tool.clone(),
-                duration_ms: elapsed.as_millis() as u64,
-                outcome,
-            });
         }
     }
 }

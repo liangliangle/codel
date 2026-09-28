@@ -557,10 +557,6 @@ impl acp::Agent for MvpAgent {
                     self.chat_modes.warm_in_background();
                 }
                 emit_login_span(true, "api_key", None, None);
-                log_event(codel_logging::events::Login {
-                    auth_method: "api_key".to_string(),
-                    user_id: None,
-                });
                 Ok(Default::default())
             }
             _ => {
@@ -2195,11 +2191,6 @@ impl acp::Agent for MvpAgent {
                     client_version = ?params.client_version,
                     "non_git_decision",
                 );
-                codel_logging::session_ctx::log_event(codel_logging::events::NonGitDecisionEvent {
-                    decision: params.decision,
-                    session_id: params.session_id,
-                    client_version: params.client_version,
-                });
             } else {
                 tracing::warn!("Failed to parse non_git_decision telemetry params");
             }
@@ -2221,21 +2212,6 @@ impl acp::Agent for MvpAgent {
                     params.preferred_agent_label
                 );
                 let total_agents = 1 + params.other_agents.len();
-                codel_logging::session_ctx::log_event(codel_logging::events::MultiAgentFollowup {
-                    preferred_agent_label: params.preferred_agent_label.to_string(),
-                    preferred_agent_session_id: params.preferred_agent_session_id,
-                    preferred_agent_model_id: params.preferred_agent_model_id,
-                    other_agents: params
-                        .other_agents
-                        .into_iter()
-                        .map(|(l, s, m)| codel_logging::events::AgentInfo {
-                            label: l.to_string(),
-                            session_id: s,
-                            model_id: m,
-                        })
-                        .collect(),
-                    total_agents,
-                });
             } else {
                 tracing::warn!("Failed to parse multi-agent followup telemetry params");
             }
@@ -2257,21 +2233,6 @@ impl acp::Agent for MvpAgent {
                     params.applied_agent_label
                 );
                 let total_agents = 1 + params.discarded_agents.len();
-                codel_logging::session_ctx::log_event(codel_logging::events::MultiAgentApply {
-                    applied_agent_label: params.applied_agent_label.to_string(),
-                    applied_agent_session_id: params.applied_agent_session_id,
-                    applied_agent_model_id: params.applied_agent_model_id,
-                    discarded_agents: params
-                        .discarded_agents
-                        .into_iter()
-                        .map(|(l, s, m)| codel_logging::events::AgentInfo {
-                            label: l.to_string(),
-                            session_id: s,
-                            model_id: m,
-                        })
-                        .collect(),
-                    total_agents,
-                });
             } else {
                 tracing::warn!("Failed to parse multi-agent apply telemetry params");
             }
@@ -2290,18 +2251,6 @@ impl acp::Agent for MvpAgent {
                     params.discarded_agents.len()
                 );
                 let total = params.discarded_agents.len();
-                codel_logging::session_ctx::log_event(codel_logging::events::MultiAgentDiscard {
-                    discarded_agents: params
-                        .discarded_agents
-                        .into_iter()
-                        .map(|(l, s, m)| codel_logging::events::AgentInfo {
-                            label: l.to_string(),
-                            session_id: s,
-                            model_id: m,
-                        })
-                        .collect(),
-                    total_agents_discarded: total,
-                });
             } else {
                 tracing::warn!("Failed to parse multi-agent discard telemetry params");
             }

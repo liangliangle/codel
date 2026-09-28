@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde::Deserialize;
 use codel_logging::TelemetryCtx;
 use codel_logging::events::{
     ActiveAgentMessageCompleted as Completed,
@@ -19,6 +18,7 @@ use codel_tools::implementations::codel_build::send_subagent_message::{
 };
 use codel_tools::implementations::codel_build::task::types::ActiveAgentMessageOperation;
 use codel_tools::types::output::ToolOutput;
+use serde::Deserialize;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ActiveAgentMessageEvent {
@@ -143,18 +143,10 @@ pub(crate) struct ProductEventSink;
 impl ActiveAgentMessageEventSink for ProductEventSink {
     fn emit(&mut self, event: ActiveAgentMessageEvent) {
         match event {
-            ActiveAgentMessageEvent::Completed(event) => {
-                codel_logging::session_ctx::log_event(event);
-            }
-            ActiveAgentMessageEvent::LimitHit(event) => {
-                codel_logging::session_ctx::log_event(event);
-            }
-            ActiveAgentMessageEvent::QuotaHit(event) => {
-                codel_logging::session_ctx::log_event(event);
-            }
-            ActiveAgentMessageEvent::Settled(event) => {
-                codel_logging::session_ctx::log_event(event);
-            }
+            ActiveAgentMessageEvent::Completed(event) => {}
+            ActiveAgentMessageEvent::LimitHit(event) => {}
+            ActiveAgentMessageEvent::QuotaHit(event) => {}
+            ActiveAgentMessageEvent::Settled(event) => {}
         }
     }
 }

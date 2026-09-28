@@ -17,10 +17,10 @@ use crate::views::queue_mutation::QueueMutation;
 use crate::views::queue_pane::QueuePane;
 use crate::views::tasks_pane::TasksPane;
 use crate::views::todo_pane::TodoPane;
+use codel_logging::events::{CancellationCompleted, CancellationScope};
 use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
-use codel_logging::events::{CancellationCompleted, CancellationScope};
 /// Approve/build after EndTurn is only for backends that implement ExecutePlan.
 /// Default off; `AppView` / `test_agent_view` turn it on for those backends and tests.
 fn post_turn_plan_review_default() -> bool {
@@ -486,9 +486,7 @@ impl AgentView {
         self.turn_start_ms_prompt = None;
         self.last_active_at = Some(now);
         self.note_prompt_ack(AckSignal::TurnEnded, now);
-        if let Some(event) = self.settle_cancel(end, now) {
-            codel_logging::session_ctx::log_event(event);
-        }
+        if let Some(event) = self.settle_cancel(end, now) {}
     }
     /// Start the acknowledgment watch for a prompt this client just drained and sent.
     /// Chat sessions never arm: the gateway bridge has no queue broadcast, so their first signal is the first delta.

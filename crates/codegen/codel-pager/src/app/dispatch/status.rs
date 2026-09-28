@@ -186,12 +186,6 @@ fn log_coding_data_consent_selected(
     previous_opted_in: bool,
 ) {
     use codel_logging::events::{CodingDataConsentChoice, CodingDataConsentSelected};
-    codel_logging::session_ctx::log_event(CodingDataConsentSelected {
-        source,
-        choice: CodingDataConsentChoice::from_opted_in(opted_in),
-        previous_choice: CodingDataConsentChoice::from_opted_in(previous_opted_in),
-        changed: opted_in != previous_opted_in,
-    });
 }
 
 /// Set coding-data-sharing preference.

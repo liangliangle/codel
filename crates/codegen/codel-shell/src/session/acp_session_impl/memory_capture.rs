@@ -8,11 +8,11 @@ use crate::session::memory::v2_capture::{
     CaptureActivity, FLUSH_TIMEOUT, FlushResult, extraction_schema, missing_range,
     parse_model_outcome,
 };
+use codel_logging::memory_telemetry::MemoryV2FailureClass;
 use codel_memory::{
     CaptureLease, CaptureOutcomeDraft, ClaimRequest, SharedV2Clock, V2CaptureStore, V2MemoryScope,
 };
 use codel_sampling_types::ReasoningEffort;
-use codel_logging::memory_telemetry::MemoryV2FailureClass;
 
 const CAPTURE_LEASE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 const EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
@@ -172,8 +172,8 @@ impl CaptureExtractionFailure {
 fn classify_capture_error(
     error: &codel_memory::V2CaptureError,
 ) -> codel_logging::memory_telemetry::MemoryV2FailureClass {
-    use codel_memory::V2CaptureError;
     use codel_logging::memory_telemetry::MemoryV2FailureClass;
+    use codel_memory::V2CaptureError;
     match error {
         V2CaptureError::Invalid(_) => MemoryV2FailureClass::MalformedOutput,
         V2CaptureError::StaleLease => MemoryV2FailureClass::Lease,
@@ -603,10 +603,9 @@ impl SessionActor {
             // runs as a tracked task instead of on the actor's startup path.
             let session = Arc::clone(self);
             let clock = codel_memory::system_v2_clock();
-            let promotion =
-                codel_logging::session_ctx::spawn_local_in_session_ctx(async move {
-                    session.promote_v2_hidden_observations(true, clock).await;
-                });
+            let promotion = codel_logging::session_ctx::spawn_local_in_session_ctx(async move {
+                session.promote_v2_hidden_observations(true, clock).await;
+            });
             self.memory.dream_workers.track(promotion);
         }
         if self.v2_capture_enabled() {
@@ -1073,10 +1072,7 @@ impl SessionActor {
             use codel_logging::memory_telemetry::{
                 MemoryV2Component, MemoryV2FailClosed, MemoryV2FailureClass,
             };
-            codel_logging::session_ctx::log_event(MemoryV2FailClosed {
-                component: MemoryV2Component::Flush,
-                reason: MemoryV2FailureClass::Disabled,
-            });
+
             return (
                 FlushResult::TerminalFailure(MemoryV2FailureClass::Disabled),
                 None,
@@ -1221,12 +1217,6 @@ impl SessionActor {
                     Some(MemoryV2FailureClass::Timeout),
                 ),
             };
-            codel_logging::session_ctx::log_event(MemoryV2FlushResult {
-                outcome,
-                target_cursor: target,
-                latency_ms: started_at.elapsed().as_millis() as u64,
-                failure_class,
-            });
         }
         self.send_codel_notification(CodelSessionUpdate::MemoryFlushCompleted {
             result: result.message(target),
@@ -1279,9 +1269,7 @@ impl SessionActor {
         usage: codel_logging::memory_telemetry::MemoryV2ModelUsage,
         memories: Vec<crate::extensions::notification::MemoryCaptureDebugEntry>,
     ) {
-        use codel_logging::memory_telemetry::{
-            MemoryV2CaptureLifecycle, MemoryV2CaptureStage,
-        };
+        use codel_logging::memory_telemetry::{MemoryV2CaptureLifecycle, MemoryV2CaptureStage};
         let stage = match activity {
             CaptureActivity::Queued => MemoryV2CaptureStage::Queued,
             CaptureActivity::Running => MemoryV2CaptureStage::Claimed,
@@ -1303,16 +1291,7 @@ impl SessionActor {
             CaptureActivity::Queued | CaptureActivity::Running => {}
         }
         self.memory.record_capture_usage(&usage);
-        codel_logging::session_ctx::log_event(MemoryV2CaptureLifecycle {
-            stage,
-            from_turn,
-            through_turn,
-            attempt,
-            observation_count,
-            latency_ms,
-            failure_class,
-            usage,
-        });
+
         tracing::info!(
             target: codel_logging::memory_log::TARGET,
             activity = activity.as_str(),
@@ -1922,8 +1901,7 @@ mod tests {
     fn init_v2_scopes(root: &Path, global: &Path, workspace: &Path) {
         std::fs::create_dir_all(root.join("workspaces")).unwrap();
         codel_memory::ensure_scope_initialized(root, global, V2MemoryScope::Global).unwrap();
-        codel_memory::ensure_scope_initialized(root, workspace, V2MemoryScope::Workspace)
-            .unwrap();
+        codel_memory::ensure_scope_initialized(root, workspace, V2MemoryScope::Workspace).unwrap();
     }
 
     /// Claim one pending capture job for `session_id` so a guard can be armed over it.

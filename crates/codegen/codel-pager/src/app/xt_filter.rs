@@ -252,7 +252,6 @@ pub(super) async fn filter_with_fragment_wait(
         if crate::terminal::xtversion::detected().is_some() {
             tokio::task::spawn_blocking(|| {
                 let t = crate::terminal::terminal_context().telemetry_snapshot();
-                codel_logging::session_ctx::log_event(t);
             });
         }
     }

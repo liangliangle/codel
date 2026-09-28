@@ -964,7 +964,9 @@ pub(super) fn handle_session_notification_with_origin(
                 use crate::views::extensions_modal::TabDataState;
                 modal.seed_plugin_groups_once(&plugins);
                 modal.plugins_data =
-                    TabDataState::Loaded(codel_hooks_plugins_types::PluginsListResponse { plugins });
+                    TabDataState::Loaded(codel_hooks_plugins_types::PluginsListResponse {
+                        plugins,
+                    });
                 if !matches!(modal.skills_data, TabDataState::Loading) {
                     modal.skills_data = TabDataState::Loading;
                     plugins_changed_needs_skills_refetch = true;
@@ -982,9 +984,7 @@ pub(super) fn handle_session_notification_with_origin(
             match title_is_manual {
                 Some(true) => {
                     if let Some(clean) =
-                        codel_shell::session::persistence::sanitize_and_cap_title(
-                            &session_summary,
-                        )
+                        codel_shell::session::persistence::sanitize_and_cap_title(&session_summary)
                     {
                         agent.display_name = Some(clean.clone());
                         agent.generated_session_title = Some(clean);
@@ -1167,7 +1167,9 @@ pub(super) fn handle_session_notification_with_origin(
             });
             true
         }
-        update @ CodelSessionUpdate::WorkflowUpdated { .. } => ingest_workflow_update(agent, update),
+        update @ CodelSessionUpdate::WorkflowUpdated { .. } => {
+            ingest_workflow_update(agent, update)
+        }
         CodelSessionUpdate::GoalUpdated {
             goal_id,
             objective,
@@ -1458,8 +1460,9 @@ pub(super) fn handle_child_session_notification(
             {
                 info.attempt.tokens_used = Some(tokens_after);
                 if let Some(cw) = info.attempt.context_window_tokens.filter(|&cw| cw > 0) {
-                    info.attempt.context_usage_pct =
-                        Some(codel_token_estimation::usage_percentage_u8(tokens_after, cw));
+                    info.attempt.context_usage_pct = Some(
+                        codel_token_estimation::usage_percentage_u8(tokens_after, cw),
+                    );
                 }
             }
             changed
@@ -1559,8 +1562,8 @@ fn apply_compaction_or_retry_update(
 ) -> bool {
     use crate::app::agent::AgentCommand;
     use crate::app::cancel_latency::TurnEnd;
-    use std::time::Instant;
     use codel_shell::extensions::notification::MODEL_FAMILY_SWITCH_COMPACT_BANNER;
+    use std::time::Instant;
     let changed = apply_session_event(
         update,
         &mut agent.session,
@@ -1797,19 +1800,7 @@ pub(super) fn apply_retry_state(
         } => {
             session.set_retry_activity(None);
             session.rate_limited = *rate_limited;
-            if *rate_limited {
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::RateLimitHit {
-                        model_id: session
-                            .models
-                            .current
-                            .as_ref()
-                            .map(|m| m.0.to_string())
-                            .unwrap_or_default(),
-                        attempts: *attempts,
-                    },
-                );
-            }
+            if *rate_limited {}
             let is_free_usage = *rate_limited
                 && codel_shell::sampling::error::is_free_usage_exhausted_error(reason);
             if is_free_usage {

@@ -11,9 +11,7 @@ async fn a_gated_emit_takes_no_snapshot_and_the_second_snapshot_reports_cpu() {
         !codel_logging::is_enabled(),
         "this binary must never install a telemetry client"
     );
-    codel_logging::log_event(ShellTrueNoop {
-        tool_name: "bash".into(),
-    });
+
     session_ctx::drain_pending(Duration::from_secs(5)).await;
 
     let first = process_metrics::snapshot();

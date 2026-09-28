@@ -2,9 +2,9 @@
 use super::hooks::RewriteProblem;
 use super::mcp_argument_coercion;
 use super::*;
+use codel_hooks::result::HookDecision;
 use futures::StreamExt;
 use tracing::Instrument;
-use codel_hooks::result::HookDecision;
 #[path = "wait_interrupt.rs"]
 mod wait_interrupt;
 use wait_interrupt::{
@@ -796,8 +796,7 @@ impl SessionActor {
                         let latest_slot = std::sync::Arc::clone(&latest_slot);
                         let origin = origin.clone();
                         async move {
-                            let slot =
-                                codel_tools::types::source_summary::SourceSummarySlot::new();
+                            let slot = codel_tools::types::source_summary::SourceSummarySlot::new();
                             *latest_slot.lock() = slot.clone();
                             let result = {
                                 let _guard = if let Some(ref l) = lock {
@@ -1037,7 +1036,6 @@ impl SessionActor {
                 }
                 Err(_) => true,
             };
-            let (ext_tool_output, ext_error_message) = (None, None);
             let tool_loop = match result {
                 Ok(tool_result) => {
                     let effective_tool_name = tool_result
@@ -1202,21 +1200,7 @@ impl SessionActor {
                     },
                 )
                 .await;
-            codel_logging::session_ctx::log_event(crate::session::telemetry::completed_event(
-                crate::session::telemetry::CompletedTool {
-                    tool_name: &prepared.tool_name,
-                    projection: &projection,
-                    outcome: tool_outcome,
-                    hook_rewrote,
-                    duration_ms,
-                    tool_result_size_bytes,
-                    file_path: None,
-                    parameters: None,
-                    tool_use_id: None,
-                    tool_output: ext_tool_output,
-                    error_message: ext_error_message,
-                },
-            ));
+
             if let Some(artifact) = compaction_artifact_read(prepared.authored_arguments()) {
                 codel_logging::event_span!(
                     "compaction.segment_read",
@@ -1758,15 +1742,7 @@ impl SessionActor {
             } else {
                 codel_logging::enums::PermissionMode::Ask
             };
-            codel_logging::session_ctx::log_event(
-                codel_logging::events::PermissionPrompted {
-                    tool_name: canonical_permission_tool_name.clone(),
-                    access_kind: telemetry_access_kind,
-                    permission_mode: perm_mode,
-                    subagent_session_id: subagent_session_id.clone(),
-                    subagent_type: None,
-                },
-            );
+
             let perm_start = self.events.permission_requested(&call.function.name);
             debug_assert!(
                 !self.session_info.id.0.is_empty(),
@@ -1780,9 +1756,10 @@ impl SessionActor {
                     .map(|cwd| std::path::PathBuf::from(cwd.as_str())),
             });
             let perm_wait_start = std::time::Instant::now();
-            let perm_wait_span = codel_logging::region::Region::from_span(
-                tracing::info_span!("permission.wait", wait_ms = tracing::field::Empty),
-            );
+            let perm_wait_span = codel_logging::region::Region::from_span(tracing::info_span!(
+                "permission.wait",
+                wait_ms = tracing::field::Empty
+            ));
             let resolution = {
                 let _pending_guard =
                     crate::session::pending_interaction::PendingInteractionGuard::new(
@@ -1843,21 +1820,7 @@ impl SessionActor {
                 source = resolved.source.as_deref().unwrap_or(""),
                 wait_ms = resolved.wait_ms as i64,
             );
-            codel_logging::session_ctx::log_event({
-                let payload = crate::session::telemetry::permission_decision_payload(
-                    canonical_permission_tool_name,
-                    telemetry_access_kind,
-                    &decision,
-                    subagent_session_id.clone(),
-                    manager_event.as_ref(),
-                    resolved,
-                );
-                let tool_input = codel_logging::events::ExternalToolInput::default();
-                codel_logging::events::PermissionDecisionRecord {
-                    payload,
-                    tool_input,
-                }
-            });
+
             match decision {
                 Decision::PolicyDeny(ref reason) | Decision::Reject(ref reason) => {
                     let is_policy_deny = matches!(&decision, Decision::PolicyDeny(_));
@@ -2407,15 +2370,6 @@ impl SessionActor {
                 vec![],
             ),
             ToolInput::Skill(skill) => {
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::SkillDispatched {
-                        skill_name: skill.skill.clone(),
-                        plugin_source: None,
-                        trigger: codel_logging::events::SkillTrigger::SkillTool,
-                        skill_source: None,
-                        skill_origin: None,
-                    },
-                );
                 codel_logging::event_span!(
                     "skill.activated",
                     skill_name = %skill.skill,
@@ -2717,13 +2671,6 @@ impl SessionActor {
             invocation_trigger = "skill_md_read",
             skill_source = skill_source,
         );
-        codel_logging::session_ctx::log_event(codel_logging::events::SkillDispatched {
-            skill_name: skill.name,
-            plugin_source: skill.plugin_name,
-            trigger: codel_logging::events::SkillTrigger::SkillMdRead,
-            skill_source: Some(skill_source.to_owned()),
-            skill_origin: skill.origin,
-        });
     }
     pub(super) fn make_pre_tool_use_envelope(
         &self,
@@ -2865,9 +2812,6 @@ impl SessionActor {
                 }
                 if ops.pr_merged {
                     self.signals_handle().record_pr_merged();
-                    codel_logging::session_ctx::log_event(
-                        codel_logging::events::PrMerged {},
-                    );
                 }
             }
             codel_tools::types::output::ToolOutput::MCP(m)

@@ -347,7 +347,12 @@ impl SessionActor {
         let x_codel_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
         let x_codel_req_id = format!("codel-recap-{}", uuid::Uuid::new_v4());
         let request = self
-            .side_call_request(&setup, items, x_codel_conv_id.clone(), x_codel_req_id.clone())
+            .side_call_request(
+                &setup,
+                items,
+                x_codel_conv_id.clone(),
+                x_codel_req_id.clone(),
+            )
             .await;
         // The artifact records the exact model-facing items after trust projection; the canonical conversation state remains raw
         let chat_history_for_artifact = request.items.clone();
@@ -668,15 +673,7 @@ impl SessionActor {
                 reasoning_is_off,
                 "prompt suggest: effective model not in catalog; skipping request"
             );
-            codel_logging::session_ctx::log_event(PromptSuggestion {
-                action: PsAction::SkippedCatalog,
-                chars: 0,
-                words: 0,
-                model: None,
-                latency_ms: None,
-                request_id: None,
-                session_id: Some(session_id),
-            });
+
             return None;
         };
 
@@ -763,17 +760,7 @@ impl SessionActor {
         };
 
         let started = std::time::Instant::now();
-        let log_fetch = |action, chars, words, latency_ms| {
-            codel_logging::session_ctx::log_event(PromptSuggestion {
-                action,
-                chars,
-                words,
-                model: Some(request_model.clone()),
-                latency_ms,
-                request_id: Some(request_id.clone()),
-                session_id: Some(session_id.clone()),
-            });
-        };
+        let log_fetch = |action, chars, words, latency_ms| {};
 
         let response = match sampling_client.conversation_collect(request).await {
             Ok(r) => r,

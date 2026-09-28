@@ -1,11 +1,11 @@
 //! MCP server integration using the official rmcp SDK.
 
+use codel_logging::region;
+use codel_logging::region::Parent;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
-use codel_logging::region;
-use codel_logging::region::Parent;
 
 use agent_client_protocol as acp;
 use tokio::{
@@ -1717,16 +1717,7 @@ impl codel_tool_runtime::Tool for McpErasedTool {
             reconnect_attempted,
             auth_retry_attempted,
         });
-        codel_logging::session_ctx::log_event(codel_logging::events::McpToolCalled {
-            server_name: server.clone(),
-            tool_name: tool.clone(),
-            qualified_name,
-            success,
-            duration_ms,
-            failure,
-            outcome,
-            mode,
-        });
+
         result
     }
 }
@@ -4431,13 +4422,11 @@ impl McpClient {
                         Some(reg)
                     }
                     Err(reason) => {
-                        event_writer.emit(
-                            codel_session_events::Event::McpToolRegistrationFailed {
-                                server_name: self.server_name.clone(),
-                                tool_name: name,
-                                error: reason.to_string(),
-                            },
-                        );
+                        event_writer.emit(codel_session_events::Event::McpToolRegistrationFailed {
+                            server_name: self.server_name.clone(),
+                            tool_name: name,
+                            error: reason.to_string(),
+                        });
                         None
                     }
                 }
@@ -4795,12 +4784,11 @@ pub async fn start_mcp_server(
             };
 
             let spawn_child_start = std::time::Instant::now();
-            let spawn_child_span =
-                codel_logging::region::Region::from_span(tracing::info_span!(
-                    "mcp.spawn_child",
-                    server_name = %name,
-                    elapsed_ms = tracing::field::Empty,
-                ));
+            let spawn_child_span = codel_logging::region::Region::from_span(tracing::info_span!(
+                "mcp.spawn_child",
+                server_name = %name,
+                elapsed_ms = tracing::field::Empty,
+            ));
             let spawn_result = SafeTokioChildProcess::spawn(
                 cmd,
                 ctx.scope,
@@ -4814,15 +4802,7 @@ pub async fn start_mcp_server(
             spawn_child_span.close();
             let (transport, stderr_handle) = spawn_result.map_err(|e| {
                 tracing::error!("Failed to spawn MCP server '{}': {}", name, e);
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::McpServerFailed {
-                        server_name: name.clone(),
-                        error_type: codel_logging::events::McpErrorType::SpawnFailed,
-                        duration_ms: spawn_start.elapsed().as_millis() as u64,
-                        timeout_sec: startup_timeout,
-                        error_message: Some(e.to_string()),
-                    },
-                );
+
                 McpError::SpawnFailed {
                     server: name.clone(),
                     source: e,

@@ -4,11 +4,11 @@
 
 mod trust;
 
+pub use codel_ratatui_textarea::{ClipboardProvider, InternalClipboard};
 pub use trust::{
     ClipboardDelivery, ClipboardEnvironment, NativeClipboardPreflight, Osc52Capability,
     expected_delivery, native_clipboard_preflight,
 };
-pub use codel_ratatui_textarea::{ClipboardProvider, InternalClipboard};
 
 use std::sync::OnceLock;
 
@@ -605,28 +605,6 @@ fn log_clipboard_copy_event(
     if !codel_logging::client::is_enabled() {
         return;
     }
-    codel_logging::session_ctx::log_event(codel_logging::events::ClipboardCopy {
-        terminal: crate::terminal::terminal_context().telemetry_snapshot(),
-        source: "copy_text",
-        text_len: text.len() as u64,
-        route_native: route.native,
-        route_tmux: route.tmux_buffer,
-        route_osc52: route.osc52,
-        route_label: legs.route_label.clone(),
-        cli_tools_tried: legs.cli_tools_tried.clone(),
-        cli_ok_tools: legs.cli_ok_tools.clone(),
-        cli_ok: legs.cli_ok,
-        arboard_ok: legs.arboard_ok,
-        data_control: legs.data_control,
-        tmux_ok: legs.tmux_ok,
-        osc52_ok: legs.osc52_ok,
-        delivery: feedback.delivery().telemetry_label(),
-        osc52_sink: osc52_sink_active(),
-        container_no_display: is_container_no_display(),
-        reported_success: feedback.delivery().reported_success(),
-        toast_kind,
-        duration_ms: started.elapsed().as_millis() as u64,
-    });
 }
 
 /// Return the parenthetical stats suffix used in clipboard success messages.
@@ -730,12 +708,6 @@ pub fn log_paste_key_empty_host_clipboard(surface: &str) {
     if !codel_logging::client::is_enabled() {
         return;
     }
-    codel_logging::session_ctx::log_event(
-        codel_logging::events::PasteKeyEmptyHostClipboard {
-            terminal,
-            surface: surface.to_owned(),
-        },
-    );
 }
 
 fn lone_http_url_trimmed(t: &str) -> bool {
@@ -991,8 +963,8 @@ fn image_fingerprint(image: &ImageData) -> String {
 fn read_path_telemetry(
     path: codel_shared::clipboard::ClipboardReadPath,
 ) -> codel_logging::events::ClipboardReadPath {
-    use codel_shared::clipboard::ClipboardReadPath as Shared;
     use codel_logging::events::ClipboardReadPath as Path;
+    use codel_shared::clipboard::ClipboardReadPath as Shared;
     match path {
         Shared::Native => Path::Native,
         Shared::Osascript => Path::Osascript,
@@ -1012,16 +984,6 @@ fn log_clipboard_paste_event(
     if !codel_logging::client::is_enabled() {
         return;
     }
-    codel_logging::session_ctx::log_event(codel_logging::events::ClipboardImagePaste {
-        terminal: crate::terminal::terminal_context().telemetry_snapshot(),
-        probe: probe.to_owned(),
-        outcome: outcome.to_owned(),
-        read_path: read_path.map(read_path_telemetry),
-        image_mime: image.map(|img| img.mime_type.clone()).unwrap_or_default(),
-        image_hash: image.map(image_fingerprint).unwrap_or_default(),
-        image_bytes: image.map(|img| img.data.len() as u64).unwrap_or_default(),
-        duration_ms: started.elapsed().as_millis() as u64,
-    });
 }
 
 /// One `clipboard_paste_probe_dropped` event; `image` is the raster read and then discarded, if any.
@@ -1033,14 +995,6 @@ pub fn log_clipboard_probe_dropped(
     if !codel_logging::client::is_enabled() {
         return;
     }
-    codel_logging::session_ctx::log_event(
-        codel_logging::events::ClipboardPasteProbeDropped {
-            terminal: crate::terminal::terminal_context().telemetry_snapshot(),
-            reason,
-            image_hash: image.map(image_fingerprint).unwrap_or_default(),
-            duration_ms: started.elapsed().as_millis() as u64,
-        },
-    );
 }
 
 /// Read file URLs and image from the system clipboard in one macOS `osascript`.
@@ -1371,8 +1325,8 @@ mod tests {
     mod guarded_read {
         use super::super::{ProbeDrop, guarded_pasteboard_read};
         use crate::clipboard::ImageData;
-        use std::cell::Cell;
         use codel_logging::events::ClipboardProbeDropReason as Reason;
+        use std::cell::Cell;
 
         type Read = Result<(Option<ImageData>, Option<String>), Reason>;
         type Outcome = Result<(Option<ImageData>, Option<String>), ProbeDrop>;

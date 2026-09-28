@@ -395,14 +395,7 @@ impl InitPass {
             ) >= 1,
             "McpServerConnected must stamp a self-inclusive count"
         );
-        codel_logging::session_ctx::log_event(
-            codel_logging::events::McpServerConnected {
-                server_name: server.clone(),
-                tool_count,
-                transport: transport_kind,
-                duration_ms: elapsed.as_millis() as u64,
-            },
-        );
+
         self.events
             .emit(codel_session_events::Event::McpServerConnected {
                 server_name: server.clone(),
@@ -463,13 +456,7 @@ impl InitPass {
             _ => codel_logging::events::McpErrorType::HandshakeFailed,
         };
         let transport = self.transport(&server);
-        codel_logging::session_ctx::log_event(codel_logging::events::McpServerFailed {
-            server_name: server.clone(),
-            error_type,
-            duration_ms: elapsed.as_millis() as u64,
-            timeout_sec,
-            error_message: Some(error.to_string()),
-        });
+
         crate::session::telemetry::emit_mcp_connection_span(
             "failed",
             &server,
@@ -507,17 +494,6 @@ impl InitPass {
             })
             .await?;
 
-        codel_logging::session_ctx::log_event(codel_logging::events::McpInitCompleted {
-            total_duration_ms: started.elapsed().as_millis() as u64,
-            spawn_duration_ms: started.duration_since(self.mcp_init_start).as_millis() as u64,
-            server_count: self.server_count,
-            servers_succeeded: self.tally.succeeded,
-            servers_failed: self.tally.failed,
-            servers_auth_required: self.tally.auth_required,
-            total_tools_registered: self.tally.tools_registered,
-            strategy: self.strategy,
-            is_reinit: self.is_reinit,
-        });
         self.events
             .emit(codel_session_events::Event::McpInitCompleted {
                 total_servers: self.server_count,

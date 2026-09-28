@@ -343,12 +343,7 @@ pub(super) fn set_yolo_mode_inner(app: &mut AppView, new: bool) {
         } else {
             "default"
         };
-        codel_logging::session_ctx::log_event(codel_logging::events::YoloToggled {
-            enabled: new,
-            previous_state,
-            trigger: codel_logging::events::YoloTrigger::Pager,
-            from_mode: Some(from_mode.to_owned()),
-        });
+
         tracing::info!(target: "settings", key = "permission_mode", value = new, "setting changed");
     }
 }
@@ -562,10 +557,6 @@ pub(super) fn dispatch_cycle_mode(app: &mut AppView) -> Vec<Effect> {
         && let Some(agent) = app.agents.get_mut(&id)
         && agent.plan_mode_pending.unwrap_or(agent.plan_mode_active)
     {
-        log_event(codel_logging::events::ContextualTip {
-            tip: codel_logging::events::ContextualTipKind::PlanMode,
-            action: codel_logging::events::ContextualTipAction::Accepted,
-        });
         // Retire the now-stale nudge so one impression maps to at most one acceptance
         // A full mode loop back to Plan within the ~3s TTL would otherwise re-emit; the undo and image tips clear on accept the same way
         agent

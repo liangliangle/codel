@@ -24,8 +24,7 @@ impl ChildControl for SenderProbeControl {
 
 impl ChildRunner for SenderProbeRunner {
     type Control = SenderProbeControl;
-    type RootControl =
-        codel_tools::implementations::codel_build::task::root_control::NoRootControl;
+    type RootControl = codel_tools::implementations::codel_build::task::root_control::NoRootControl;
     type CompletionData = ();
     type RunFuture = SendBoxFuture<ChildRunOutput<()>>;
     type ValidateFuture = SendBoxFuture<SubagentValidateTypeOutcome>;
@@ -66,7 +65,10 @@ async fn mint_test_sender(owner: SubagentOwner) -> Option<AgentMessageSender> {
         )
         .run(),
     );
-    let backend = codel_tools::implementations::codel_build::task::backend::ChannelBackend::from_coordinator(coordinator_sender);
+    let backend =
+        codel_tools::implementations::codel_build::task::backend::ChannelBackend::from_coordinator(
+            coordinator_sender,
+        );
     let id = uuid::Uuid::now_v7().to_string();
     let spawn = tokio::spawn(async move {
         backend

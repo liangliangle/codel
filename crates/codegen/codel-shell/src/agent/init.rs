@@ -8,11 +8,11 @@ use crate::agent::remote_config::settings_get::SettingsWait;
 use crate::agent::remote_config::{ModelsManager, ResolvedModels, settings_get};
 use crate::config::StorageMode;
 use crate::managed_config::LaunchProfile;
+use codel_login::{AuthManager, CodelAuth};
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use codel_login::{AuthManager, CodelAuth};
 /// The policy refusal stays typed; stringify only at the process boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
@@ -471,7 +471,6 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
             );
         }
         update_telemetry_config(cfg, auth_manager);
-        codel_logging::session_ctx::log_event(limits.into_event());
     });
 }
 /// Apply current telemetry config + auth identity. Tears down the client
@@ -496,7 +495,6 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
         crate::http::shared_client(),
     );
 }
-
 
 #[cfg(test)]
 #[path = "init_tests.rs"]

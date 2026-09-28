@@ -8,10 +8,7 @@ impl SessionActor {
     ) -> PromptTurnResult {
         // Builtin turns carry no user message, so a send-now may cancel from the start.
         self.mark_front_message_committed().await;
-        codel_logging::session_ctx::log_event(codel_logging::events::SlashCommandUsed {
-            command: action.command_name().to_string(),
-            args_provided: action.args_provided(),
-        });
+
         match action {
             BuiltinAction::Compact { user_context } => {
                 self.run_compact(user_context).await?;
@@ -32,14 +29,7 @@ impl SessionActor {
                     } else {
                         "default"
                     };
-                    codel_logging::session_ctx::log_event(
-                        codel_logging::events::YoloToggled {
-                            enabled: actual,
-                            previous_state: was,
-                            trigger: codel_logging::events::YoloTrigger::SlashCommand,
-                            from_mode: Some(from_mode.to_owned()),
-                        },
-                    );
+
                     codel_logging::event_span!(
                         "session.permission_mode_changed",
                         from_mode = crate::session::telemetry::permission_mode_label(was),
@@ -75,17 +65,9 @@ impl SessionActor {
             BuiltinAction::HooksTrust => {
                 let msg = match Self::do_hooks_trust_project(&self.session_info.cwd) {
                     Ok(root) => {
-                        codel_logging::session_ctx::log_event(
-                            codel_logging::events::HookTrusted { success: true },
-                        );
                         format!("Trusted: {}.", root.display())
                     }
-                    Err(e) => {
-                        codel_logging::session_ctx::log_event(
-                            codel_logging::events::HookTrusted { success: false },
-                        );
-                        e
-                    }
+                    Err(e) => e,
                 };
                 self.send_host_turn_slash_command_output(&msg).await;
                 ok_end_turn(0, None)
@@ -138,9 +120,6 @@ impl SessionActor {
                     // paths are under ~/.codel/ to prevent hook path injection.
                     match crate::config::add_hooks_path(&path) {
                         Ok(()) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::HookAdded { success: true },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Added hook path: {path}\n\
                                  Restart session to load hooks from this path."
@@ -148,9 +127,6 @@ impl SessionActor {
                             .await;
                         }
                         Err(e) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::HookAdded { success: false },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to add hook path: {e}"
                             ))
@@ -169,18 +145,12 @@ impl SessionActor {
                 } else {
                     match crate::config::remove_hooks_path(&path) {
                         Ok(true) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::HookRemoved { success: true },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Removed hook path: {path}\nRestart session to stop loading hooks from this path."
                             ))
                             .await;
                         }
                         Ok(false) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::HookRemoved { success: false },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "{path} is not a user-registered hook directory; \
                                  config-defined hook sources cannot be removed from here."
@@ -188,9 +158,6 @@ impl SessionActor {
                             .await;
                         }
                         Err(e) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::HookRemoved { success: false },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to remove hook path: {e}"
                             ))
@@ -281,15 +248,10 @@ impl SessionActor {
                     Some(handle) => {
                         // An explicit user reload forces a full re-copy of locally installed plugins
                         let msg = self.reload_plugins_impl(handle, true).await;
-                        codel_logging::session_ctx::log_event(
-                            codel_logging::events::PluginReloaded { success: true },
-                        );
+
                         self.send_host_turn_slash_command_output(&msg).await;
                     }
                     None => {
-                        codel_logging::session_ctx::log_event(
-                            codel_logging::events::PluginReloaded { success: false },
-                        );
                         self.send_host_turn_slash_command_output(
                             "No plugin registry handle available. Start a new session to discover plugins.",
                         )
@@ -388,12 +350,6 @@ impl SessionActor {
                     let path_str = resolved.to_string_lossy().to_string();
                     match crate::config::run_add_plugin_path(path_str.clone()).await {
                         Ok(()) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::PluginAdded {
-                                    source: codel_logging::events::PluginSource::LocalPath,
-                                    success: true,
-                                },
-                            );
                             let msg = format!("Added plugin path: {path_str}");
                             self.send_host_turn_slash_command_output(&msg).await;
                             if let Some(ref handle) = self.plugin_registry_handle {
@@ -402,12 +358,6 @@ impl SessionActor {
                             }
                         }
                         Err(e) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::PluginAdded {
-                                    source: codel_logging::events::PluginSource::LocalPath,
-                                    success: false,
-                                },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to add plugin path: {e}"
                             ))
@@ -436,9 +386,6 @@ impl SessionActor {
                     let path_str = resolved.to_string_lossy().to_string();
                     match crate::config::run_remove_plugin_path(path_str.clone()).await {
                         Ok(()) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::PluginRemoved { success: true },
-                            );
                             let msg = format!("Removed plugin path: {path_str}");
                             self.send_host_turn_slash_command_output(&msg).await;
                             if let Some(ref handle) = self.plugin_registry_handle {
@@ -447,9 +394,6 @@ impl SessionActor {
                             }
                         }
                         Err(e) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::PluginRemoved { success: false },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to remove plugin path: {e}"
                             ))
@@ -475,13 +419,10 @@ impl SessionActor {
 
                     if !trust {
                         let install_source =
-                            codel_agent::plugins::git_install::parse_install_source(
-                                &source, cwd,
-                            );
+                            codel_agent::plugins::git_install::parse_install_source(&source, cwd);
                         let source_desc = match &install_source {
                             codel_agent::plugins::git_install::InstallSource::Git {
-                                url,
-                                ..
+                                url, ..
                             } => {
                                 format!("remote git repo: {url}")
                             }
@@ -532,14 +473,7 @@ impl SessionActor {
                                 } else {
                                     codel_logging::events::InstallKind::Git
                                 };
-                                codel_logging::session_ctx::log_event(
-                                    codel_logging::events::PluginInstalled {
-                                        install_kind: kind,
-                                        success: true,
-                                        trust: true,
-                                        error_category: None,
-                                    },
-                                );
+
                                 codel_logging::event_span!(
                                     "plugin.installed",
                                     success = true,
@@ -568,14 +502,7 @@ impl SessionActor {
                                     install_kind = kind.as_ref(),
                                     error_category = %error_category,
                                 );
-                                codel_logging::session_ctx::log_event(
-                                    codel_logging::events::PluginInstalled {
-                                        install_kind: kind,
-                                        success: false,
-                                        trust: true,
-                                        error_category: Some(error_category),
-                                    },
-                                );
+
                                 self.send_host_turn_slash_command_output(&format!(
                                     "Failed to install plugin: {e}"
                                 ))
@@ -614,12 +541,6 @@ impl SessionActor {
                     };
                     match uninstalled {
                         Ok(outcome) => {
-                            codel_logging::session_ctx::log_event(
-                                codel_logging::events::PluginUninstalled {
-                                    confirmed: true,
-                                    success: true,
-                                },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Uninstalled repo \"{}\" ({} plugin(s): {})",
                                 outcome.repo_key,
@@ -910,8 +831,10 @@ impl SessionActor {
                 self.goal_turn_task_ids.lock().clear();
                 self.subagent_token_records.lock().clear();
                 self.clear_pending_classifier_completions();
-                self.send_codel_notification(crate::session::goal_orchestrator::build_goal_cleared())
-                    .await;
+                self.send_codel_notification(
+                    crate::session::goal_orchestrator::build_goal_cleared(),
+                )
+                .await;
                 self.send_host_turn_slash_command_output("Goal cleared.")
                     .await;
                 ok_end_turn(0, None)

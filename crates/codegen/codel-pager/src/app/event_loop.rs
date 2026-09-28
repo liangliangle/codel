@@ -18,11 +18,11 @@ use crate::theme::system_appearance::{self, SystemAppearanceWatcher};
 use crate::theme::{Theme, ThemeKind, cache as theme_cache};
 use agent_client_protocol as acp;
 use anyhow::Context as _;
+use codel_acp_lib::{AcpClientMessage, acp_send};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep_until};
-use codel_acp_lib::{AcpClientMessage, acp_send};
 /// During a continuous terminal drag, dozens of resize events fire per second, and each would rebuild the layout of every entry.
 /// One deferred draw runs after the size stabilizes instead.
 /// Whether authenticated interactive startup should create the unused home session.
@@ -333,15 +333,12 @@ fn reconnect_restore_outcome(
 /// Compute the folder-trust verdict for the session cwd and seed [`AppView::trust_state`].
 /// Pager-side mirror of the agent's resolve.
 /// Reads the local store, scans for repo-local code-exec config, and runs the pure [`decide`](codel_workspace::folder_trust::decide) precedence.
-fn seed_trust_state(
-    app: &mut AppView,
-    remote: Option<&codel_shell::util::config::RemoteSettings>,
-) {
-    use std::io::IsTerminal;
+fn seed_trust_state(app: &mut AppView, remote: Option<&codel_shell::util::config::RemoteSettings>) {
     use codel_workspace::folder_trust::{
         TrustOutcome, decide, decide_inputs_with_interactive, feature_enabled,
     };
     use codel_workspace::trust::workspace_key;
+    use std::io::IsTerminal;
     let feature = feature_enabled(remote);
     if !feature {
         app.trust_state = TrustState::Done;
@@ -1189,13 +1186,11 @@ pub(crate) async fn run(
                 .as_ref()
                 .and_then(|s| s.privacy_banner_reshow_days)
         });
-    app.privacy_banner_acked = codel_shell::config::load_from_disk()
-        .ok()
-        .and_then(|root| {
-            codel_shell::util::config::load_config_from_toml(&root)
-                .privacy
-                .privacy_banner_acked
-        });
+    app.privacy_banner_acked = codel_shell::config::load_from_disk().ok().and_then(|root| {
+        codel_shell::util::config::load_config_from_toml(&root)
+            .privacy
+            .privacy_banner_acked
+    });
     app.plugin_cta_enabled = codel_config::env_bool("CODEL_PLUGIN_CTA")
         .or_else(|| remote_settings.as_ref().and_then(|s| s.plugin_cta))
         .unwrap_or(false);
@@ -2054,11 +2049,7 @@ pub(crate) async fn run(
                         "payloads_written": writer_progress_sync.written(),
                     })),
                 );
-                codel_logging::session_ctx::log_event(
-                    codel_logging::events::TermWriterBlocked {
-                        blocked_ms: blocked_for.as_millis() as u64,
-                    },
-                );
+
             }
 
             // Biased order: cancellation/quit, writer acks/failures, blocked-writer report, ACP, task/progress results, updates, input, and render/poll timers
@@ -2910,11 +2901,7 @@ fn sync_appearance_watcher(watcher: &mut Option<SystemAppearanceWatcher>) {
         *watcher = SystemAppearanceWatcher::start_if_auto(should_auto);
     }
 }
-fn emit_event_loop_stall(window: super::event_loop_stall::StallWindow) {
-    codel_logging::session_ctx::log_event(super::event_loop_stall::event_loop_stall_event(
-        window,
-    ));
-}
+fn emit_event_loop_stall(window: super::event_loop_stall::StallWindow) {}
 fn flush_pending_stall(stall_rollup: &mut super::event_loop_stall::StallRollup) {
     if let Some(window) = stall_rollup.take() {
         emit_event_loop_stall(window);
