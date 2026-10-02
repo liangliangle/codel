@@ -348,23 +348,31 @@ pub fn init_tracing() -> TracingHandle {
 }
 /// Curated per-crate directives for the TUI subscriber.
 /// `acp_update` is the always-on compact summary; `acp_update_payload` is the full JSON dump (dev only).
-/// `codel_gateway` carries the bridge diagnostics that moved out of `codel_shell`.
+/// Crates that took code out of `codel_shell` are listed so their events stay visible.
 /// Built from the target constants so a rename can't silently turn a directive into a no-op token.
 fn default_directives() -> String {
     use codel_logging::debug_log::RMCP_SSE_NOISE_TARGET;
     let payload_level = "off";
     format!(
-        "codel_shell=info,codel_gateway=info,codel_login=info,codel_pager=trace,codel_tools=info,codel_session_search=info,codel_acp_lib=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"
+        "codel_shell=info,codel_gateway=info,codel_config=info,codel_cloud_config=info,codel_agent_config=info,codel_external_agent_migration=info,codel_login=info,codel_pager=trace,codel_tools=info,codel_session_search=info,codel_acp_lib=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"
     )
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::style::Modifier;
-    /// Bridge diagnostics moved to `codel_gateway`; the curated TUI filter must allowlist it.
     #[test]
-    fn default_directives_allowlist_gateway_target() {
-        assert!(default_directives().contains("codel_gateway=info"));
+    fn default_directives_allowlist_crates_split_from_the_shell() {
+        let directives = default_directives();
+        for target in [
+            "codel_gateway",
+            "codel_config",
+            "codel_cloud_config",
+            "codel_agent_config",
+            "codel_external_agent_migration",
+        ] {
+            assert!(directives.contains(&format!("{target}=info")), "{target}");
+        }
     }
     /// Records whether `Serialize` ever ran.
     struct SerializeProbe(std::sync::Arc<std::sync::atomic::AtomicBool>);

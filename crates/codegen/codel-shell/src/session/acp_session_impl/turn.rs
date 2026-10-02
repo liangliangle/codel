@@ -515,6 +515,7 @@ impl SessionActor {
         let handle_prompt_start = std::time::Instant::now();
         self.chat_state_handle
             .record_turn_start(chrono::Utc::now().timestamp_millis());
+        self.apply_supported_context_window_selection().await;
         *self.active_skill.lock() = None;
         codel_logging::unified_log::info(
             "shell.handle_prompt.start",
@@ -2024,6 +2025,7 @@ impl SessionActor {
             return None;
         }
         if is_v2 {
+            let compact_index = self.memory.v2_config.compact_index_enabled;
             let conversation = self.chat_state_handle.get_conversation().await;
             if crate::session::helpers::memory_context::conversation_has_memory_context(
                 &conversation,
@@ -2053,6 +2055,7 @@ impl SessionActor {
                         injected_bytes,
                         estimated_tokens,
                         was_reused: true,
+                        compact_index,
                         ..Default::default()
                     },
                 );
@@ -2061,7 +2064,10 @@ impl SessionActor {
             let inject_start = std::time::Instant::now();
             let storage = self.memory.storage()?;
             let context = tokio::task::spawn_blocking(move || {
-                crate::session::helpers::memory_context::format_v2_memory_context(&storage)
+                crate::session::helpers::memory_context::format_v2_memory_context(
+                    &storage,
+                    compact_index,
+                )
             })
             .await
             .map_err(|error| error.to_string())
@@ -2083,6 +2089,7 @@ impl SessionActor {
                             ),
                             global_entry_count: context.global_entry_count,
                             workspace_entry_count: context.workspace_entry_count,
+                            compact_index,
                             duration_ms: inject_start.elapsed().as_millis() as u64,
                             ..Default::default()
                         },
@@ -2101,7 +2108,10 @@ impl SessionActor {
                     crate::session::memory_observation::log_memory_injection(
                         self.session_info.id.to_string(),
                         codel_logging::memory_telemetry::MemoryInjectionOutcome::Error,
-                        Default::default(),
+                        crate::session::memory_observation::MemoryInjectionMetrics {
+                            compact_index,
+                            ..Default::default()
+                        },
                     );
                     None
                 }
@@ -2836,9 +2846,10 @@ impl SessionActor {
             request.x_codel_transient_retry =
                 (transient_retry_attempts > 0).then(|| transient_retry_attempts.to_string());
             if request.x_codel_deployment_id.is_none() {
-                request.x_codel_deployment_id = crate::managed_config::resolve_deployment_id(
-                    crate::managed_config::resolve_deployment_key().as_deref(),
-                );
+                request.x_codel_deployment_id =
+                    codel_cloud_config::managed_config::resolve_deployment_id(
+                        codel_cloud_config::managed_config::resolve_deployment_key().as_deref(),
+                    );
             }
             if structured_output_native {
                 request.json_schema = json_schema.clone();

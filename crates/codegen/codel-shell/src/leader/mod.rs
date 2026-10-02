@@ -1621,8 +1621,8 @@ fn open_leader_log(log_path: &Path) -> std::io::Result<std::fs::File> {
         .open(log_path)
 }
 /// Fallback leader RUST_LOG when neither CODEL_LEADER_LOG nor RUST_LOG is set.
-/// `codel_gateway` carries the bridge diagnostics that moved out of `codel_shell`.
-const LEADER_DEFAULT_LOG_DIRECTIVES: &str = "codel_shell=info,codel_gateway=info,codel_login=info,codel_acp_lib=warn,codel_mcp=warn";
+/// Crates that took code out of `codel_shell` are listed so their events keep reaching the leader log.
+const LEADER_DEFAULT_LOG_DIRECTIVES: &str = "codel_shell=info,codel_gateway=info,codel_config=info,codel_cloud_config=info,codel_agent_config=info,codel_external_agent_migration=info,codel_login=info,codel_acp_lib=warn,codel_mcp=warn";
 fn spawn_leader_subprocess(env_urls: &LeaderEnvUrls) -> Result<u32, ConnectionError> {
     let exe = resolve_exe_for_spawn()?;
     let mut cmd = Command::new(exe);
@@ -1725,10 +1725,20 @@ pub(crate) async fn wait_for_socket_connectable(
 mod tests {
     use super::*;
     use std::fs;
-    /// Bridge diagnostics moved to `codel_gateway`; the leader fallback filter must allowlist it.
     #[test]
-    fn leader_default_log_directives_allowlist_gateway_target() {
-        assert!(LEADER_DEFAULT_LOG_DIRECTIVES.contains("codel_gateway=info"));
+    fn leader_default_log_directives_allowlist_crates_split_from_the_shell() {
+        for target in [
+            "codel_gateway",
+            "codel_config",
+            "codel_cloud_config",
+            "codel_agent_config",
+            "codel_external_agent_migration",
+        ] {
+            assert!(
+                LEADER_DEFAULT_LOG_DIRECTIVES.contains(&format!("{target}=info")),
+                "{target}"
+            );
+        }
     }
     use crate::leader::test_support::{
         FakeLeaderBehavior, FakeVersions, fake_caps, spawn_fake_leader,

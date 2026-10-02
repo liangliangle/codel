@@ -39,6 +39,7 @@ pub use api_key_probe::{
     DEFAULT_PROBE_TIMEOUT, first_party_env_key_allows_advertise, should_probe_first_party_env_key,
 };
 pub use config::CodelComConfig;
+pub use config::expand_auth_alias;
 pub use flow::{
     ensure_authenticated, ensure_authenticated_or_noninteractive, mint_session_noninteractive,
     try_ensure_fresh_auth, try_noninteractive_auth_no_mint,

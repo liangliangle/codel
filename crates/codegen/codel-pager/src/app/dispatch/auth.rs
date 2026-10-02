@@ -4,7 +4,7 @@
 //! Upstream also handled login, logout, account switching and auth-code submission here;
 //! the fork authenticates with a configured API key, so none of those exist.
 
-use super::ctx::{restore_auth_return_view, show_welcome};
+use super::ctx::{refuse_withheld, restore_auth_return_view, show_welcome};
 use super::queue::{maybe_drain_queue, note_peek_page_flip};
 use super::router::dispatch;
 use super::session::lifecycle::{clear_startup_actions, drain_startup_actions};
@@ -14,6 +14,7 @@ use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, AuthState};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
+use codel_config::Capability;
 
 /// Scan the trailing run of session-event / system blocks for a [`SessionEvent::ReAuthRequired`] prompt.
 /// Used by the `PromptResponse` handler to suppress the redundant "Turn failed" block after a 401.

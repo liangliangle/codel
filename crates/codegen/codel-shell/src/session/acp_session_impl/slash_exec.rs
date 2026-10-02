@@ -10,8 +10,8 @@ impl SessionActor {
         self.mark_front_message_committed().await;
 
         match action {
-            BuiltinAction::Compact { user_context } => {
-                self.run_compact(user_context).await?;
+            BuiltinAction::Compact => {
+                self.run_compact().await?;
                 ok_end_turn(0, None)
             }
             BuiltinAction::SetYolo { enabled } => {

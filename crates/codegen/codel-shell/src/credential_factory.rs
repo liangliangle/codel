@@ -33,7 +33,7 @@ pub fn build_storage_client_for_proxy(
                 am.clone(),
                 deployment_key,
                 alpha_test_key,
-                std::sync::Arc::new(crate::managed_config::resolve_deployment_id),
+                std::sync::Arc::new(codel_cloud_config::managed_config::resolve_deployment_id),
             ));
         let bridge: Arc<dyn codel_file_utils::storage_client::Auth401AttributionCallback> =
             Arc::new(StorageClientAttributionBridge::new(am, session_id));

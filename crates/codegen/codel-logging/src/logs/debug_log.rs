@@ -57,7 +57,7 @@ pub const RMCP_SSE_NOISE_TARGET: &str = "rmcp::transport::common::client_side_ss
 // Broad firehose filter for the routing and CODEL_DEBUG_LOG sources
 // Capture our crates at debug regardless of a narrowing RUST_LOG, with deps at info so they don't flood
 // Curated first-party allowlist: new codel crates default to `info` until added here
-const FIREHOSE_BASE_DIRECTIVES: &str = "info,codel_pager=debug,codel_shell=debug,codel_gateway=debug,codel_login=debug,codel_tools=debug,codel_logging=debug,codel_agent=debug,codel_mcp=debug,codel_session_search=debug,codel_acp_lib=debug,sampling_log=off";
+const FIREHOSE_BASE_DIRECTIVES: &str = "info,codel_pager=debug,codel_shell=debug,codel_gateway=debug,codel_config=debug,codel_cloud_config=debug,codel_agent_config=debug,codel_external_agent_migration=debug,codel_login=debug,codel_tools=debug,codel_logging=debug,codel_agent=debug,codel_mcp=debug,codel_session_search=debug,codel_acp_lib=debug,sampling_log=off";
 
 // Full firehose directives: the curated crate list plus the pager's ACP update target (built from the constant above, not a literal)
 fn firehose_directives() -> String {
@@ -491,6 +491,21 @@ mod tests {
     #[test]
     fn firehose_directives_allowlist_gateway_target() {
         assert!(firehose_directives().contains("codel_gateway=debug"));
+    }
+
+    /// Crates split out of `codel_shell` log at debug on the firehose, same as the shell.
+    #[test]
+    fn firehose_directives_allowlist_crates_split_from_the_shell() {
+        let directives = firehose_directives();
+        for target in [
+            "codel_gateway",
+            "codel_config",
+            "codel_cloud_config",
+            "codel_agent_config",
+            "codel_external_agent_migration",
+        ] {
+            assert!(directives.contains(&format!("{target}=debug")), "{target}");
+        }
     }
 
     #[test]

@@ -2,6 +2,41 @@ use super::*;
 use serial_test::serial;
 use codel_test_support::EnvGuard;
 #[test]
+fn coding_data_opt_out_does_not_block_uploads_to_own_bucket() {
+    let normal = codel_login::CodelAuth::test_default();
+    let opted_out = codel_login::CodelAuth {
+        coding_data_retention_opt_out: true,
+        ..codel_login::CodelAuth::test_default()
+    };
+    let zdr = codel_login::CodelAuth {
+        team_blocked_reasons: vec!["BLOCKED_REASON_NO_LOGS".into()],
+        ..codel_login::CodelAuth::test_default()
+    };
+    let cases = [
+        (None, &normal, false),
+        (None, &opted_out, true),
+        (None, &zdr, true),
+        (Some("s3://acme-traces"), &normal, false),
+        (Some("s3://acme-traces"), &opted_out, false),
+        (Some("gs://acme-traces"), &opted_out, false),
+        (Some("s3://acme-traces"), &zdr, true),
+        (Some("ftp://acme-traces"), &opted_out, true),
+    ];
+    for (bucket, auth, expected) in cases {
+        let endpoints = EndpointsConfig {
+            trace_upload_bucket: bucket.map(str::to_owned),
+            ..EndpointsConfig::default()
+        };
+        assert_eq!(
+            expected,
+            endpoints.is_trace_upload_blocked_for(auth),
+            "bucket={bucket:?} opt_out={} zdr={}",
+            auth.coding_data_retention_opt_out,
+            auth.is_zdr_team()
+        );
+    }
+}
+#[test]
 fn main_cli_tools_override_preserves_profile_injection_policy() {
     let overrides = CliAgentOverrides {
         tools: Some(vec!["read_file".into()]),
@@ -2713,6 +2748,30 @@ fn resolve_trace_upload_explicit_config_wins_over_telemetry_off() {
 }
 #[test]
 #[serial]
+fn trace_upload_stays_off_under_a_requirements_pin_when_the_distribution_withholds_telemetry() {
+    unsafe { std::env::remove_var("CODEL_TELEMETRY_ENABLED") };
+    unsafe { std::env::remove_var("CODEL_TELEMETRY_TRACE_UPLOAD") };
+    let mut cfg = Config::default();
+    cfg.telemetry.trace_upload = Some(true);
+    cfg.requirements
+        .trace_upload
+        .pin(true, crate::config::RequirementSource::Unknown);
+    cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+        trace_upload_enabled: Some(true),
+        ..Default::default()
+    });
+    let withheld = cfg.resolve_trace_upload_as(codel_config::Distribution::withholding(&[
+        codel_config::Capability::Telemetry,
+    ]));
+    assert!(!withheld.value);
+    assert_eq!(withheld.source, ConfigSource::Default);
+    assert!(
+        cfg.resolve_trace_upload_as(codel_config::Distribution::STOCK)
+            .value
+    );
+}
+#[test]
+#[serial]
 fn trace_upload_decision_debug_reports_winning_source() {
     unsafe { std::env::remove_var("CODEL_TELEMETRY_ENABLED") };
     unsafe { std::env::remove_var("CODEL_TELEMETRY_TRACE_UPLOAD") };
@@ -4001,6 +4060,8 @@ fn config_accepts_all_known_sections() {
             respect_gitignore = false
             [desktop]
             some_key = "value"
+            [file_acceleration]
+            routes = "fuse=on"
         "#,
     );
     assert!(
@@ -4165,7 +4226,7 @@ fn clear_managed_mcp_env_vars() {
     }
 }
 fn isolate_compat_env() -> Vec<EnvGuard> {
-    COMPAT_CELLS
+    codel_tools::types::compat::COMPAT_CELLS
         .into_iter()
         .map(|cell| EnvGuard::unset(cell.env_var()))
         .collect()
@@ -5328,4 +5389,58 @@ async fn process_key_from_model_env_key() {
             .as_deref(),
         Some(TOKEN)
     );
+}
+#[test]
+fn external_auth_with_a_models_endpoint_ignores_model_tables_and_allowed_models() {
+    let parse = |auth: &str| {
+        let raw: toml::Value = toml::from_str(&format!(
+            r#"
+            {auth}
+            [models]
+            default = "corp-build"
+            allowed_models = ["corp-build"]
+
+            [endpoints]
+            models_base_url = "https://proxy.example.com/v1"
+
+            [model.corp-build]
+            model = "corp-build"
+            base_url = "https://proxy.example.com/v1/"
+            context_window = 500000
+            "#
+        ))
+        .expect("parse test toml");
+        Config::new_from_toml_cfg(&raw).expect("config should parse")
+    };
+    let external = parse("[auth]\nauth_provider_command = \"/usr/local/bin/provider\"");
+    let standard = parse("");
+    assert!(external.config_models.is_empty());
+    assert_eq!(None, external.models.allowed_models);
+    assert!(!resolve_model_list(&external, None).contains_key("corp-build"));
+    assert!(standard.config_models.contains_key("corp-build"));
+    assert_eq!(
+        Some(vec!["corp-build".to_owned()]),
+        standard.models.allowed_models
+    );
+}
+fn test_model_entry(
+    model: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+    env_key: Option<&str>,
+    api_base_url: Option<&str>,
+) -> ModelEntry {
+    ModelEntry {
+        info: ModelInfo {
+            model: model.to_string(),
+            base_url: base_url.to_string(),
+            context_window: NonZeroU64::new(200_000).unwrap(),
+            ..Default::default()
+        },
+        mtls_cert_dir: None,
+        api_key: api_key.map(|s| s.to_string()),
+        env_key: env_key.map(EnvKeys::single),
+        auth_provider: None,
+        api_base_url: api_base_url.map(|s| s.to_string()),
+    }
 }

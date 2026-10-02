@@ -52,8 +52,7 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `auth` | `table` | `yes` | `user` | Alias of `[codel_com_config]`; every `codel_com_config.*` key also works as `auth.*`. |
-| `auth.auth_token_ttl` | `number` | `yes` | `user` | Token TTL in seconds for providers that return a bare token. Also CODEL_AUTH_TOKEN_TTL; also valid as `codel_com_config.auth_token_ttl`. |
-| `auth.disable_api_key_auth` | `boolean` | `pin` | `user` | Refuse API-key auth so only the deployment IdP can log in. Also CODEL_DISABLE_API_KEY_AUTH; also valid as `codel_com_config.disable_api_key_auth`. |
+| `auth.disable_api_key_auth` | `boolean` | `pin` | `user` | Refuse API-key auth. Also CODEL_DISABLE_API_KEY_AUTH; also valid as `codel_com_config.disable_api_key_auth`. |
 | `auth.codel_ws_origin` | `string` | `yes` | `user` | Websocket origin for codel.dev. Also CODEL_WS_ORIGIN; also valid as `codel_com_config.codel_ws_origin`. |
 | `auth.codel_ws_url` | `string` | `yes` | `user` | Relay websocket URL. Also CODEL_WS_URL; also valid as `codel_com_config.codel_ws_url`. |
 | `auth.token_header` | `string` | `yes` | `user` | Header name that carries the CLI auth token; default `codel-cli`; also valid as `codel_com_config.token_header`. |
@@ -160,8 +159,8 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `endpoints.deployment_key` | `string` | `pin` | `user` | Management key for enterprise deployments. Also CODEL_DEPLOYMENT_KEY. |
 | `endpoints.feedback_base_url` | `string` | `yes` | `user` | Where feedback submissions go. Also CODEL_FEEDBACK_BASE_URL. |
 | `endpoints.managed_config_url` | `string` | `yes` | `user` | Override managed config endpoint. Also CODEL_MANAGED_CONFIG_URL. |
-| `endpoints.models_base_url` | `string` | `pin` | `user` | Custom inference base URL. Also CODEL_MODELS_BASE_URL. |
-| `endpoints.models_list_url` | `string` | `pin` | `user` | Override model-list URL. Also CODEL_MODELS_LIST_URL. Alias `models_endpoint`. |
+| `endpoints.models_base_url` | `string` | `pin` | `user` | Custom inference base URL. `{models_base_url}/models` decides which models are offered. Also CODEL_MODELS_BASE_URL. |
+| `endpoints.models_list_url` | `string` | `pin` | `user` | Override model-list URL. This list decides which models are offered. Also CODEL_MODELS_LIST_URL. Alias `models_endpoint`. |
 | `endpoints.trace_upload_bucket` | `string` | `yes` | `user` | Direct gs:// or s3:// bucket for traces; bypasses the proxy. Also CODEL_TRACE_UPLOAD_BUCKET. |
 | `endpoints.trace_upload_credentials` | `string` | `yes` | `user` | Inline GCS service-account JSON or AWS credentials for that bucket; wins over `trace_upload_credentials_file` and has no environment variable. |
 | `endpoints.trace_upload_credentials_file` | `string (path)` | `yes` | `user` | Path to a GCS service-account JSON or AWS credentials file for that bucket. Also CODEL_TRACE_UPLOAD_CREDENTIALS_FILE. |
@@ -188,6 +187,7 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `features.dock` | `boolean` | `pin` | `user` | Enable or disable `dock`. Default false. Also `CODEL_DOCK`. |
 | `features.feedback` | `boolean` | `pin` | `user` | Enable or disable `feedback`. Default true. Also `CODEL_FEEDBACK_ENABLED`. |
 | `features.feedback_trace_card` | `boolean` | `pin` | `user` | Show a trace-upload consent question after `/feedback`. Default false. Also `CODEL_FEEDBACK_TRACE_CARD`. |
+| `features.file_acceleration` | `boolean` | `pin` | `user` | Hand local sessions' file systems to a file accelerator when the build installs one. Default false. Also `CODEL_FILE_ACCELERATION`. |
 | `features.image_edit_model_override` | `string` | `yes` | `user` | Imagine model id for image_edit. |
 | `features.image_gen` | `boolean` | `pin` | `user` | Enable image_gen / `/imagine`. |
 | `features.image_gen_model_override` | `string` | `yes` | `user` | Imagine model id for image_gen. Empty defers to the remotely configured default. |
@@ -205,7 +205,6 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `features.subagent_model_inheritance` | `boolean` | `pin` | `user` | Hide the subagent `model` argument when every model you can pick is an Codel model, so subagents inherit the parent's model. Default false. Also `CODEL_SUBAGENT_MODEL_INHERITANCE`. Read when a session starts; changing it requires a restart. |
 | `features.subagent_worktree_snapshot` | `boolean` | `pin` | `user` | Enable or disable `subagent_worktree_snapshot`. Default false. Also `CODEL_SUBAGENT_WORKTREE_SNAPSHOT`. |
 | `features.support_permission` | `boolean` | `yes` | `user` | Allow the agent to ask permission for tool executions. |
-| `features.telemetry` | `boolean / session_metrics / off` | `pin` | `user` | 已废弃：本分支不发送产品遥测，任何取值都不产生上报。 |
 | `features.terminal_theme` | `boolean` | `pin` | `user` | Reveal the terminal-native `terminal` color theme during its rollout. Default false. Also `CODEL_TERMINAL_THEME`. |
 | `features.title_refresh` | `boolean` | `pin` | `user` | Early-session auto-title refresh. Pin this in requirements to beat CODEL_TITLE_REFRESH. |
 | `features.turn_summary` | `boolean` | `pin` | `user` | Enable or disable `turn_summary`. Default true. Also `CODEL_TURN_SUMMARY`. |
@@ -224,6 +223,12 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `feedback.user.email` | `string[]` | `yes` | `user` | Sources for the feedback author email (`git_email` or a literal). |
 | `feedback.user.name` | `string[]` | `yes` | `user` | Sources for the feedback author name (`os_user` or a literal). |
 
+### `file_acceleration`
+
+| Key | Type / Values | Requirements | Managed | Details |
+| --- | --- | --- | --- | --- |
+| `file_acceleration.routes` | `string` | `yes` | `user` | Route override passed unparsed to the installed file accelerator; empty is unset. Also `CODEL_FILE_ACCELERATION_ROUTES`. |
+
 ### `goal`
 
 | Key | Type / Values | Requirements | Managed | Details |
@@ -234,8 +239,8 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `codel_com_config` | `table` | `yes` | `user` | Codel.com websocket and OAuth/OIDC settings. `[auth]` is an alias. |
-| `codel_com_config.disable_api_key_auth` | `boolean` | `pin` | `user` | Refuse API-key auth so only the deployment IdP can log in. Also CODEL_DISABLE_API_KEY_AUTH. |
+| `codel_com_config` | `table` | `yes` | `user` | Codel.dev websocket settings. `[auth]` is an alias. |
+| `codel_com_config.disable_api_key_auth` | `boolean` | `pin` | `user` | Refuse API-key auth. Also CODEL_DISABLE_API_KEY_AUTH. |
 | `codel_com_config.codel_ws_origin` | `string` | `yes` | `user` | Websocket origin for codel.dev. Also CODEL_WS_ORIGIN. |
 | `codel_com_config.codel_ws_url` | `string` | `yes` | `user` | Relay websocket URL. Also CODEL_WS_URL. |
 | `codel_com_config.token_header` | `string` | `yes` | `user` | Header name that carries the CLI auth token; default `codel-cli`. |
@@ -297,6 +302,7 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | --- | --- | --- | --- | --- |
 | `mcp_servers.<name>.args` | `string[]` | `yes` | `user` | `[mcp_servers.<name>]` `args` on a stdio or HTTP MCP server. |
 | `mcp_servers.<name>.bearer_token_env_var` | `string` | `yes` | `user` | `[mcp_servers.<name>]` `bearer_token_env_var` on a stdio or HTTP MCP server. |
+| `mcp_servers.<name>.bearer_token_file` | `string` | `yes` | `user` | `[mcp_servers.<name>]` `bearer_token_file` on an HTTP MCP server: absolute or `~/` path to a bearer token, re-read on every request. |
 | `mcp_servers.<name>.command` | `string` | `yes` | `user` | `[mcp_servers.<name>]` `command` on a stdio or HTTP MCP server. |
 | `mcp_servers.<name>.cwd` | `string` | `yes` | `user` | `[mcp_servers.<name>]` `cwd` on a stdio or HTTP MCP server. |
 | `mcp_servers.<name>.enabled` | `boolean` | `yes` | `user` | `[mcp_servers.<name>]` `enabled` on a stdio or HTTP MCP server. |
@@ -321,10 +327,15 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `memory.enabled` | `boolean` | `pin` | `user` | Legacy memory switch. Also `CODEL_MEMORY`; superseded when the v2 gate is enabled. |
 | `memory_v2.enabled` | `boolean` | `pin` | `user` | Primary memory-v2 switch. When true, v2 takes precedence over legacy `memory.enabled`. When false or absent, legacy enablement is resolved normally. Default: `false`. |
 | `memory_v2.rollout` | `"off"`, `"record_only"`, `"shadow"`, `"active"` | — | `user` | Advanced staged-rollout control for new v2 sessions. Default: `"active"` after enabling v2. Most users should leave this unset. |
-| `memory_v2.capture_status_enabled` | `boolean` | — | `user` | Shows memory-v2 capture lifecycle messages in the UI for debugging. Successful captures are expandable and include generated content plus links to committed observation files. Telemetry and debug logs are always recorded. Default: `false`. |
+| `memory_v2.capture_status_enabled` | `boolean` | — | `user` | Shows memory-v2 capture lifecycle messages in the UI for debugging. Successful captures are expandable and include generated content plus links to committed observation files. 调试日志会始终记录。默认：`false`。 |
 | `memory_v2.capture_enabled` | `boolean` | — | `user` | Enables memory-v2 extraction and observation capture. Default: `true`. |
 | `memory_v2.automatic_dream_enabled` | `boolean` | — | `user` | Enables event-driven memory-v2 Dream. Default: `true`. |
 | `memory_v2.manual_dream_enabled` | `boolean` | — | `user` | Enables explicitly requested memory-v2 Dream. Default: `true`. |
+| `memory_v2.batch_dream_enabled` | `boolean` | — | `user` | Runs active memory-v2 Dream as batch Dream, which folds notes into topics in batches with the full topic catalog; a local value wins over remote `memory_v2.batch_dream_enabled`, then defaults to `false`. |
+| `memory_v2.batch_dream_max_run_secs` | `number` | — | `user` | Caps one batch Dream run in seconds, default `1800`, clamped to `60`–`3600`; unfinished notes stay in the inbox. A local value wins over remote `memory_v2.batch_dream_max_run_secs`. |
+| `memory_v2.batch_dream_max_calls_per_batch` | `number` | — | `user` | Caps model calls per batch Dream batch, default `6`, clamped to `2`–`16`. A local value wins over remote `memory_v2.batch_dream_max_calls_per_batch`. |
+| `memory_v2.batch_dream_max_batch_note_bytes` | `number` | — | `user` | Caps note bytes in one batch Dream batch, default `98304`, clamped to `16384`–`262144`. A local value wins over remote `memory_v2.batch_dream_max_batch_note_bytes`. |
+| `memory_v2.compact_index_enabled` | `boolean` | — | `user` | Injects a titles-only memory index into the system prompt (no topic descriptions, no pending observations) so more topics fit the 8 KiB budget; titled entries are ordered by how often the agent has read each topic, and the on-disk `MEMORY.md` is rendered the same way. A local value wins over the remote `memory_v2.compact_index_enabled`. Default: `false`. |
 | `memory_v2.file_writes_enabled` | `boolean` | — | `user` | Enables all memory-v2 file mutation; `false` fails closed before scaffold creation. Default: `true`. |
 | `memory_v2.archived_retention_days` | `number` | — | `user` | Retains archived memory-v2 observation files for this many days. Default: `30`. |
 | `memory_v2.job_retention_days` | `number` | — | `user` | Retains terminal memory-v2 capture-job metadata for this many days. Default: `14`. |
@@ -338,7 +349,7 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `model.<id>.api_backend` | `chat_completions / responses / messages` | `yes` | `user` | Wire protocol for this model. |
 | `model.<id>.api_base_url` | `string` | `yes` | `user` | Alternate API base used with CODEL_API_KEY resolution. |
 | `model.<id>.api_key` | `string` | `yes` | `user` | Inline API key. Prefer `env_key`. Not a secret to put in a shared repo. |
-| `model.<id>.auth_provider` | `string` | `yes` | `user` | Name of a `[auth_provider.<name>]` helper that mints this model's bearer token. |
+| `model.<id>.auth_provider` | `string` | `yes` | `user` | 已移除：本分支仅支持 API-key 认证，该键在解析时被忽略。 |
 | `model.<id>.auto_compact_threshold_percent` | `integer` | `yes` | `user` | Per-model auto-compact threshold (0-100). |
 | `model.<id>.base_url` | `string` | `yes` | `user` | Provider endpoint base URL. |
 | `model.<id>.compaction_at_tokens` | `number / table` | `yes` | `user` | Token threshold that triggers compaction for this model. |
@@ -358,6 +369,7 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | `model.<id>.model_provider` | `string` | `yes` | `user` | Named `[model_providers.<name>]` provider id for this model. |
 | `model.<id>.mtls_cert_dir` | `string` | `yes` | `user` | Directory containing the model endpoint's mTLS identity as `client.crt` and `client.key`, or `tls.crt` and `tls.key`; configuration is rejected unless the same model has one HTTPS `base_url` and no `api_base_url`, and requests do not follow redirects. |
 | `model.<id>.name` | `string` | `yes` | `user` | Label shown in the model picker. |
+| `model.<id>.notice` | `table` (`severity` = `info / warning / critical`, `text`, `label`) | `yes` | `user` | Message shown above the prompt while this model is selected, cleared for this model by a blank `text`. |
 | `model.<id>.query_params` | `map<string,string>` | `yes` | `user` | Extra query parameters on this model's requests. |
 | `model.<id>.rate_limit_retry_threshold` | `number` | `yes` | `user` | Total-attempt ceiling for rate-limited requests, capped by the resolved `max_retries`; when configured, it disables the separate subagent 429 wait loop. |
 | `model.<id>.reasoning_effort` | `string` | `yes` | `user` | Deprecated per-model effort; prefer `reasoning_efforts`. |
@@ -385,7 +397,7 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `models.agent_type` | `string` | `yes` | `user` | Fallback agent_type for models without a per-model override. |
-| `models.allowed_models` | `string[]` | `pin` | `user` | Glob allowlist for the model picker, default, and `-m`. Empty means no restriction. |
+| `models.allowed_models` | `string[]` | `pin` | `user` | Glob allowlist for the model picker, default, and `-m`, ignored outside `requirements.toml` when a custom models endpoint is set. Empty means no restriction. |
 | `models.default` | `string` | `pin` | `user` | Model used for new sessions. Also `CODEL_DEFAULT_MODEL`, `--model`, `-m`. |
 | `models.default_reasoning_effort` | `string` | `yes` | `user` | Default reasoning effort for the default model when the model supports it. |
 | `models.disabled_models` | `string[]` | `yes` | `user` | Remove these model IDs from the catalog. Wins over `hidden_models`. |
@@ -496,37 +508,11 @@ User-level configuration lives in `$CODEL_HOME/config.toml` (default `~/.codel/c
 
 ### `telemetry`
 
-> 本分支（codel）去除了遥测：产品事件不再上报，`telemetry.*` 与 `features.telemetry` 仅保留解析，
-> 不产生任何对外发送；外部 OTEL 导出通道未启用。
+> 本分支（codel）去除了遥测：产品事件不再上报，OTLP/OTEL 导出与相关键全部移除，`[telemetry]` 仅剩支持包（trace）上传开关。
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `telemetry.otel_enabled` | `boolean` | `pin` | `user` | External OTEL master switch. Also CODEL_EXTERNAL_OTEL. |
-| `telemetry.otel_metrics_exporter` | `otlp / console / none` | `pin` | `user` | External OTEL metrics exporter. Also OTEL_METRICS_EXPORTER. |
-| `telemetry.otel_logs_exporter` | `otlp / console / none` | `pin` | `user` | External OTEL logs exporter. Also OTEL_LOGS_EXPORTER. |
-| `telemetry.otel_endpoint` | `string` | `pin` | `user` | External OTLP base endpoint. Also OTEL_EXPORTER_OTLP_ENDPOINT. Pin strips developer env and unlisted user/managed file siblings except listed. |
-| `telemetry.otel_logs_endpoint` | `string` | `pin` | `user` | Logs-signal OTLP endpoint (verbatim). Also OTEL_EXPORTER_OTLP_LOGS_ENDPOINT. |
-| `telemetry.otel_metrics_endpoint` | `string` | `pin` | `user` | Metrics-signal OTLP endpoint (verbatim). Also OTEL_EXPORTER_OTLP_METRICS_ENDPOINT. |
-| `telemetry.otel_protocol` | `http/protobuf / grpc` | `pin` | `user` | External OTLP transport. Also OTEL_EXPORTER_OTLP_PROTOCOL. Pin strips per-signal protocol env and unlisted file siblings except listed. |
-| `telemetry.otel_logs_protocol` | `http/protobuf / grpc` | `pin` | `user` | Logs-signal OTLP protocol. Also OTEL_EXPORTER_OTLP_LOGS_PROTOCOL. |
-| `telemetry.otel_metrics_protocol` | `http/protobuf / grpc` | `pin` | `user` | Metrics-signal OTLP protocol. Also OTEL_EXPORTER_OTLP_METRICS_PROTOCOL. |
-| `telemetry.otel_timeout` | `number` | `pin` | `user` | Export timeout in milliseconds. Also OTEL_EXPORTER_OTLP_TIMEOUT. |
-| `telemetry.otel_metric_export_interval` | `number` | `pin` | `user` | Metric export interval in milliseconds. Also OTEL_METRIC_EXPORT_INTERVAL. |
-| `telemetry.otel_certificate` | `string` | `pin` | `user` | PEM path of extra CA certs for the collector. Also OTEL_EXPORTER_OTLP_CERTIFICATE. CA pin does **not** strip endpoints. |
-| `telemetry.otel_logs_certificate` | `string` | `pin` | `user` | Logs-signal CA PEM path. Also OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE. |
-| `telemetry.otel_metrics_certificate` | `string` | `pin` | `user` | Metrics-signal CA PEM path. Also OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE. |
-| `telemetry.otel_client_certificate` | `string` | `pin` | `user` | PEM path of the mTLS client certificate. Also OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE. Pin strips credential copies, developer endpoints, and unlisted file siblings. |
-| `telemetry.otel_client_key` | `string` | `pin` | `user` | PEM path of the mTLS client key. Tokens never live in this file. Also OTEL_EXPORTER_OTLP_CLIENT_KEY. |
-| `telemetry.otel_logs_client_certificate` | `string` | `pin` | `user` | Logs-signal mTLS client cert PEM path. Also OTEL_EXPORTER_OTLP_LOGS_CLIENT_CERTIFICATE. |
-| `telemetry.otel_logs_client_key` | `string` | `pin` | `user` | Logs-signal mTLS client key PEM path. Also OTEL_EXPORTER_OTLP_LOGS_CLIENT_KEY. |
-| `telemetry.otel_metrics_client_certificate` | `string` | `pin` | `user` | Metrics-signal mTLS client cert PEM path. Also OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE. |
-| `telemetry.otel_metrics_client_key` | `string` | `pin` | `user` | Metrics-signal mTLS client key PEM path. Also OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY. |
-| `telemetry.otel_metrics_include_session_id` | `boolean` | `pin` | `user` | Attach session.id to metrics. Also OTEL_METRICS_INCLUDE_SESSION_ID. |
-| `telemetry.otel_log_user_prompts` | `boolean` | `pin` | `user` | Content gate for prompt text on codel_code.user_prompt. Also OTEL_LOG_USER_PROMPTS. Pinning any content gate without listing a sibling defaults the omitted sibling off. |
-| `telemetry.otel_log_tool_details` | `boolean` | `pin` | `user` | Metadata gate for tool-arg preview, paths, and verbatim names. Recommended on for SIEM join. Also OTEL_LOG_TOOL_DETAILS. Does not include full bodies. |
-| `telemetry.otel_log_assistant_responses` | `boolean` | `pin` | `user` | Content gate for codel_code.assistant_response text. Unset follows otel_log_user_prompts unless a sibling gate is pinned in requirements. Env-only OTEL_LOG_USER_PROMPTS=1 must set this to 0 (or pin it false) for a prompts-only stream. Also OTEL_LOG_ASSISTANT_RESPONSES. |
-| `telemetry.otel_log_tool_content` | `boolean` | `pin` | `user` | Body gate for tool_input, tool_output, full_command, and error_message. Independent of details; default off. CONTENT-only loses verbatim MCP names and paths. Also OTEL_LOG_TOOL_CONTENT. |
-| `telemetry.trace_upload` | `boolean` | `pin` | `user` | Upload session traces. Requirements pin beats user config. |
+| `telemetry.trace_upload` | `boolean` | `pin` | `user` | 支持包（trace）上传开关。也可通过 `CODEL_TELEMETRY_TRACE_UPLOAD` 环境变量覆盖。 |
 
 ### `tools`
 

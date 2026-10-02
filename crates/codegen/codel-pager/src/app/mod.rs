@@ -14,6 +14,7 @@ pub mod agent;
 pub mod agent_view;
 pub mod app_view;
 pub mod bundle;
+pub(crate) mod voice_state;
 pub(crate) mod cancel_latency;
 pub mod cli;
 pub(crate) mod command_catalog;
@@ -53,7 +54,7 @@ mod display_refresh_startup;
 pub(crate) mod effects;
 pub(crate) mod error_display;
 mod x10_filter;
-pub(crate) use effects::{cancel_notification_meta, sanitize_user_error};
+pub(crate) use effects::{CancelMeta, cancel_notification_meta, sanitize_user_error};
 mod event_loop;
 mod event_loop_stall;
 mod exit_timeout;
@@ -277,14 +278,32 @@ pub(crate) fn voice_mode_config_value() -> Option<bool> {
 }
 /// The registry owns the precedence and the default.
 /// One rule has no row there: with `is_api_key`, a remote-only off is forced back on.
-/// A requirement, env, or config `false` still wins.
+/// A requirement, env, or config `false` still wins, and so does a distribution without voice.
 pub(crate) fn resolve_voice_mode_enabled(
     requirement: Option<bool>,
     config: Option<bool>,
     remote: Option<bool>,
     is_api_key: bool,
 ) -> bool {
+    resolve_voice_mode_enabled_as(
+        codel_config::Distribution::current(),
+        requirement,
+        config,
+        remote,
+        is_api_key,
+    )
+}
+fn resolve_voice_mode_enabled_as(
+    distribution: codel_config::Distribution,
+    requirement: Option<bool>,
+    config: Option<bool>,
+    remote: Option<bool>,
+    is_api_key: bool,
+) -> bool {
     use codel_shell::agent::config::{ConfigSource, Feature, FeatureSources};
+    if !distribution.allows(codel_config::Capability::Voice) {
+        return false;
+    }
     let resolved = Feature::VoiceMode.resolve(FeatureSources {
         pin: requirement,
         config,
@@ -307,7 +326,27 @@ pub(crate) fn resolve_voice_mode_live(remote: Option<bool>, is_api_key: bool) ->
 }
 #[cfg(test)]
 mod voice_gate_tests {
-    use super::resolve_voice_mode_enabled;
+    use super::{resolve_voice_mode_enabled, resolve_voice_mode_enabled_as};
+    use codel_config::Distribution;
+    #[test]
+    fn a_distribution_without_voice_outranks_every_tier_and_the_api_key_force_on() {
+        for remote in [None, Some(false), Some(true)] {
+            assert!(!resolve_voice_mode_enabled_as(
+                Distribution::withholding(&[codel_config::Capability::Voice]),
+                Some(true),
+                Some(true),
+                remote,
+                true
+            ));
+        }
+        assert!(resolve_voice_mode_enabled_as(
+            Distribution::STOCK,
+            None,
+            None,
+            Some(false),
+            true
+        ));
+    }
     #[test]
     fn api_key_force_on_over_remote_kill_only() {
         assert!(resolve_voice_mode_enabled(None, None, Some(false), true));
@@ -622,7 +661,7 @@ async fn bounded_connect(
                 });
             }
             () = tokio::time::sleep(slice) => {
-                let profile = codel_shell::managed_config::startup_profile();
+                let profile = codel_cloud_config::managed_config::startup_profile();
                 let floor = connect_timeout::resolve(connect_ui_timeout_env, profile);
                 let escalated = started + floor;
                 if escalated > deadline {
@@ -1003,7 +1042,7 @@ pub async fn run(
     let connect_ui_timeout_env = std::env::var(connect_timeout::CONNECT_UI_TIMEOUT_ENV).ok();
     let connect_ui_timeout = connect_timeout::resolve(
         connect_ui_timeout_env.as_deref(),
-        codel_shell::managed_config::startup_profile(),
+        codel_cloud_config::managed_config::startup_profile(),
     );
     if let Some(ref raw) = connect_ui_timeout_env {
         crate::unified_log::write_direct_info(

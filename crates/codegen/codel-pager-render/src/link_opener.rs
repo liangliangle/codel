@@ -281,20 +281,6 @@ pub fn try_open_url(url: &str, filter: SchemeFilter) -> OpenUrlResult {
     }
 }
 
-/// Leave an existing parameter untouched; on parse failure return the original so untrusted opener input stays safe.
-/// SuperCodel upsell stamps the param regardless of the remote `gate_url`.
-pub fn ensure_query_param(url: &str, key: &str, value: &str) -> String {
-    let Ok(mut parsed) = url::Url::parse(url) else {
-        return url.to_string();
-    };
-    let already_present = parsed.query_pairs().any(|(k, _)| k == key);
-    if already_present {
-        return parsed.to_string();
-    }
-    parsed.query_pairs_mut().append_pair(key, value);
-    parsed.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,55 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn ensure_query_param_appends_when_missing() {
-        let out = ensure_query_param("https://codel.dev/supercodel", "referrer", "codel-build");
-        assert_eq!(out, "https://codel.dev/supercodel?referrer=codel-build");
-    }
-
-    #[test]
-    fn ensure_query_param_preserves_existing_value() {
-        let out = ensure_query_param(
-            "https://codel.dev/supercodel?referrer=other",
-            "referrer",
-            "codel-build",
-        );
-        assert_eq!(out, "https://codel.dev/supercodel?referrer=other");
-    }
-
-    #[test]
-    fn ensure_query_param_keeps_other_query_pairs() {
-        let out = ensure_query_param(
-            "https://codel.dev/supercodel?heavy=1",
-            "referrer",
-            "codel-build",
-        );
-        assert_eq!(
-            out,
-            "https://codel.dev/supercodel?heavy=1&referrer=codel-build"
-        );
-    }
-
-    #[test]
-    fn ensure_query_param_preserves_fragment() {
-        // The current remote settings value uses a hash fragment for client-side routing (`codel.dev/#supercodel`)
-        // We still want the referrer attached
-        let out = ensure_query_param("https://codel.dev/#supercodel", "referrer", "codel-build");
-        assert_eq!(out, "https://codel.dev/?referrer=codel-build#supercodel");
-    }
-
-    #[test]
-    fn ensure_query_param_returns_unchanged_on_parse_failure() {
-        let out = ensure_query_param("not a url", "referrer", "codel-build");
-        assert_eq!(out, "not a url");
-    }
-
-    #[test]
-    fn ensure_query_param_url_encodes_value() {
-        let out = ensure_query_param("https://codel.dev/supercodel", "referrer", "codel build");
-        assert_eq!(out, "https://codel.dev/supercodel?referrer=codel+build");
-    }
-
-    #[test]
     fn fallback_scheme_case_insensitive() {
         // Uppercase scheme that url::Url::parse rejects triggers fallback path; the fallback must lowercase before matching SchemeFilter
         assert!(!is_safe_to_open(
@@ -555,7 +492,7 @@ mod tests {
 
     #[test]
     fn browser_unavailable_message_includes_full_url() {
-        let url = "https://codel.dev/supercodel?referrer=codel-build";
+        let url = "https://codel.dev/docs?referrer=codel-build";
         assert_eq!(
             browser_unavailable_message(url),
             format!("{BROWSER_UNAVAILABLE_NOTICE}:\n{url}")
@@ -564,7 +501,7 @@ mod tests {
 
     #[test]
     fn browser_unavailable_line_is_url_first_single_line() {
-        let url = "https://codel.dev/supercodel?referrer=codel-build";
+        let url = "https://codel.dev/docs?referrer=codel-build";
         let plain = browser_unavailable_line(url, false);
         assert!(plain.starts_with(url), "{plain}");
         assert!(!plain.contains('\n'), "{plain}");

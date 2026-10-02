@@ -94,6 +94,47 @@ fn supplied_settings_skip_the_getter() {
     );
 }
 
+fn file_len_and_mtime(path: &std::path::Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| (meta.len(), meta.modified().ok()))
+}
+
+#[test]
+fn unit_test_bootstrap_does_not_touch_the_managed_config_lock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().to_str().expect("utf8 temp home");
+    let _env = crate::env::EnvVarGuard::set("CODEL_HOME", home)
+        .and_set("CODEL_DEPLOYMENT_KEY", "unit-test-deployment-key");
+    // `codel_home()` is a process-wide OnceLock. Read the env path directly so this
+    // test neither observes a home cached by an earlier test nor pins one for later tests.
+    let codel_home = codel_dirs::resolve_codel_home().expect("CODEL_HOME is set");
+    let lock = codel_home.join("managed_config.lock");
+    let lock_before = file_len_and_mtime(&lock);
+    let mut cfg = AgentConfig {
+        remote_settings: Some(Default::default()),
+        ..AgentConfig::default()
+    };
+    cfg.models.allowed_models = Some(vec!["[".to_string()]);
+    let auth = Arc::new(AuthManager::new(dir.path(), CodelComConfig::default()));
+
+    let err = match bootstrap_with_cancel(&cfg, &auth, None, &CancellationToken::new(), None) {
+        Err(err) => err,
+        Ok(_) => panic!("an invalid model filter must stop bootstrap before init"),
+    };
+
+    assert!(
+        matches!(err, BootstrapError::Config(ref message) if message.contains("allowed_models")),
+        "bootstrap must pass the gate and fail on the filter, got {err}"
+    );
+    assert_eq!(
+        lock_before,
+        file_len_and_mtime(&lock),
+        "the unit-test build must not create or touch the managed-config lock under {}",
+        codel_home.display()
+    );
+}
+
 #[test]
 fn cancelled_bootstrap_returns_before_side_effects() {
     let dir = tempfile::tempdir().expect("tempdir");

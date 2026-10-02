@@ -804,7 +804,8 @@ pub async fn run_leader(
     let auth_manager_for_agent = shared_auth_manager.clone();
     let auth_manager_for_config = shared_auth_manager.clone();
     let auth_manager_for_mint = shared_auth_manager.clone();
-    crate::managed_config::ensure_managed_policy_present(&auth_manager_for_agent).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager_for_agent)
+        .await;
     let boot = crate::agent::init::resolve_boot_startup_settings(
         &mut agent_config_for_spawn,
         &cancel_clone,

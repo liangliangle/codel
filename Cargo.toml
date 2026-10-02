@@ -12,9 +12,11 @@ members = [
     "crates/codegen/codel-acp-lib",
     "crates/codegen/codel-agent-lifecycle",
     "crates/codegen/codel-chat-state",
+    "crates/codegen/codel-cloud-config",
     "crates/codegen/codel-codebase-graph",
     "crates/codegen/codel-crash-handler",
     "crates/codegen/codel-dirs",
+    "crates/codegen/codel-egress-proxy",
     "crates/codegen/codel-fast-worktree",
     "crates/codegen/codel-file-utils",
     "crates/codegen/codel-fsnotify",
@@ -31,6 +33,7 @@ members = [
     "crates/codegen/codel-dashboard-store",
     "crates/codegen/codel-diag-server",
     "crates/codegen/codel-env",
+    "crates/codegen/codel-external-agent-migration",
     "crates/codegen/codel-extra-ca",
     "crates/codegen/codel-feedback",
     "crates/codegen/codel-file-lock",
@@ -39,6 +42,7 @@ members = [
     "crates/codegen/codel-hooks",
     "crates/codegen/codel-http",
     "crates/codegen/codel-image",
+    "crates/codegen/codel-lifecycle",
     "crates/codegen/codel-login",
     "crates/codegen/codel-markdown",
     "crates/codegen/codel-markdown-core",
@@ -55,6 +59,7 @@ members = [
     "crates/codegen/codel-pager-pty-harness",
     "crates/codegen/codel-pager-render",
     "crates/codegen/codel-paths",
+    "crates/codegen/codel-permission-rules",
     "crates/codegen/codel-plugin-marketplace",
     "crates/codegen/codel-sampler",
     "crates/codegen/codel-sampling-types",
@@ -114,6 +119,10 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+codel-cloud-config = { path = "crates/codegen/codel-cloud-config" }
+codel-external-agent-migration = { path = "crates/codegen/codel-external-agent-migration" }
+codel-lifecycle = { path = "crates/codegen/codel-lifecycle" }
+codel-permission-rules = { path = "crates/codegen/codel-permission-rules" }
 agent-client-protocol = { version = "0.10.4", features = ["unstable", "unstable_session_close", "unstable_session_resume"] }
 alacritty_terminal = "0.26.0"
 ansi-to-tui = "7.0.0"
@@ -137,6 +146,7 @@ backon = { version = "1.6" }
 backtrace = "0.3"
 base64 = "0.22"
 blake3 = "1"
+bstr = "1"
 bytes = { version = "1", features = ["serde"] }
 camino = "1.1.10"
 chrono = "0.4"
@@ -179,6 +189,7 @@ htmd = "0.5.4"
 html-escape = "0.2"
 http = "1"
 http-body-util = "0.1"
+httparse = "1"
 humantime-serde = "1"
 ignore = "0.4"
 image = { version = "0.25.10", default-features = false }
@@ -235,6 +246,7 @@ resvg = { version = "0.47", default-features = false, features = ["text"] }
 rhai = { version = "1.25", features = ["serde"] }
 ring = "0.17"
 rsa = "0.9"
+rstest = "0.25"
 runfiles = "0.1"
 rustc-hash = "2"
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
@@ -257,6 +269,7 @@ siphasher = "1"
 smallvec = "1"
 strip-ansi-escapes = "0.2.1"
 strum = { version = "0.27", features = ["derive"] }
+subtle = "2"
 supports-color = "3.0"
 syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
 tar = "0.4"

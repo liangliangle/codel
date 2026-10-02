@@ -296,6 +296,9 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
             #[serde(default)]
             stop_sequence: Option<String>,
         },
+        TurnUsage {
+            usage: codel_shell::extensions::notification::ResponseUsage,
+        },
         #[serde(other)]
         Other,
     }
@@ -414,6 +417,9 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
             signature,
             stop_sequence,
         })),
+        CodelUpdate::TurnUsage { usage } => {
+            ExtEvent::Stream(Box::new(StreamEvent::TurnUsage { usage }))
+        }
         // A task_backgrounded or task_completed tag arriving here belongs on its dedicated method; log loudly
         // Any other unknown tag stays a clean ignore
         CodelUpdate::Other => {

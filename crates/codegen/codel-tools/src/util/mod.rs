@@ -9,7 +9,7 @@ pub mod codel_home;
 pub mod hash;
 pub mod image_compress;
 pub use codel_image as image_validate;
-pub mod mcp_structured_content;
+pub mod lock_path;
 pub mod mcp_truncate;
 pub mod path_suggestions;
 pub(crate) mod query_tools;

@@ -652,7 +652,7 @@ async fn served_then_deleted_refetches_best_effort() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     assert!(
         home.join("requirements.toml").exists(),
         "the best-effort refresh restored the deleted artifact"
@@ -706,7 +706,7 @@ async fn expired_refreshable_team_token_heals_after_auth_refresh() {
         codel_shell::auth::CodelComConfig::default(),
     ));
 
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     // The refresh re-enabled the heal: policy restored, refetched with the fresh token.
     assert!(
@@ -750,7 +750,7 @@ async fn expired_team_token_without_successful_refresh_stays_failed_closed() {
         codel_shell::auth::CodelComConfig::default(),
     ));
 
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     assert!(
         !home.join("requirements.toml").exists(),
@@ -800,7 +800,7 @@ async fn managed_policy_gate_fails_closed_on_deleted_policy_offline() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     assert!(
         !home.join("requirements.toml").exists(),
         "a failed refetch cannot restore the deleted policy"
@@ -983,7 +983,7 @@ async fn deployment_key_served_then_deleted_heals_online() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     assert!(
         home.join("requirements.toml").exists(),
         "the online refetch must restore the deleted deploy-key policy"
@@ -1031,7 +1031,7 @@ async fn identity_change_permits_offline_team_switch_and_purges_prior_team() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     assert!(
         codel_shell::managed_config::managed_policy_gate().is_ok(),
@@ -2110,7 +2110,7 @@ async fn deploy_key_machine_never_gate_purges_on_team_switch() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     // The gate is the purge's only caller — without this call the guard is unexercised.
     assert!(

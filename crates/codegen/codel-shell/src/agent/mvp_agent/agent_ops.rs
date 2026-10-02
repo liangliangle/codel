@@ -3,6 +3,7 @@
 //! Inherent [`MvpAgent`] helpers (MCP/clients/gateway, settings/models, session ops, spawn).
 //! Co-located child of `mvp_agent` (`use super::*`).
 use super::*;
+use crate::agent::config::TraceUploadEndpoints;
 use crate::sampling::EffortTarget;
 use crate::upload::trace::PromptMetadataParams;
 use codel_tools::implementations::codel_build::task::backend::SubagentBackend;
@@ -383,10 +384,9 @@ impl MvpAgent {
     /// `[plugins]` from disk. Self-free so callers can run it on a blocking thread.
     /// `cfg.plugins` is boot-time state that `config.toml` edits never refresh, so a snapshot built
     /// from it reports stale `enabled` flags to session-less `codel/plugins/list` / `codel/skills/list`.
-    /// Order is load-bearing: the disk read consults the folder-trust gate, whose cold-key backstop
-    /// resolves remote-less and records a durable verdict that would make an org kill-switch
-    /// unliftable for the process; resolving first (recording, with the real `RemoteSettings`) makes
-    /// the read a cache hit.
+    /// The disk read gates project paths on this verdict, never on the folder-trust gate's cold-key
+    /// backstop, which resolves remote-less and records a durable verdict that would make an org
+    /// kill-switch unliftable for the process.
     /// The verdict is never the startup primer's: that memoizes a point-in-time answer, including
     /// the non-durable no-configs allow, which also leaves the launch dir cold for the gate
     /// (`plugins_reload_rechecks_launch_dir_trust`).
@@ -395,10 +395,15 @@ impl MvpAgent {
         remote_settings: Option<&crate::util::config::RemoteSettings>,
     ) -> (bool, codel_agent::plugins::discovery::DiscoveryConfig) {
         let trusted = folder_trust::resolve_and_record(cwd, remote_settings, false);
-        (
-            trusted,
-            crate::config::resolve_effective_plugins_config(cwd).to_discovery_config(),
-        )
+        let disk_config = codel_workspace::plugins::resolve_effective_plugins_config(codel_workspace::plugins::PluginConfigInputs {
+            effective_config: crate::config::load_effective_config().ok().as_ref(),
+            home: codel_dirs::home_dir().as_deref(),
+            codel_home: codel_config::user_codel_home().as_deref(),
+            cwd,
+            trust: codel_hooks::trust::Trust::from_verdict(trusted),
+            claude_import: crate::claude_import::import_marker(),
+        });
+        (trusted, disk_config)
     }
     /// The directory the agent was launched in; the shared registry snapshot is built for it.
     pub(crate) fn launch_cwd(&self) -> &std::path::Path {
@@ -673,6 +678,14 @@ impl MvpAgent {
     /// Delegates to [`AuthManager::is_data_collection_disabled`].
     pub(crate) fn is_data_collection_disabled(&self) -> bool {
         self.auth_manager.is_data_collection_disabled()
+    }
+    /// Privacy half of the trace-upload gate; see [`crate::agent::config::TraceUploadEndpoints::is_trace_upload_blocked_for`].
+    /// Like [`Self::is_data_collection_disabled`], a missing credential does not block.
+    fn is_trace_upload_blocked(&self) -> bool {
+        use crate::agent::config::TraceUploadEndpoints;
+        self.auth_manager
+            .current_or_expired()
+            .is_some_and(|auth| self.cfg.borrow().endpoints.is_trace_upload_blocked_for(&auth))
     }
     /// Re-sync the `Send` mirror of `cfg.is_trace_upload_enabled()` that the per-session collection gates read.
     /// `cfg` is `!Send`; the gates run on the tokio pool.
@@ -1501,21 +1514,19 @@ impl MvpAgent {
         &self,
         auth: &codel_login::CodelAuth,
     ) -> crate::remote::SettingsFetch {
-        let (origin, alpha, auth_config) = {
+        let query = {
             let cfg = self.cfg.borrow();
-            (
-                cfg.endpoints.proxy_url(),
-                cfg.endpoints.alpha_test_key.clone(),
+            crate::agent::remote_config::settings_get::SettingsQuery::from_endpoints(
+                &cfg.endpoints,
+                auth.clone(),
                 cfg.codel_com_config.clone(),
             )
         };
-        let query = crate::agent::remote_config::settings_get::SettingsQuery::from_parts(
-            Some(auth.clone()),
-            origin,
-            alpha,
-            Some(auth_config),
-        );
-        crate::agent::remote_config::settings_get::fetch_settings_live(query).await
+        codel_cloud_config::settings_get::fetch_settings_live(
+                query,
+                codel_cloud_config::managed_config::policy_repair_pending,
+            )
+            .await
     }
     /// Fetch remote settings for `auth`, returning them only while `auth` is still the
     /// live identity: a fetch that lost an account switch must not install the old
@@ -1982,7 +1993,7 @@ impl MvpAgent {
         let cfg = self.cfg.borrow();
         let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
         let client_version = cfg.client_version.clone();
-        let deployment_id = crate::managed_config::resolve_deployment_id(
+        let deployment_id = codel_cloud_config::managed_config::resolve_deployment_id(
             cfg.endpoints.deployment_key.as_deref(),
         );
         drop(cfg);
@@ -2923,8 +2934,7 @@ impl MvpAgent {
     pub(super) fn trace_upload_config_snapshot(
         &self,
     ) -> Option<crate::session::repo_changes::UploadMethod> {
-        if self.is_data_collection_disabled()
-            || !self.cfg.borrow().is_trace_upload_enabled()
+        if self.is_trace_upload_blocked() || !self.cfg.borrow().is_trace_upload_enabled()
         {
             return None;
         }
@@ -2947,7 +2957,7 @@ impl MvpAgent {
         crate::upload::turn::TraceUploadReason,
     ) {
         use crate::upload::turn::TraceUploadReason;
-        if self.is_data_collection_disabled() {
+        if self.is_trace_upload_blocked() {
             crate::upload::trace::spawn_startup_spill_reconcile(
                 crate::util::codel_home::codel_home(),
                 None,
@@ -3049,24 +3059,49 @@ impl MvpAgent {
             .values()
             .cloned()
             .collect();
-        let override_effort = session_id
-            .and_then(|sid| self.resident_handle(sid).map(|h| h.reasoning_effort))
-            .flatten()
+        self.overlay_session_model_meta(session_id, &model_id, &mut available_models);
+        acp::SessionModelState::new(model_id, available_models)
+    }
+    /// Writes the session's effort and context window selection into the current model's meta.
+    fn overlay_session_model_meta(
+        &self,
+        session_id: Option<&acp::SessionId>,
+        model_id: &acp::ModelId,
+        available_models: &mut [acp::ModelInfo],
+    ) {
+        let handle = session_id.and_then(|sid| self.resident_handle(sid));
+        let effort = handle
+            .as_ref()
+            .and_then(|h| h.reasoning_effort)
             .or_else(|| self.models_manager.current_reasoning_effort());
-        if let Some(override_effort) = override_effort
-            && let Some(info) = available_models
-                .iter_mut()
-                .find(|info| info.model_id == model_id)
-            && supports_reasoning_effort_meta(info.meta.as_ref())
-        {
-            let mut map = info.meta.clone().unwrap_or_default();
+        let context_window_selection = handle
+            .as_ref()
+            .and_then(|h| crate::session::handle::load_context_window_selection(
+                &h.context_window_selection,
+            ));
+        let Some(info) = available_models
+            .iter_mut()
+            .find(|info| info.model_id == *model_id) else {
+            return;
+        };
+        let effort = effort
+            .filter(|_| supports_reasoning_effort_meta(info.meta.as_ref()));
+        if effort.is_none() && context_window_selection.is_none() {
+            return;
+        }
+        let map = info.meta.get_or_insert_default();
+        if let Some(effort) = effort {
             map.insert(
                 REASONING_EFFORT_META_KEY.to_string(),
-                reasoning_effort_meta_value(override_effort),
+                reasoning_effort_meta_value(effort),
             );
-            info.meta = Some(map);
         }
-        acp::SessionModelState::new(model_id, available_models)
+        if let Some(window) = context_window_selection {
+            map.insert(
+                codel_sampling_types::CONTEXT_WINDOW_META_KEY.to_string(),
+                codel_sampling_types::context_window_meta_value(window),
+            );
+        }
     }
     pub(crate) async fn session_model_state(
         &self,
@@ -4394,6 +4429,9 @@ impl MvpAgent {
             .cfg
             .borrow()
             .is_feature_enabled(crate::agent::config::Feature::ActiveAgentMessages);
+        let file_acceleration = crate::session::file_acceleration::settings(
+            &self.cfg.borrow(),
+        );
         let goal_enabled = self.cfg.borrow().resolve_goal().value;
         let background_workflows_enabled = self.cfg.borrow().resolve_workflows().value;
         let subagents_enabled = self.cfg.borrow().subagents_enabled;
@@ -4524,9 +4562,10 @@ impl MvpAgent {
                     let (disk_registry, disk_errors) = {
                         let _timer = crate::instrumentation_timer!("session.spawn_hook_discovery");
                         crate::util::hooks::discover_hooks(
+                            &crate::util::hooks::process_hook_inputs(),
                             git_root.as_deref(),
                             &compat,
-                            hooks_trusted,
+                            codel_hooks::trust::Trust::from_verdict(hooks_trusted),
                         )
                     };
                     for e in &disk_errors {
@@ -4552,6 +4591,7 @@ impl MvpAgent {
                         &agent_definition,
                     ),
                     reasoning_effort: reasoning_effort_to_persist,
+                    context_window: None,
                 });
             let acp_mcp_servers = crate::session::acp_mcp::parse_acp_mcp_servers(
                 session_meta,
@@ -4618,6 +4658,7 @@ impl MvpAgent {
                     deployment_key,
                     client_terminal,
                     client_fs_read && client_fs_write,
+                    file_acceleration,
                     gateway_enabled,
                     agent_definition,
                     session_default_agent_profile,

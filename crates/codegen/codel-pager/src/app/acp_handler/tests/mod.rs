@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use codel_shell::extensions::notification::RetryState;
 use codel_shell::extensions::notification::SessionUpdate as CodelSessionUpdate;
+use codel_test_support::acp_fixtures;
 pub(super) fn test_agent(app: &AppView, id: AgentId) -> &AgentView {
     let Some(agent) = app.agents.get(&id) else {
         panic!("expected agent {id:?}");
@@ -37,7 +38,7 @@ pub(super) fn make_session(session_id: Option<&str>) -> AgentSession {
     AgentSession {
         id: AgentId(0),
         acp_tx: tx,
-        session_id: session_id.map(acp::SessionId::new),
+        session_id: session_id.map(acp_fixtures::session_id),
         models: ModelState::default(),
         state: AgentState::Idle,
         tracker: AcpUpdateTracker::new(),
@@ -80,11 +81,8 @@ pub(super) fn permission_req_with_raw_input(
 ) -> acp::RequestPermissionRequest {
     let fields = acp::ToolCallUpdateFields::new().raw_input(raw_input);
     acp::RequestPermissionRequest::new(
-        acp::SessionId::new(std::sync::Arc::from("s1")),
-        acp::ToolCallUpdate::new(
-            acp::ToolCallId::new(std::sync::Arc::from("call-1")),
-            fields,
-        ),
+        acp_fixtures::session_id("s1"),
+        acp_fixtures::tool_call_update("call-1", fields),
         vec![],
     )
 }
@@ -229,17 +227,12 @@ pub(super) fn interjection_broadcast(
     session_id: &str,
     text: &str,
 ) -> acp::ExtNotification {
-    acp::ExtNotification::new(
+    acp_fixtures::ext_notification(
         "codel/session/interjection",
-        std::sync::Arc::from(
-            serde_json::value::to_raw_value(
-                    &serde_json::json!({
-                    "sessionId": session_id,
-                    "text": text,
-                }),
-                )
-                .unwrap(),
-        ),
+        &serde_json::json!({
+                "sessionId": session_id,
+                "text": text,
+            }),
     )
 }
 /// A Running background task registered on the agent's root session.
@@ -294,10 +287,7 @@ pub(super) fn follow_ups_ext(
             "response_id": response_id,
             "suggestions": suggestions,
         });
-    acp::ExtNotification::new(
-        "codel/follow_ups",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/follow_ups", &params)
 }
 pub(super) fn follow_ups_ext_with_prompt(
     response_id: &str,
@@ -313,33 +303,20 @@ pub(super) fn follow_ups_ext_with_prompt(
             "promptId": prompt_id,
             "suggestions": suggestions,
         });
-    acp::ExtNotification::new(
-        "codel/follow_ups",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/follow_ups", &params)
 }
 pub(super) fn voice_settings_update(enabled: bool) -> acp::ExtNotification {
-    acp::ExtNotification::new(
+    acp_fixtures::ext_notification(
         "codel/settings/update",
-        std::sync::Arc::from(
-            serde_json::value::to_raw_value(
-                    &serde_json::json!({ "voice_mode_enabled": enabled }),
-                )
-                .unwrap(),
-        ),
+        &serde_json::json!({ "voice_mode_enabled": enabled }),
     )
 }
 pub(super) fn tier_settings_update(tier: &str) -> acp::ExtNotification {
-    acp::ExtNotification::new(
+    acp_fixtures::ext_notification(
         "codel/settings/update",
-        std::sync::Arc::from(
-            serde_json::value::to_raw_value(
-                    &serde_json::json!({
-                    "subscription_tier_display": tier
-                }),
-                )
-                .unwrap(),
-        ),
+        &serde_json::json!({
+                "subscription_tier_display": tier
+            }),
     )
 }
 pub(super) fn group_tool_verbs_settings_update(
@@ -349,10 +326,7 @@ pub(super) fn group_tool_verbs_settings_update(
         Some(v) => serde_json::json!({ "group_tool_verbs": v }),
         None => serde_json::json!({}),
     };
-    acp::ExtNotification::new(
-        "codel/settings/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/settings/update", &params)
 }
 pub(super) fn collapsed_edit_blocks_settings_update(
     value: Option<bool>,
@@ -361,10 +335,7 @@ pub(super) fn collapsed_edit_blocks_settings_update(
         Some(v) => serde_json::json!({ "collapsed_edit_blocks": v }),
         None => serde_json::json!({}),
     };
-    acp::ExtNotification::new(
-        "codel/settings/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/settings/update", &params)
 }
 pub(super) fn subagent_notification_with_event_id(
     session_id: &str,
@@ -372,14 +343,11 @@ pub(super) fn subagent_notification_with_event_id(
     event_id: Option<&str>,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update,
         meta: event_id.map(|event_id| serde_json::json!({ "eventId": event_id })),
     };
-    acp::ExtNotification::new(
-        "codel/session_notification",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session_notification", &payload)
 }
 pub(super) fn subagent_notification_with_seq(
     session_id: &str,
@@ -402,10 +370,7 @@ pub(super) fn subagent_ext_replay(
             "update": update,
             "_meta": { "isReplay": true, "eventId": event_id },
         });
-    acp::ExtNotification::new(
-        "codel/session/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &params)
 }
 pub(super) fn make_exit_plan_ext(
     plan_content: Option<&str>,
@@ -422,15 +387,14 @@ pub(super) fn make_exit_plan_ext_with_tool_call_id(
     codel_acp_lib::AcpArgs<acp::ExtRequest>,
     tokio::sync::oneshot::Receiver<codel_acp_lib::AcpResult<acp::ExtResponse>>,
 ) {
-    let raw = serde_json::value::to_raw_value(
-            &serde_json::json!({
-            "sessionId": "sess-1",
-            "toolCallId": tool_call_id,
-            "planContent": plan_content,
-        }),
-        )
-        .unwrap();
-    let request = acp::ExtRequest::new("codel/exit_plan_mode", raw.into());
+    let request = acp_fixtures::ext_request(
+        "codel/exit_plan_mode",
+        &serde_json::json!({
+                "sessionId": "sess-1",
+                "toolCallId": tool_call_id,
+                "planContent": plan_content,
+            }),
+    );
     let (tx, rx) = tokio::sync::oneshot::channel();
     (
         codel_acp_lib::AcpArgs {
@@ -447,9 +411,7 @@ pub(super) fn seed_pending_tool(agent: &mut AgentView, tool_call_id: &str, title
         .handle_update(
             acp::SessionUpdate::ToolCall(
                 acp::ToolCall::new(
-                        acp::ToolCallId::new(
-                            std::sync::Arc::from(tool_call_id.to_owned()),
-                        ),
+                        acp_fixtures::tool_call_id(tool_call_id),
                         title.to_string(),
                     )
                     .kind(acp::ToolKind::Other)
@@ -477,10 +439,7 @@ pub(super) fn queue_changed_ext(session_id: &str, ids: &[&str]) -> acp::ExtNotif
         })
         .collect();
     let params = serde_json::json!({ "sessionId": session_id, "entries": entries });
-    acp::ExtNotification::new(
-        "codel/queue/changed",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/queue/changed", &params)
 }
 /// Build a `codel/queue/changed` notification carrying `runningPromptId`.
 pub(super) fn queue_changed_running(
@@ -529,10 +488,7 @@ pub(super) fn queue_changed_running_ex(
     if let Some(segs) = running_combined_texts {
         json_set(&mut params, "runningCombinedTexts", serde_json::json!(segs));
     }
-    acp::ExtNotification::new(
-        "codel/queue/changed",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/queue/changed", &params)
 }
 /// Fixture: p1 runs locally; promoted queued bash b1's adoption is stashed.
 pub(super) fn app_with_running_p1_and_stashed_b1() -> AppView {
@@ -565,11 +521,11 @@ pub(super) fn send_tool_call_update(
     let (tx, _rx) = tokio::sync::oneshot::channel();
     handle(
         AcpClientMessage::SessionNotification(codel_acp_lib::AcpArgs {
-            request: acp::SessionNotification::new(
-                    acp::SessionId::new("sess-1"),
+            request: acp_fixtures::session_notification(
+                    "sess-1",
                     acp::SessionUpdate::ToolCall(
                         acp::ToolCall::new(
-                                acp::ToolCallId::new(tool_id.to_owned()),
+                                acp_fixtures::tool_call_id(tool_id),
                                 format!("tool {tool_id}"),
                             )
                             .kind(acp::ToolKind::Execute)
@@ -618,7 +574,7 @@ pub(super) fn make_fired_notif(
     next_fire_at: Option<&str>,
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::ScheduledTaskFired {
             task_id: task_id.into(),
             prompt: prompt.into(),
@@ -628,8 +584,7 @@ pub(super) fn make_fired_notif(
         },
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/scheduled_task_fired", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/scheduled_task_fired", &notif)
 }
 pub(super) fn make_fired_notif_with_subagent(
     session_id: &str,
@@ -637,7 +592,7 @@ pub(super) fn make_fired_notif_with_subagent(
     subagent_id: &str,
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::ScheduledTaskFired {
             task_id: task_id.into(),
             prompt: "p".into(),
@@ -647,8 +602,7 @@ pub(super) fn make_fired_notif_with_subagent(
         },
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/scheduled_task_fired", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/scheduled_task_fired", &notif)
 }
 /// Set up an app with two agents; the active view points to agent 1, but agent 0 owns the scheduled task.
 /// Handlers that gate on `active_view` will mutate the wrong agent (or silently no-op).
@@ -689,14 +643,9 @@ pub(super) fn announcements_update_notif(
     r#gen: u64,
     announcements: &[codel_announcements::RemoteAnnouncement],
 ) -> acp::ExtNotification {
-    acp::ExtNotification::new(
+    acp_fixtures::ext_notification(
         "codel/announcements/update",
-        std::sync::Arc::from(
-            serde_json::value::to_raw_value(
-                    &serde_json::json!({ "gen": r#gen, "announcements": announcements }),
-                )
-                .unwrap(),
-        ),
+        &serde_json::json!({ "gen": r#gen, "announcements": announcements }),
     )
 }
 /// Id of the item the banner slot currently selects (`None` means the banner is closed).
@@ -715,7 +664,7 @@ pub(super) fn make_created_ext_notif(
     next_fire_at: Option<&str>,
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::ScheduledTaskCreated {
             task_id: task_id.into(),
             prompt: prompt.into(),
@@ -724,8 +673,7 @@ pub(super) fn make_created_ext_notif(
         },
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/scheduled_task_created", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/scheduled_task_created", &notif)
 }
 pub(super) fn make_deleted_ext_notif(
     session_id: &str,
@@ -745,27 +693,24 @@ pub(super) fn make_deleted_ext_notif_with_reason(
     is_replay: bool,
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::ScheduledTaskDeleted {
             task_id: task_id.into(),
             reason,
         },
         meta: is_replay.then(crate::acp::meta::ReplayMetaStamp::replayed),
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/scheduled_task_deleted", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/scheduled_task_deleted", &notif)
 }
 pub(super) fn make_token_notification_message(
     session_id: &str,
     total_tokens: u64,
 ) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
-    let request = acp::SessionNotification::new(
-            acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+            session_id,
             acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(
-                    acp::ContentBlock::Text(acp::TextContent::new("hi")),
-                ),
+                acp::ContentChunk::new(acp_fixtures::text_block("hi")),
             ),
         )
         .meta(serde_json::json!({
@@ -783,10 +728,10 @@ pub(super) fn make_agent_chunk_message(
     text: &str,
 ) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
-    let request = acp::SessionNotification::new(
-        acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+        session_id,
         acp::SessionUpdate::AgentMessageChunk(
-            acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(text))),
+            acp::ContentChunk::new(acp_fixtures::text_block(text)),
         ),
     );
     AcpClientMessage::SessionNotification(codel_acp_lib::AcpArgs {
@@ -809,12 +754,10 @@ pub(super) fn make_agent_chunk_meta(
         meta.insert("eventId".to_string(), serde_json::json!(eid));
     }
     let (tx, _rx) = tokio::sync::oneshot::channel();
-    let request = acp::SessionNotification::new(
-            acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+            session_id,
             acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(
-                    acp::ContentBlock::Text(acp::TextContent::new(text)),
-                ),
+                acp::ContentChunk::new(acp_fixtures::text_block(text)),
             ),
         )
         .meta(serde_json::Value::Object(meta).as_object().cloned());
@@ -879,8 +822,8 @@ pub(super) fn plan_update_msg(
     }
     let (tx, _rx) = tokio::sync::oneshot::channel();
     AcpClientMessage::SessionNotification(codel_acp_lib::AcpArgs {
-        request: acp::SessionNotification::new(
-                acp::SessionId::new(session_id),
+        request: acp_fixtures::session_notification(
+                session_id,
                 acp::SessionUpdate::Plan(acp::Plan::new(entries)),
             )
             .meta(serde_json::Value::Object(meta).as_object().cloned()),
@@ -895,7 +838,7 @@ pub(super) fn codel_model_switch_notif(
     event_id: &str,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::ModelAutoSwitched {
             previous_model_id: "m-old".into(),
             new_model_id: "m-new".into(),
@@ -903,24 +846,18 @@ pub(super) fn codel_model_switch_notif(
         },
         meta: Some(serde_json::json!({ "eventId": event_id })),
     };
-    acp::ExtNotification::new(
-        "codel/session/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &payload)
 }
 pub(super) fn codel_unhandled_notif(
     session_id: &str,
     event_id: &str,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::MemoryFlushStarted,
         meta: Some(serde_json::json!({ "eventId": event_id })),
     };
-    acp::ExtNotification::new(
-        "codel/session/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &payload)
 }
 /// Build an `agent_message_chunk` notification carrying both `totalTokens` and an explicit `eventId`, for context/dedup interaction tests.
 pub(super) fn make_token_notification_with_event(
@@ -929,12 +866,10 @@ pub(super) fn make_token_notification_with_event(
     event_id: &str,
 ) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
-    let request = acp::SessionNotification::new(
-            acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+            session_id,
             acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(
-                    acp::ContentBlock::Text(acp::TextContent::new("hi")),
-                ),
+                acp::ContentChunk::new(acp_fixtures::text_block("hi")),
             ),
         )
         .meta(
@@ -952,14 +887,13 @@ pub(super) fn make_token_notification_with_event(
 }
 /// Build an `codel/session/prompt_complete` ext-notification for `session_id`.
 pub(super) fn prompt_complete_ext(session_id: &str) -> acp::ExtNotification {
-    let raw = serde_json::value::to_raw_value(
-            &serde_json::json!({
-            "sessionId": session_id,
-            "stopReason": "end_turn",
-        }),
-        )
-        .unwrap();
-    acp::ExtNotification::new("codel/session/prompt_complete", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification(
+        "codel/session/prompt_complete",
+        &serde_json::json!({
+                "sessionId": session_id,
+                "stopReason": "end_turn",
+            }),
+    )
 }
 /// Insert a fresh agent at `id` with an optional pre-assigned session id.
 pub(super) fn insert_agent(app: &mut AppView, id: AgentId, session_id: Option<&str>) {
@@ -978,8 +912,7 @@ pub(super) fn prompt_complete_ext_with_reason(
     if let Some(r) = agent_result {
         json_set(&mut payload, "agentResult", serde_json::json!(r));
     }
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/session/prompt_complete", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/session/prompt_complete", &payload)
 }
 /// Failed `codel/session/prompt_complete` carrying the typed `errorKind`.
 /// Built through the typed [`PromptCompletePayload`] so the test wire shape can never drift from what `handle_prompt_complete` parses.
@@ -989,21 +922,20 @@ pub(super) fn prompt_complete_ext_failed_with_error_kind(
     agent_result: &str,
     error_kind: &str,
 ) -> acp::ExtNotification {
-    let raw = serde_json::value::to_raw_value(
-            &PromptCompletePayload {
-                session_id: session_id.to_string(),
-                stop_reason: Some("error".to_string()),
-                prompt_id: None,
-                agent_result: Some(agent_result.to_string()),
-                cancel_trigger: None,
-                cancellation_category: None,
-                cancellation_context: None,
-                error_kind: Some(error_kind.to_string()),
-                meta: None,
-            },
-        )
-        .unwrap();
-    acp::ExtNotification::new("codel/session/prompt_complete", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification(
+        "codel/session/prompt_complete",
+        &PromptCompletePayload {
+            session_id: session_id.to_string(),
+            stop_reason: Some("error".to_string()),
+            prompt_id: None,
+            agent_result: Some(agent_result.to_string()),
+            cancel_trigger: None,
+            cancellation_category: None,
+            cancellation_context: None,
+            error_kind: Some(error_kind.to_string()),
+            meta: None,
+        },
+    )
 }
 /// Build an `codel/session/prompt_complete` ext-notification carrying a `promptId` (shells with the lost-response fix).
 /// Built through the typed [`PromptCompletePayload`] so the test wire shape can never drift from what `handle_prompt_complete` parses.
@@ -1012,21 +944,20 @@ pub(super) fn prompt_complete_ext_with_prompt_id(
     prompt_id: &str,
     stop_reason: &str,
 ) -> acp::ExtNotification {
-    let raw = serde_json::value::to_raw_value(
-            &PromptCompletePayload {
-                session_id: session_id.to_string(),
-                stop_reason: Some(stop_reason.to_string()),
-                prompt_id: Some(prompt_id.to_string()),
-                agent_result: None,
-                cancel_trigger: None,
-                cancellation_category: None,
-                cancellation_context: None,
-                error_kind: None,
-                meta: None,
-            },
-        )
-        .unwrap();
-    acp::ExtNotification::new("codel/session/prompt_complete", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification(
+        "codel/session/prompt_complete",
+        &PromptCompletePayload {
+            session_id: session_id.to_string(),
+            stop_reason: Some(stop_reason.to_string()),
+            prompt_id: Some(prompt_id.to_string()),
+            agent_result: None,
+            cancel_trigger: None,
+            cancellation_category: None,
+            cancellation_context: None,
+            error_kind: None,
+            meta: None,
+        },
+    )
 }
 /// Build a live `AgentMessageChunk` whose meta carries `promptId` plus a `turnStartMs` `start_ms_ago` milliseconds in the past.
 /// Drives the viewer adoption path with a known authoritative turn start.
@@ -1037,12 +968,10 @@ pub(super) fn make_viewer_chunk_with_turn_start(
 ) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     let turn_start_ms = chrono::Utc::now().timestamp_millis() - start_ms_ago;
-    let request = acp::SessionNotification::new(
-            acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+            session_id,
             acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(
-                    acp::ContentBlock::Text(acp::TextContent::new("driver chunk")),
-                ),
+                acp::ContentChunk::new(acp_fixtures::text_block("driver chunk")),
             ),
         )
         .meta(
@@ -1067,12 +996,10 @@ pub(super) fn make_replay_chunk_with_turn_start(
 ) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     let turn_start_ms = chrono::Utc::now().timestamp_millis() - start_ms_ago;
-    let request = acp::SessionNotification::new(
-            acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+            session_id,
             acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(
-                    acp::ContentBlock::Text(acp::TextContent::new("replayed chunk")),
-                ),
+                acp::ContentChunk::new(acp_fixtures::text_block("replayed chunk")),
             ),
         )
         .meta(
@@ -1098,10 +1025,13 @@ pub(super) fn send_replay_suppressed_tool_call(
     let (tx, _rx) = tokio::sync::oneshot::channel();
     handle(
         AcpClientMessage::SessionNotification(codel_acp_lib::AcpArgs {
-            request: acp::SessionNotification::new(
-                    acp::SessionId::new(session_id),
+            request: acp_fixtures::session_notification(
+                    session_id,
                     acp::SessionUpdate::ToolCall(
-                        acp::ToolCall::new(acp::ToolCallId::new("todo-1"), "TodoWrite")
+                        acp::ToolCall::new(
+                                acp_fixtures::tool_call_id("todo-1"),
+                                "TodoWrite",
+                            )
                             .kind(acp::ToolKind::Other)
                             .status(acp::ToolCallStatus::Completed),
                     ),
@@ -1128,11 +1058,11 @@ pub(super) fn send_replay_bash_tool_call(
     let (tx, _rx) = tokio::sync::oneshot::channel();
     handle(
         AcpClientMessage::SessionNotification(codel_acp_lib::AcpArgs {
-            request: acp::SessionNotification::new(
-                    acp::SessionId::new(session_id),
+            request: acp_fixtures::session_notification(
+                    session_id,
                     acp::SessionUpdate::ToolCall(
                         acp::ToolCall::new(
-                                acp::ToolCallId::new("bash-mode-1"),
+                                acp_fixtures::tool_call_id("bash-mode-1"),
                                 "Execute `ls`",
                             )
                             .kind(acp::ToolKind::Execute)
@@ -1166,7 +1096,7 @@ pub(super) fn codel_turn_completed_notif(
     is_replay: bool,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::TurnCompleted {
             prompt_id: prompt_id.into(),
             stop_reason: stop_reason.into(),
@@ -1177,10 +1107,7 @@ pub(super) fn codel_turn_completed_notif(
         },
         meta: Some(serde_json::json!({ "isReplay": is_replay })),
     };
-    acp::ExtNotification::new(
-        "codel/session/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &payload)
 }
 /// Replay `TurnCompleted` with optional elapsed, agent_result, and extra `_meta`.
 pub(super) fn codel_turn_completed_replay(
@@ -1198,7 +1125,7 @@ pub(super) fn codel_turn_completed_replay(
         }
     }
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::TurnCompleted {
             prompt_id: prompt_id.into(),
             stop_reason: stop_reason.into(),
@@ -1209,10 +1136,7 @@ pub(super) fn codel_turn_completed_replay(
         },
         meta: Some(meta),
     };
-    acp::ExtNotification::new(
-        "codel/session/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &payload)
 }
 /// Failed `TurnCompleted` carrying `agent_result` plus the typed `error_kind` field.
 /// Callers pass an `agent_result` with no canonical truncation text.
@@ -1225,7 +1149,7 @@ pub(super) fn codel_turn_completed_failed_with_error_kind(
     is_replay: bool,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::TurnCompleted {
             prompt_id: prompt_id.into(),
             stop_reason: "error".into(),
@@ -1236,10 +1160,7 @@ pub(super) fn codel_turn_completed_failed_with_error_kind(
         },
         meta: Some(serde_json::json!({ "isReplay": is_replay })),
     };
-    acp::ExtNotification::new(
-        "codel/session/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &payload)
 }
 /// Live `TurnCompleted` stamped with `_meta.cancelTrigger` (send-now / ctrl_c).
 pub(super) fn codel_turn_completed_notif_with_cancel_trigger(
@@ -1249,7 +1170,7 @@ pub(super) fn codel_turn_completed_notif_with_cancel_trigger(
     cancel_trigger: &str,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::TurnCompleted {
             prompt_id: prompt_id.into(),
             stop_reason: stop_reason.into(),
@@ -1265,10 +1186,7 @@ pub(super) fn codel_turn_completed_notif_with_cancel_trigger(
             }),
         ),
     };
-    acp::ExtNotification::new(
-        "codel/session/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &payload)
 }
 /// A live durable `TurnCompleted`, optionally stamped with the shell completion clock (`agentTimestampMs`) the wake marker's elapsed reads.
 pub(super) fn codel_wake_turn_completed_notif(
@@ -1281,7 +1199,7 @@ pub(super) fn codel_wake_turn_completed_notif(
         json_set(&mut meta, "agentTimestampMs", ms.into());
     }
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::TurnCompleted {
             prompt_id: prompt_id.into(),
             stop_reason: "end_turn".into(),
@@ -1292,10 +1210,7 @@ pub(super) fn codel_wake_turn_completed_notif(
         },
         meta: Some(meta),
     };
-    acp::ExtNotification::new(
-        "codel/session/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&payload).unwrap()),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &payload)
 }
 /// Build a `HookExecution` update (one successful run) on the `codel/session/update` rail, optionally stamped `isReplay`.
 /// `prompt_id == None` models pre-attribution shells.
@@ -1326,7 +1241,7 @@ pub(super) fn codel_hook_execution_notif_with_runs(
     runs: Vec<codel_shell::extensions::notification::HookRunEntryDto>,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::HookExecution {
             event_name: event_name.into(),
             tool_name: None,
@@ -1335,10 +1250,7 @@ pub(super) fn codel_hook_execution_notif_with_runs(
         },
         meta: Some(serde_json::json!({ "isReplay": is_replay })),
     };
-    acp::ExtNotification::new(
-        "codel/session/update",
-        serde_json::value::to_raw_value(&payload).unwrap().into(),
-    )
+    acp_fixtures::ext_notification("codel/session/update", &payload)
 }
 /// Work-only status lines ("N … still running") pushed as system rows.
 /// Never pushed in production; tests assert emptiness.
@@ -1377,8 +1289,7 @@ pub(super) fn interjection_ext_with_id(
     if let Some(id) = interjection_id {
         json_set(&mut payload, "interjectionId", serde_json::json!(id));
     }
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/session/interjection", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/session/interjection", &payload)
 }
 /// Text of the most recent user prompt block in scrollback, if any.
 /// Interjections render as standard user prompt blocks.
@@ -1422,8 +1333,8 @@ pub(super) fn make_plan_message(session_id: &str, entries: &[&str]) -> AcpClient
             acp::PlanEntryStatus::Pending,
         ))
         .collect();
-    let request = acp::SessionNotification::new(
-        acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+        session_id,
         acp::SessionUpdate::Plan(acp::Plan::new(plan_entries)),
     );
     AcpClientMessage::SessionNotification(codel_acp_lib::AcpArgs {
@@ -1441,8 +1352,8 @@ pub(super) fn make_commands_update_message(
         .iter()
         .map(|name| acp::AvailableCommand::new(*name, String::new()))
         .collect();
-    let request = acp::SessionNotification::new(
-        acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+        session_id,
         acp::SessionUpdate::AvailableCommandsUpdate(
             acp::AvailableCommandsUpdate::new(commands),
         ),
@@ -1460,11 +1371,11 @@ pub(super) fn make_bash_stdout_message(
     stdout: &str,
 ) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
-    let request = acp::SessionNotification::new(
-        acp::SessionId::new(session_id),
+    let request = acp_fixtures::session_notification(
+        session_id,
         acp::SessionUpdate::ToolCallUpdate(
-            acp::ToolCallUpdate::new(
-                acp::ToolCallId::new(tool_call_id),
+            acp_fixtures::tool_call_update(
+                tool_call_id,
                 acp::ToolCallUpdateFields::new()
                     .raw_output(
                         Some(
@@ -1501,12 +1412,11 @@ pub(super) fn make_ext_session_notification_with_method(
 ) -> AcpClientMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update,
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    let request = acp::ExtNotification::new(method, raw.into());
+    let request = acp_fixtures::ext_notification(method, &payload);
     AcpClientMessage::ExtNotification(codel_acp_lib::AcpArgs {
         request,
         response_tx: tx,
@@ -1872,11 +1782,13 @@ pub(super) fn dispatch_goal_update(
     update: serde_json::Value,
 ) -> bool {
     let raw_payload = serde_json::json!({ "sessionId": "sess-A", "update": update });
-    let raw = serde_json::value::to_raw_value(&raw_payload).unwrap();
     let (tx, _rx) = tokio::sync::oneshot::channel();
     handle(
         AcpClientMessage::ExtNotification(codel_acp_lib::AcpArgs {
-            request: acp::ExtNotification::new("codel/session_notification", raw.into()),
+            request: acp_fixtures::ext_notification(
+                "codel/session_notification",
+                &raw_payload,
+            ),
             response_tx: tx,
         }),
         app,
@@ -1901,9 +1813,9 @@ pub(super) fn make_permission_message(
     use std::sync::Arc;
     let (tx, rx) = tokio::sync::oneshot::channel();
     let request = acp::RequestPermissionRequest::new(
-        acp::SessionId::new(session_id),
-        acp::ToolCallUpdate::new(
-            acp::ToolCallId::new(Arc::from("call-perm-1")),
+        acp_fixtures::session_id(session_id),
+        acp_fixtures::tool_call_update(
+            "call-perm-1",
             acp::ToolCallUpdateFields::default(),
         ),
         vec![acp::PermissionOption::new(
@@ -1925,14 +1837,13 @@ pub(super) fn interaction_resolved_ext(
     tool_call_id: &str,
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::InteractionResolved {
             tool_call_id: tool_call_id.into(),
         },
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/session_notification", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/session_notification", &notif)
 }
 pub(super) fn make_git_head_changed_notif(
     session_id: &str,
@@ -1946,8 +1857,7 @@ pub(super) fn make_git_head_changed_notif(
         is_worktree,
         main_repo: main_repo.map(str::to_string),
     };
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/git_head_changed", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/git_head_changed", &payload)
 }
 pub(super) fn make_task_backgrounded_notif(
     session_id: &str,
@@ -1956,7 +1866,7 @@ pub(super) fn make_task_backgrounded_notif(
     command: &str,
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::TaskBackgrounded {
             tool_call_id: tool_call_id.into(),
             task_id: task_id.into(),
@@ -1968,8 +1878,7 @@ pub(super) fn make_task_backgrounded_notif(
         },
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/task_backgrounded", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/task_backgrounded", &notif)
 }
 /// Like [`make_task_backgrounded_notif`] but stamped `_meta.isReplay: true` via the typed [`ReplayMetaStamp`](crate::acp::meta::ReplayMetaStamp).
 /// Mirrors the `session/load` replay envelope.
@@ -1980,7 +1889,7 @@ pub(super) fn make_replayed_task_backgrounded_notif(
     command: &str,
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::TaskBackgrounded {
             tool_call_id: tool_call_id.into(),
             task_id: task_id.into(),
@@ -1992,8 +1901,7 @@ pub(super) fn make_replayed_task_backgrounded_notif(
         },
         meta: Some(crate::acp::meta::ReplayMetaStamp::replayed()),
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/session/update", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/session/update", &notif)
 }
 /// Register a pending Execute tool call in the tracker and send an InProgress update to create the scrollback entry.
 /// Returns the agent for further use.
@@ -2002,7 +1910,7 @@ pub(super) fn setup_pending_execute_tool(app: &mut AppView, tc_id: &str) {
     let meta = crate::acp::meta::NotificationMeta::default();
     let tc = agent_client_protocol::SessionUpdate::ToolCall(
         agent_client_protocol::ToolCall::new(
-                agent_client_protocol::ToolCallId::new(std::sync::Arc::from(tc_id)),
+                acp_fixtures::tool_call_id(tc_id),
                 "Execute `sleep 9999`".to_string(),
             )
             .kind(agent_client_protocol::ToolKind::Execute)
@@ -2012,8 +1920,8 @@ pub(super) fn setup_pending_execute_tool(app: &mut AppView, tc_id: &str) {
     );
     agent.session.tracker.handle_update(tc, &meta, &mut agent.scrollback);
     let update = agent_client_protocol::SessionUpdate::ToolCallUpdate(
-        agent_client_protocol::ToolCallUpdate::new(
-            agent_client_protocol::ToolCallId::new(std::sync::Arc::from(tc_id)),
+        acp_fixtures::tool_call_update(
+            tc_id,
             agent_client_protocol::ToolCallUpdateFields::new()
                 .status(Some(agent_client_protocol::ToolCallStatus::InProgress)),
         ),
@@ -2042,8 +1950,8 @@ pub(super) fn send_late_bg_detection(app: &mut AppView, tc_id: &str) {
         was_bare_echo: false,
     };
     let update = agent_client_protocol::SessionUpdate::ToolCallUpdate(
-        agent_client_protocol::ToolCallUpdate::new(
-            agent_client_protocol::ToolCallId::new(std::sync::Arc::from(tc_id)),
+        acp_fixtures::tool_call_update(
+            tc_id,
             agent_client_protocol::ToolCallUpdateFields::new()
                 .status(Some(agent_client_protocol::ToolCallStatus::InProgress))
                 .raw_output(serde_json::to_value(ToolOutput::Bash(bash)).ok())
@@ -2098,7 +2006,7 @@ pub(super) fn task_completed_notif(
 ) -> acp::ExtNotification {
     use codel_tools::types::TaskSnapshot;
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::TaskCompleted {
             task_snapshot: TaskSnapshot {
                 task_id: task_id.into(),
@@ -2126,8 +2034,7 @@ pub(super) fn task_completed_notif(
         },
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/task_completed", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/task_completed", &notif)
 }
 pub(super) fn make_monitor_event_notif(
     session_id: &str,
@@ -2135,7 +2042,7 @@ pub(super) fn make_monitor_event_notif(
     event_text: &str,
 ) -> acp::ExtNotification {
     let notif = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
+        session_id: acp_fixtures::session_id(session_id),
         update: CodelSessionUpdate::MonitorEvent {
             task_id: task_id.into(),
             description: "test monitor".into(),
@@ -2143,11 +2050,10 @@ pub(super) fn make_monitor_event_notif(
         },
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&notif).unwrap();
-    acp::ExtNotification::new("codel/monitor_event", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/monitor_event", &notif)
 }
 pub(super) fn make_model_info(id: &str) -> acp::ModelInfo {
-    acp::ModelInfo::new(acp::ModelId::new(std::sync::Arc::from(id)), id.to_string())
+    acp_fixtures::model_info(id, id)
 }
 pub(super) fn make_models_update_notif(
     current_model_id: &str,
@@ -2158,11 +2064,10 @@ pub(super) fn make_models_update_notif(
         .map(|id| make_model_info(id))
         .collect();
     let state = acp::SessionModelState::new(
-        acp::ModelId::new(std::sync::Arc::from(current_model_id)),
+        acp_fixtures::model_id(current_model_id),
         models,
     );
-    let raw = serde_json::value::to_raw_value(&state).unwrap();
-    acp::ExtNotification::new("codel/models/update", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/models/update", &state)
 }
 /// `codel/models/update` carrying a single reasoning-capable model whose catalog-default effort is `default_effort`.
 /// The broadcast reports that catalog default for every client, never the per-session selection.
@@ -2170,46 +2075,62 @@ pub(super) fn make_reasoning_models_update_notif(
     current_model_id: &str,
     default_effort: &str,
 ) -> acp::ExtNotification {
-    let mut info = make_model_info(current_model_id);
-    info.meta = serde_json::json!({
-            "supportsReasoningEffort": true,
-            "reasoningEffort": default_effort,
-        })
-        .as_object()
-        .cloned();
+    let info = acp_fixtures::model_info_with_meta(
+        current_model_id,
+        current_model_id,
+        serde_json::json!({
+                "supportsReasoningEffort": true,
+                "reasoningEffort": default_effort,
+            }),
+    );
     let state = acp::SessionModelState::new(
-        acp::ModelId::new(std::sync::Arc::from(current_model_id)),
+        acp_fixtures::model_id(current_model_id),
         vec![info],
     );
-    let raw = serde_json::value::to_raw_value(&state).unwrap();
-    acp::ExtNotification::new("codel/models/update", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/models/update", &state)
+}
+/// Adds model `id` with `default` as `totalContextTokens` and `windows` as `contextWindows`.
+pub(super) fn seed_windowed_model(
+    agent: &mut AgentView,
+    id: &str,
+    default: u64,
+    windows: &[u64],
+) {
+    let info = acp_fixtures::model_info_with_meta(
+        id,
+        id,
+        serde_json::json!({
+                "totalContextTokens": default,
+                "contextWindows": windows,
+            }),
+    );
+    agent.session.models.available.insert(acp_fixtures::model_id(id), info);
 }
 /// Seed a session's model catalog with the given ids and mark `current_model_id` as the active one (must be in the list).
 /// Used by the `ModelChanged` broadcast tests to set up a starting state that the simulated remote/local switch then transitions away from.
 pub(super) fn seed_models(agent: &mut AgentView, current: &str, available: &[&str]) {
     for id in available {
-        let model_id = acp::ModelId::new(std::sync::Arc::from(*id));
+        let model_id = acp_fixtures::model_id(id);
         agent.session.models.available.insert(model_id.clone(), make_model_info(id));
     }
-    agent.session.models.current = Some(
-        acp::ModelId::new(std::sync::Arc::from(current)),
-    );
+    agent.session.models.current = Some(acp_fixtures::model_id(current));
 }
 pub(super) fn model_changed_ext(
     session_id: &str,
     model_id: &str,
     reasoning_effort: Option<&str>,
+    context_window_selection: Option<u64>,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
-        update: CodelSessionUpdate::ModelChanged {
-            model_id: model_id.to_string(),
-            reasoning_effort: reasoning_effort.map(String::from),
-        },
+        session_id: acp_fixtures::session_id(session_id),
+        update: CodelSessionUpdate::model_changed(
+            model_id,
+            reasoning_effort.map(String::from),
+            context_window_selection,
+        ),
         meta: None,
     };
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/session_notification", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/session_notification", &payload)
 }
 pub(super) fn model_changed_ext_with_event(
     session_id: &str,
@@ -2217,20 +2138,16 @@ pub(super) fn model_changed_ext_with_event(
     event_id: &str,
 ) -> acp::ExtNotification {
     let payload = SessionNotification {
-        session_id: acp::SessionId::new(session_id),
-        update: CodelSessionUpdate::ModelChanged {
-            model_id: model_id.to_string(),
-            reasoning_effort: None,
-        },
+        session_id: acp_fixtures::session_id(session_id),
+        update: CodelSessionUpdate::model_changed(model_id, None, None),
         meta: Some(serde_json::json!({ "eventId": event_id })),
     };
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/session_notification", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/session_notification", &payload)
 }
 pub(super) fn make_tool_call_update(title: &str) -> acp::SessionUpdate {
     acp::SessionUpdate::ToolCallUpdate(
-        acp::ToolCallUpdate::new(
-            acp::ToolCallId::new("tc-1"),
+        acp_fixtures::tool_call_update(
+            "tc-1",
             acp::ToolCallUpdateFields::new()
                 .title(Some(title.to_string()))
                 .status(Some(acp::ToolCallStatus::Completed)),
@@ -2239,7 +2156,7 @@ pub(super) fn make_tool_call_update(title: &str) -> acp::SessionUpdate {
 }
 pub(super) fn make_tool_call(title: &str) -> acp::SessionUpdate {
     acp::SessionUpdate::ToolCall(
-        acp::ToolCall::new(acp::ToolCallId::new("tc-2"), title.to_string())
+        acp::ToolCall::new(acp_fixtures::tool_call_id("tc-2"), title.to_string())
             .kind(acp::ToolKind::Other)
             .status(acp::ToolCallStatus::Pending)
             .content(vec![])
@@ -2256,14 +2173,13 @@ pub(super) fn make_mcp_init_progress_notif(
     total: u32,
     connected: u32,
 ) -> acp::ExtNotification {
-    let raw = serde_json::value::to_raw_value(
-            &serde_json::json!({
-            "total": total,
-            "connected": connected,
-        }),
-        )
-        .unwrap();
-    acp::ExtNotification::new("codel/mcp/init_progress", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification(
+        "codel/mcp/init_progress",
+        &serde_json::json!({
+                "total": total,
+                "connected": connected,
+            }),
+    )
 }
 pub(super) fn make_mcps_modal_with_servers(
     servers: Vec<crate::views::mcps_modal::McpServerInfo>,
@@ -2320,15 +2236,13 @@ pub(super) fn make_server_status_notif(
         detail: None,
         tools,
     };
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/mcp/server_status", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/mcp/server_status", &payload)
 }
 /// `mcp/servers_updated` real wire shape: `{ mcpServers: [...] }` with NO `sessionId`.
 /// Regression guard: anything that tries to extract a session id here must fail and fall through to the broadcast path.
 pub(super) fn make_servers_updated_notif() -> acp::ExtNotification {
     let payload = serde_json::json!({ "mcpServers": [] });
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/mcp/servers_updated", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/mcp/servers_updated", &payload)
 }
 /// Real post-handshake / auth-recovery wire shape: `McpToolsChanged { sessionId, serverName, tools }`.
 pub(super) fn make_tools_changed_notif_post_h2(
@@ -2339,15 +2253,13 @@ pub(super) fn make_tools_changed_notif_post_h2(
         server_name: "codel_com_linear".to_string(),
         tools: Vec::new(),
     };
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/mcp/tools_changed", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/mcp/tools_changed", &payload)
 }
 /// Legacy / forward-compat wire shape: older shells emit `{ serverName, tools }` with NO sessionId.
 /// The pager must fall back to active_view for this shape.
 pub(super) fn make_tools_changed_notif_pre_h2() -> acp::ExtNotification {
     let payload = serde_json::json!({ "serverName": "codel_com_linear", "tools": [] });
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/mcp/tools_changed", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/mcp/tools_changed", &payload)
 }
 /// Real `mcp_initialized` wire shape: `{ sessionId, mcpToolCount, elapsedMs }`.
 pub(super) fn make_mcp_initialized_notif(session_id: &str) -> acp::ExtNotification {
@@ -2356,8 +2268,7 @@ pub(super) fn make_mcp_initialized_notif(session_id: &str) -> acp::ExtNotificati
             "mcpToolCount": 12_u64,
             "elapsedMs": 250_u64,
         });
-    let raw = serde_json::value::to_raw_value(&payload).unwrap();
-    acp::ExtNotification::new("codel/mcp_initialized", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification("codel/mcp_initialized", &payload)
 }
 /// Helper: `init_progress` notification carrying an explicit sessionId.
 pub(super) fn make_mcp_init_progress_notif_for(
@@ -2365,27 +2276,25 @@ pub(super) fn make_mcp_init_progress_notif_for(
     connected: u32,
     session_id: &str,
 ) -> acp::ExtNotification {
-    let raw = serde_json::value::to_raw_value(
-            &serde_json::json!({
-            "total": total,
-            "connected": connected,
-            "sessionId": session_id,
-        }),
-        )
-        .unwrap();
-    acp::ExtNotification::new("codel/mcp/init_progress", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification(
+        "codel/mcp/init_progress",
+        &serde_json::json!({
+                "total": total,
+                "connected": connected,
+                "sessionId": session_id,
+            }),
+    )
 }
 /// Helper: `mcp_initialized` notification for a specific sessionId.
 pub(super) fn make_mcp_initialized_notif_for(session_id: &str) -> acp::ExtNotification {
-    let raw = serde_json::value::to_raw_value(
-            &serde_json::json!({
-            "sessionId": session_id,
-            "mcpToolCount": 0,
-            "elapsedMs": 0,
-        }),
-        )
-        .unwrap();
-    acp::ExtNotification::new("codel/mcp_initialized", std::sync::Arc::from(raw))
+    acp_fixtures::ext_notification(
+        "codel/mcp_initialized",
+        &serde_json::json!({
+                "sessionId": session_id,
+                "mcpToolCount": 0,
+                "elapsedMs": 0,
+            }),
+    )
 }
 mod permissions;
 mod session_events;

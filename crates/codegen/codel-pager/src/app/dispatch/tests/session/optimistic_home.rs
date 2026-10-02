@@ -1,5 +1,4 @@
 //! GBT-6212: create the session when the TUI opens; the first interaction reveals it.
-
 use super::*;
 use crate::app::app_view::{InputOutcome, PasteProvenance};
 use crate::app::dispatch::session::lifecycle::{
@@ -7,7 +6,6 @@ use crate::app::dispatch::session::lifecycle::{
     maybe_create_home_session,
 };
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-
 fn key_event(code: KeyCode, mods: KeyModifiers) -> Event {
     Event::Key(KeyEvent {
         code,
@@ -16,7 +14,6 @@ fn key_event(code: KeyCode, mods: KeyModifiers) -> Event {
         state: crossterm::event::KeyEventState::NONE,
     })
 }
-
 /// Feed `ev` to Welcome, require `ActionThenForward(LeaveHome)`, and run it through the event loop's forward path.
 fn leave_home_with(app: &mut AppView, ev: &Event) -> Vec<Effect> {
     let outcome = app.handle_input(ev);
@@ -31,7 +28,6 @@ fn leave_home_with(app: &mut AppView, ev: &Event) -> Vec<Effect> {
         app,
     )
 }
-
 fn creates_session(effects: &[Effect]) -> bool {
     effects
         .iter()
@@ -89,7 +85,6 @@ fn leave_home_into_local_workspace_ack_keeps_the_keystroke_as_a_draft() {
     app.cwd = tmp.path().to_path_buf();
     app.welcome_workspace_mode = crate::views::welcome::WelcomeWorkspaceMode::LocalWorkspace;
     assert!(maybe_create_home_session(&mut app).is_empty());
-
     let effects = leave_home_with(&mut app, &key_event(KeyCode::Char('y'), KeyModifiers::NONE));
     assert!(matches!(app.active_view, ActiveView::Welcome));
     assert!(app.welcome_local_workspace_ack_pending);

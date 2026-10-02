@@ -88,11 +88,22 @@ pub(crate) struct SkillsToggleRequest {
     pub cwd: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+pub const SKILLS_LIST_METHOD: &str = "codel/skills/list";
+pub const SKILLS_TOGGLE_METHOD: &str = "codel/skills/toggle";
+
+/// Wire DTO for the `codel/skills/list` ext request. `pub` with both serde directions so ACP
+/// clients (codel-pager) build the request from the same type the agent parses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillsListRequest {
     /// Working directory for skill discovery context.
     pub cwd: String,
+    /// The session whose skills to list; the shell lists by `cwd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<acp::SessionId>,
+    /// Rescan the skill folders instead of answering from a cache; the shell always rescans.
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,10 +112,31 @@ struct WorkflowsListRequest {
     session_id: acp::SessionId,
 }
 
-#[derive(Debug, Serialize)]
+/// Wire DTO for the `codel/skills/list` and `codel/skills/toggle` answers, in both serde directions
+/// for the same reason as [`SkillsListRequest`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillsListResponse {
     pub skills: Vec<SkillInfo>,
+    /// Folders a backend could not scan; the shell reports none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scan_errors: Vec<SkillScanError>,
+}
+
+impl From<Vec<SkillInfo>> for SkillsListResponse {
+    fn from(skills: Vec<SkillInfo>) -> Self {
+        Self {
+            skills,
+            scan_errors: Vec::new(),
+        }
+    }
+}
+
+/// A folder a backend could not scan for skills.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillScanError {
+    pub path: String,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -423,13 +455,13 @@ pub async fn handle(
             super::to_ext_response(Ok(SkillsResetResponse { skills, message }))
         }
 
-        "codel/skills/list" => {
+        SKILLS_LIST_METHOD => {
             let req: SkillsListRequest = serde_json::from_str(args.params.get())?;
             let skills = reload_skills(&req.cwd, plugin_registry, compat).await;
             // Sessions otherwise learn about disk changes only from inotify,
             // which misses writes made through another NFS client.
             agent.refresh_skill_baseline_for_all_sessions();
-            super::to_ext_response(Ok(SkillsListResponse { skills }))
+            super::to_ext_response(Ok(SkillsListResponse::from(skills)))
         }
 
         "codel/workflows/list" => {
@@ -514,7 +546,7 @@ pub async fn handle(
             }))
         }
 
-        "codel/skills/toggle" => {
+        SKILLS_TOGGLE_METHOD => {
             let req: SkillsToggleRequest = serde_json::from_str(args.params.get())?;
             let cwd = req.cwd.as_deref().unwrap_or(".");
 
@@ -554,7 +586,7 @@ pub async fn handle(
                     s
                 })
                 .collect();
-            super::to_ext_response(Ok(SkillsListResponse { skills }))
+            super::to_ext_response(Ok(SkillsListResponse::from(skills)))
         }
 
         _ => Err(acp::Error::method_not_found()),

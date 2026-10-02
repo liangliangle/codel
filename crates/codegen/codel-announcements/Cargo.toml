@@ -8,7 +8,7 @@ description = "Shared announcement types, persistence, and formatting for Codel 
 [features]
 # TS bindings generation only (codel-desktop consumes the committed output);
 # off by default so Bazel/CI builds never compile ts-rs. See generate.sh.
-ts = ["dep:ts-rs"]
+ts = ["dep:ts-rs", "codel-config/ts"]
 
 [dependencies]
 chrono = { workspace = true }
@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+codel-config = { workspace = true }
 codel-tools = { workspace = true }
 
 [dev-dependencies]

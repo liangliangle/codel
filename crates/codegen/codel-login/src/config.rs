@@ -7,6 +7,8 @@
 //! name the relay uses, and the API-key kill switch.
 
 use serde::{Deserialize, Serialize};
+pub use codel_config::CLI_CHAT_PROXY_BASE_URL_DEFAULT;
+use codel_config::{Capability, Distribution};
 use codel_shell_base::env::{PROD_RELAY_WS_URL, PROD_WS_ORIGIN};
 
 /// `auth.json` scope key.
@@ -28,6 +30,28 @@ pub struct CodelComConfig {
     pub disable_api_key_auth: Option<bool>,
 }
 
+
+/// If `config` contains `[auth]`, copy its contents under `[codel_com_config]`.
+/// `[codel_com_config]` takes precedence if both are present (explicit wins).
+/// This lets customers write the shorter `[auth]` table instead of `[codel_com_config]`.
+pub fn expand_auth_alias(config: &toml::Value) -> toml::Value {
+    let mut config = config.clone();
+    if let toml::Value::Table(ref mut table) = config
+        && let Some(auth) = table.remove("auth")
+    {
+        if let Some(gcc) = table.get_mut("codel_com_config") {
+            if let (toml::Value::Table(gcc_table), toml::Value::Table(auth_table)) = (gcc, &auth) {
+                for (k, v) in auth_table {
+                    gcc_table.entry(k.clone()).or_insert(v.clone());
+                }
+            }
+        } else {
+            table.insert("codel_com_config".to_owned(), auth);
+        }
+    }
+    config
+}
+
 impl CodelComConfig {
     /// Whether API-key auth is refused.
     ///
@@ -36,6 +60,18 @@ impl CodelComConfig {
     /// `requirements.toml` already wins by layer precedence.
     pub fn api_key_auth_disabled(&self) -> bool {
         self.disable_api_key_auth == Some(true) || env_lockdown_forced()
+    }
+
+    /// Parse `[codel_com_config]` (alias `[auth]`) out of an effective config document.
+    /// A section that omits a field keeps the value `Default` resolves (env or built-in).
+    ///
+    /// # Errors
+    /// Returns an error when the section is present but does not deserialize.
+    pub fn from_effective_config(config: &toml::Value) -> Result<CodelComConfig, toml::de::Error> {
+        match config.get("codel_com_config").or_else(|| config.get("auth")) {
+            Some(section) => section.clone().try_into(),
+            None => Ok(CodelComConfig::default()),
+        }
     }
 
     /// The `auth.json` scope key for this config.

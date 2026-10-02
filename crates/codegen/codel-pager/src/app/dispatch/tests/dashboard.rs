@@ -37,7 +37,8 @@ fn voice_final_appends_to_dashboard_dispatch() {
     dispatch.set_cursor("fix".len());
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::DashboardDispatch,
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     crate::voice::handle_voice_event(
         &mut app,
@@ -76,7 +77,8 @@ fn voice_final_appends_to_peek_reply_when_peek_open() {
     dash.peek_reply.set_cursor("reply".len());
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::DashboardPeekReply(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     crate::voice::handle_voice_event(
         &mut app,
@@ -120,7 +122,8 @@ fn voice_final_discarded_when_peek_row_changed_after_stop() {
     ensure_dashboard_state(&mut app);
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::DashboardPeekReply(AgentId(0)),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.dashboard.as_mut().unwrap().peek = Some(peek_for(DashboardRowId::TopLevel(AgentId(1))));
     crate::voice::handle_voice_event(
@@ -161,7 +164,7 @@ fn voice_dashboard_peek_reply_submit_tears_down_voice() {
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(codel_voice::VoiceCommand::PttRelease)
+        Ok(codel_voice::VoiceCommand::Abort)
     ));
 }
 #[test]
@@ -233,7 +236,8 @@ fn voice_auto_stops_when_peek_row_changes() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::DashboardPeekReply(AgentId(0)),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.dashboard.as_mut().unwrap().peek = Some(peek_for(DashboardRowId::TopLevel(AgentId(0))));
     app.enforce_voice_session_bound();
@@ -263,7 +267,8 @@ fn voice_suppressed_while_dashboard_popup_open() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::DashboardDispatch,
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.enforce_voice_session_bound();
     assert!(
@@ -290,7 +295,7 @@ fn voice_off_target_surface_does_not_enable_or_record() {
     );
     assert!(!app.voice_ui_active, "voice mode must not arm off-target");
     assert!(!app.voice_listening());
-    assert!(!app.voice_state.pending_cold_start());
+    assert!(!app.voice_state.is_pending_cold_start());
     assert!(rx.try_recv().is_err(), "no PttPress without a target");
 }
 #[test]
@@ -2458,6 +2463,24 @@ fn dashboard_peek_reply_to_non_top_level_row_toasts() {
             )
             .as_str()
         ),
+    );
+}
+/// A tab whose session never opened refuses a peek reply and keeps nothing queued
+#[serial_test::serial(CODEL_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_peek_reply_to_failed_load_tab_toasts() {
+    let mut app = test_app_with_agent();
+    open_dashboard(&mut app);
+    app.agents.get_mut(&AgentId(0)).unwrap().load_failed = true;
+    let row = crate::views::dashboard::DashboardRowId::TopLevel(AgentId(0));
+    let effects = dispatch_dashboard_peek_reply(&mut app, row, "hi".into(), false);
+    assert!(effects.is_empty());
+    assert_eq!(0, test_agent(&app, AgentId(0)).session.queue_len());
+    assert!(
+        app.dashboard
+            .as_ref()
+            .and_then(|d| d.error_toast.as_deref())
+            .is_some_and(|toast| toast.contains("didn't open"))
     );
 }
 /// Peek reply to an IDLE agent sends immediately: the prompt drains

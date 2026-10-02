@@ -34,7 +34,8 @@ fn voice_auto_stops_when_leaving_recording_session() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.active_view = ActiveView::Agent(id);
     app.enforce_voice_session_bound();
@@ -50,7 +51,7 @@ fn voice_auto_stops_when_leaving_recording_session() {
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(codel_voice::VoiceCommand::PttRelease)
+        Ok(codel_voice::VoiceCommand::Abort)
     ));
 }
 #[test]
@@ -295,13 +296,7 @@ fn switch_model_without_session_sends_nothing_to_server() {
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let model_id = acp::ModelId::new(std::sync::Arc::from("codel-4.5"));
-    let effects = dispatch(
-        Action::SwitchModel {
-            model_id,
-            effort: None,
-        },
-        &mut app,
-    );
+    let effects = dispatch(Action::SwitchModel(ModelChoice::new(model_id)), &mut app);
     assert!(
         !effects
             .iter()
@@ -401,10 +396,7 @@ fn switch_model_deferred_when_no_session_id() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("codel-4.5"));
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(
@@ -438,10 +430,7 @@ fn deferred_switch_threads_stash_prev_into_effect() {
     agent.session.session_id = None;
     agent.session.models.current = Some(model_a.clone());
     dispatch(
-        Action::SwitchModel {
-            model_id: model_b.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_b.clone())),
         &mut app,
     );
     let effects = dispatch(
@@ -455,8 +444,8 @@ fn deferred_switch_threads_stash_prev_into_effect() {
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SwitchModel { model_id, prev_model_id, .. }
-            if *model_id == model_b && *prev_model_id == Some(model_a.clone())
+        Effect::SwitchModel { choice, prev_model_id, .. }
+            if choice.model_id == model_b && *prev_model_id == Some(model_a.clone())
     )));
 }
 #[test]

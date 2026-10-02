@@ -17,6 +17,7 @@ mod dashboard;
 mod errors;
 mod extensions;
 mod feedback;
+mod file_acceleration;
 mod git;
 mod hooks;
 mod mcp;
@@ -30,6 +31,7 @@ mod plugin;
 mod process;
 mod prompt;
 mod redirect;
+mod sandbox;
 mod session;
 mod skills;
 mod slash;
@@ -52,6 +54,7 @@ pub use dashboard::*;
 pub use errors::*;
 pub use extensions::*;
 pub use feedback::*;
+pub use file_acceleration::*;
 pub use git::*;
 pub use hooks::*;
 pub use mcp::*;
@@ -65,6 +68,7 @@ pub use plugin::*;
 pub use process::*;
 pub use prompt::*;
 pub use redirect::*;
+pub use sandbox::*;
 pub use session::*;
 pub use skills::*;
 pub use slash::*;
@@ -110,6 +114,10 @@ telemetry_event!(RedirectFixupFailed, "redirect_fixup_failed");
 telemetry_event!(RedirectDemoted, "redirect_demoted");
 telemetry_event!(RedirectOverwrite, "redirect_overwrite");
 telemetry_event!(RedirectLimitHit, "redirect_limit_hit");
+telemetry_event!(SandboxCommandEnded, "sandbox_command_ended");
+telemetry_event!(SandboxViolationSettled, "sandbox_violation_settled");
+telemetry_event!(SandboxGrantRecorded, "sandbox_grant_recorded");
+telemetry_event!(SandboxGrantRevoked, "sandbox_grant_revoked");
 
 telemetry_event!(Login, "login");
 telemetry_event!(LoginPickerShown, "login_picker_shown");
@@ -170,6 +178,18 @@ telemetry_event!(
 telemetry_event!(ActiveAgentMessageLimitHit, "active_agent_message_limit_hit");
 telemetry_event!(ActiveAgentMessageQuotaHit, "active_agent_message_quota_hit");
 telemetry_event!(ActiveAgentMessageSettled, "active_agent_message_settled");
+telemetry_event!(
+    FileAccelerationSessionStarted,
+    "file_acceleration_session_started"
+);
+telemetry_event!(
+    FileAccelerationSessionEnded,
+    "file_acceleration_session_ended"
+);
+telemetry_event!(
+    FileAccelerationUnavailableHit,
+    "file_acceleration_unavailable_hit"
+);
 telemetry_event!(WorkflowRunStarted, "workflow_run_started");
 telemetry_event!(WorkflowRunEnded, "workflow_run_ended");
 telemetry_event!(
@@ -420,6 +440,10 @@ telemetry_event!(
 telemetry_event!(
     crate::memory_telemetry::MemoryV2DreamLifecycle,
     "memory_v2_dream_lifecycle"
+);
+telemetry_event!(
+    crate::memory_telemetry::MemoryV2BatchDreamEnded,
+    "memory_v2_batch_dream_ended"
 );
 telemetry_event!(
     crate::memory_telemetry::MemoryV2GcCompleted,
@@ -1580,7 +1604,6 @@ mod tests {
             context_window: 128_000,
             percentage: 78,
             model_id: "codel-4".into(),
-            user_context_provided: false,
             compaction_id: "cid-1".into(),
             compaction_mode: CompactionModeLabel::Segments,
             two_pass_enabled: true,
@@ -1595,7 +1618,6 @@ mod tests {
                 "context_window": 128_000,
                 "percentage": 78,
                 "model_id": "codel-4",
-                "user_context_provided": false,
                 "compaction_id": "cid-1",
                 "compaction_mode": "segments",
                 "two_pass_enabled": true,
@@ -1609,7 +1631,6 @@ mod tests {
             context_window: 128_000,
             percentage: 8,
             model_id: "codel-4".into(),
-            user_context_provided: false,
             compaction_id: "cid-2".into(),
             compaction_mode: CompactionModeLabel::Summary,
             two_pass_enabled: false,
@@ -1624,7 +1645,6 @@ mod tests {
                 "context_window": 128_000,
                 "percentage": 8,
                 "model_id": "codel-4",
-                "user_context_provided": false,
                 "compaction_id": "cid-2",
                 "compaction_mode": "summary",
                 "two_pass_enabled": false,

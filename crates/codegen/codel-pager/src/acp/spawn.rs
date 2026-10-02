@@ -274,7 +274,7 @@ pub async fn spawn_codel_shell(
     let cancel_auth_tasks_unless_spawned = agent_cancel.clone().drop_guard();
 
     // Policy repair must finish before any authenticated settings load.
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     // This worker is a current-thread runtime. Resolve settings here so the
     // sync bootstrap below observes a finished wait instead of falling open.
     let mut agent_config = agent_config;

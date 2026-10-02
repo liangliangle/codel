@@ -1,6 +1,6 @@
 [package]
 name = "codel-pager"
-version = "1.0.41"
+version = "1.0.45"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["Codel"]
@@ -92,7 +92,7 @@ codel-ratatui-textarea = { workspace = true }
 codel-ratatui-inline = { workspace = true }
 
 # Update
-codel-update = { path = "../codel-update" }
+codel-update = { path = "../codel-update", default-features = false }
 
 # ACP
 agent-client-protocol = { workspace = true }
@@ -102,6 +102,7 @@ codel-file-utils = { path = "../codel-file-utils" }
 # Crash-recovery registry of open TUI sessions.
 codel-active-sessions = { workspace = true }
 codel-config = { workspace = true }
+codel-external-agent-migration = { workspace = true }
 codel-feedback = { workspace = true }
 codel-sampling-types = { path = "../codel-sampling-types", optional = true }
 codel-tool-types = { workspace = true }
@@ -113,6 +114,7 @@ codel-dashboard-store = { workspace = true }
 # (cpal is target-gated to non-Linux inside codel-voice).
 codel-voice = { path = "../codel-voice", default-features = false, features = ["audio"] }
 codel-login = { workspace = true }
+codel-cloud-config = { workspace = true }
 codel-shell = { workspace = true }
 codel-mcp = { workspace = true }
 # The status-line contract: the config the user writes and the payload the
@@ -196,9 +198,12 @@ codel-pager-render = { path = "../codel-pager-render", features = ["test-support
 codel-ratatui-inline = { workspace = true, features = ["test-support"] }
 codel-gboom = { path = "../codel-gboom", features = ["test-support"] }
 codel-login = { workspace = true, features = ["test-support"] }
-codel-shell = { workspace = true, features = ["test-support"] }
+codel-shell = { path = "../codel-shell", default-features = false, features = ["test-support"] }
 pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 wiremock = { workspace = true }
+# Decodes the clip-transcription request the voice tests capture off wiremock.
+prost = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
 tempfile = { workspace = true }
@@ -240,7 +245,12 @@ path = "tests/settings_e2e.rs"
 workspace = true
 
 [features]
-default = ["jemalloc", "sandbox-enforce"]
+default = [
+    "jemalloc",
+    "sandbox-enforce",
+    "codel-shell/default",
+    "codel-update/default",
+]
 default-bazel = [
     "jemalloc",
     "sandbox-enforce",

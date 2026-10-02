@@ -512,6 +512,141 @@ fn unbind_does_not_unmount() {
 }
 
 #[test]
+fn codel_files_remount_command_targets_session_root() {
+    let cmd = crate::path_virtualization::codel_files_detached_mount_cmd(
+        "codel-files mount / /workspace/conv-abc --n-threads '4'",
+    );
+    assert!(
+        cmd.contains("codel-files mount / /workspace/conv-abc --n-threads '4'"),
+        "{cmd}"
+    );
+    assert!(
+        !cmd.contains("/workspace/artifacts"),
+        "bind remount must not use the session-start dest: {cmd}"
+    );
+    assert!(cmd.starts_with("setsid nohup "), "{cmd}");
+    assert!(cmd.contains(">> /tmp/codel-files.out"), "{cmd}");
+}
+
+#[test]
+fn remount_dest_and_jwt_file_are_computed_per_bind_not_hook_install() {
+    use crate::path_virtualization::{codel_files_command_at, codel_files_jwt_file_for};
+    let installed = "codel-files mount / /workspace/conv-a --n-threads '4'";
+    let jwt_a = codel_files_jwt_file_for(Path::new("/workspace/conv-a")).unwrap();
+    let jwt_b = codel_files_jwt_file_for(Path::new("/workspace/conv-b")).unwrap();
+    assert_eq!("/etc/secrets/terminal.conv-a.jwt", jwt_a);
+    assert_eq!("/etc/secrets/terminal.conv-b.jwt", jwt_b);
+    let a = codel_files_command_at(installed, "/workspace/conv-a", &jwt_a);
+    let b = codel_files_command_at(installed, "/workspace/conv-b", &jwt_b);
+    assert_eq!(
+        "codel-files mount / /workspace/conv-a --n-threads '4' --jwt-file /etc/secrets/terminal.conv-a.jwt",
+        a
+    );
+    assert_eq!(
+        "codel-files mount / /workspace/conv-b --n-threads '4' --jwt-file /etc/secrets/terminal.conv-b.jwt",
+        b
+    );
+    assert_ne!(
+        a, b,
+        "two conversations must share neither dest nor token file"
+    );
+
+    let destless = codel_files_command_at(
+        "codel-files mount / --n-threads '4'",
+        "/workspace/parent-conv",
+        &codel_files_jwt_file_for(Path::new("/workspace/parent-conv")).unwrap(),
+    );
+    assert_eq!(
+        "codel-files mount / /workspace/parent-conv --n-threads '4' --jwt-file /etc/secrets/terminal.parent-conv.jwt",
+        destless,
+        "dest-less install command must insert bind dest and the dest's token file"
+    );
+
+    assert!(
+        codel_files_jwt_file_for(Path::new("/")).is_err(),
+        "a root without a conversation segment must not mount with a guessed token"
+    );
+}
+
+#[test]
+fn remount_jwt_file_matches_terminal_derivation() {
+    let dest = "/workspace/550e8400-e29b-41d4-a716-446655440000";
+    assert_eq!(
+        codel_workspace_types::codel_files_conversation_jwt_path(
+            "550e8400-e29b-41d4-a716-446655440000"
+        ),
+        crate::path_virtualization::codel_files_jwt_file_for(Path::new(dest)).unwrap(),
+        "host writes and guest reads must name the same file"
+    );
+}
+
+#[test]
+fn codel_files_ready_probe_polls_every_100ms_for_12s() {
+    assert_eq!(
+        concat!(
+            "i=0; while :; do ",
+            "if mountpoint -q '/workspace/conv-abc' 2>/dev/null; then exit 0; fi; ",
+            "if awk -v p='/workspace/conv-abc' '$2==p && $3 ~ /^fuse/ { found=1 } ",
+            "END { exit found?0:1 }' /proc/mounts; then exit 0; fi; ",
+            "i=$((i+1)); [ \"$i\" -ge 120 ] && exit 1; sleep 0.1; done",
+        ),
+        crate::path_virtualization::codel_files_ready_probe("/workspace/conv-abc")
+    );
+}
+
+#[test]
+fn codel_files_live_check_probes_session_root() {
+    let cmd = crate::path_virtualization::codel_files_live_check("/workspace/conv-abc");
+    assert!(
+        cmd.contains("awk -v p='/workspace/conv-abc' '$2==p && $3 ~ /^fuse/"),
+        "{cmd}"
+    );
+    assert!(
+        !cmd.contains("s='codel-files'"),
+        "custom FUSE sources must count as live: {cmd}"
+    );
+    assert!(cmd.contains("&& test -d '/workspace/conv-abc'"), "{cmd}");
+    assert!(!cmd.contains("while"), "single-shot probe: {cmd}");
+}
+
+#[test]
+fn remount_dest_keeps_boolean_long_flags() {
+    let rewritten = crate::path_virtualization::codel_files_command_at(
+        "custom-mnt mount --foreground / /workspace/conv-a",
+        "/workspace/conv-b",
+        "/etc/secrets/terminal.conv-b.jwt",
+    );
+    assert_eq!(
+        rewritten,
+        "custom-mnt mount --foreground / /workspace/conv-b --jwt-file /etc/secrets/terminal.conv-b.jwt",
+        "boolean long flags must not hide dest"
+    );
+}
+
+#[test]
+fn bind_hook_from_env_is_noop_unless_command() {
+    let off = BindMountHook::maybe_codel_files_remount(None);
+    assert!(
+        format!("{off:?}").contains("mount: false"),
+        "absent command must keep the no-op hook: {off:?}"
+    );
+    let empty = BindMountHook::maybe_codel_files_remount(Some(""));
+    assert!(
+        format!("{empty:?}").contains("mount: false"),
+        "empty command must keep the no-op hook: {empty:?}"
+    );
+    let on = BindMountHook::maybe_codel_files_remount(Some("codel-files mount / --n-threads '4'"));
+    assert!(
+        format!("{on:?}").contains("mount: true"),
+        "non-empty remount command must wire remount: {on:?}"
+    );
+    assert_eq!(
+        BindMountHook::BIND_REMOUNT_ENV,
+        codel_workspace_types::ARTIFACTS_BIND_REMOUNT_ENV
+    );
+}
+
+#[test]
 fn mount_error_is_returned() {
     let hook =
         BindMountHook::probe_then_mount(|_| false, |_| Err(BindMountError("fuse down".into())));

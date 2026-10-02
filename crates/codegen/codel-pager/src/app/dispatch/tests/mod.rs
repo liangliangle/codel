@@ -60,8 +60,8 @@ use super::*;
 use crate::acp::model_state::ModelState;
 use crate::acp::tracker::AcpUpdateTracker;
 use crate::app::actions::{
-    Action, Effect, SubagentKillOutcome, SwitchModelError, TaskResult, WorkspaceMutation,
-    WorkspaceWriteCompletion,
+    Action, Effect, ModelChoice, SubagentKillOutcome, SwitchModelError, TaskResult,
+    WorkspaceMutation, WorkspaceWriteCompletion,
 };
 use crate::app::app_view::tests::test_app;
 use crate::app::agent::{AgentId, AgentSession, AgentState};

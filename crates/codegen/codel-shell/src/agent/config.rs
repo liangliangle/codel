@@ -15,13 +15,12 @@ use codel_agent::prompt::skills::SkillsConfig;
 use codel_login::{AuthManager, CodelComConfig};
 use codel_sampler::{AuthScheme, SamplerConfig};
 use codel_sampling_types::{
-    CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
-    REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption, ReasoningSummary,
+    CONTEXT_WINDOWS_META_KEY, CompactionAtTokens, CompactionsRemaining, MODEL_NOTICE_META_KEY,
+    ModelNotice, REASONING_EFFORT_META_KEY, REASONING_EFFORTS_META_KEY, ReasoningEffort,
+    ReasoningEffortOption, ReasoningSummary, context_windows_meta_value,
     reasoning_effort_meta_value, reasoning_efforts_meta_value,
 };
-use codel_tools::types::compat::{
-    COMPAT_CELLS, CompatConfig, CompatConfigToml, CompatRemoteKey, CompatSurface, CompatVendor,
-};
+use codel_tools::types::compat::{CompatConfig, CompatConfigToml};
 /// Determines behavior like relay sync enablement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentMode {
@@ -45,8 +44,7 @@ pub const DEFAULT_AGENT_TYPE: &str = "codel-build-plan";
 pub(crate) fn default_agent_type() -> String {
     DEFAULT_AGENT_TYPE.to_owned()
 }
-pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://cli-chat-proxy.codel.dev/v1";
-pub const CODEL_API_BASE_URL_DEFAULT: &str = "https://api.codel.dev/v1";
+pub use codel_config::{CLI_CHAT_PROXY_BASE_URL_DEFAULT, EndpointsConfig};
 const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
 /// One or more environment variable names that may hold a model API key.
 /// Serde `untagged`: accepts a string or an array in TOML/JSON.
@@ -126,154 +124,48 @@ impl std::fmt::Display for EnvKeys {
         f.write_str(&self.names().join(", "))
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EndpointsConfig {
-    /// cli chat proxy base URL.
-    /// `None` means unset (resolvers apply the default); `Some` means explicitly configured.
-    /// Tracking explicitness (vs comparing to the default value) lets an org pin the proxy to the default on purpose.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cli_chat_proxy_base_url: Option<String>,
-    /// Base URL for the public Codel API.
-    pub codel_api_base_url: String,
-    /// Optional extra access-header value (applied only with the optional non-production feature, and only for matching first-party hosts).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alpha_test_key: Option<String>,
-    /// Env: `CODEL_MODELS_BASE_URL`. Enables custom endpoint mode.
-    /// List URL defaults to `{models_base_url}/models`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub models_base_url: Option<String>,
-    /// Env: `CODEL_MODELS_LIST_URL`. Overrides the default `{base}/models` list URL.
-    #[serde(alias = "models_endpoint", skip_serializing_if = "Option::is_none")]
-    pub models_list_url: Option<String>,
-    /// Env: `CODEL_FEEDBACK_BASE_URL`. Where feedback submissions go.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub feedback_base_url: Option<String>,
-    /// Env: `CODEL_TRACE_UPLOAD_URL`. Where trace uploads go.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_upload_url: Option<String>,
-    /// Env: `CODEL_TRACE_UPLOAD_BUCKET`. Direct bucket (`gs://` or `s3://`), bypasses proxy.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_upload_bucket: Option<String>,
-    /// Env: `CODEL_TRACE_UPLOAD_REGION`. AWS region (S3 only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_upload_region: Option<String>,
-    /// Env: `CODEL_TRACE_UPLOAD_CREDENTIALS_FILE`. Path to GCS SA key or AWS credentials file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_upload_credentials_file: Option<String>,
-    /// Inline credentials (JSON/INI). Takes precedence over `credentials_file`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_upload_credentials: Option<String>,
-    /// Env: `CODEL_TRACE_UPLOAD_ENDPOINT_URL`. Custom S3-compatible endpoint.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_upload_endpoint_url: Option<String>,
-    /// Env: `CODEL_DEPLOYMENT_KEY`. Management API key for enterprise deployments.
-    /// Sent on telemetry and service requests for deployment-level attribution.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deployment_key: Option<String>,
-    /// Env: `CODEL_MANAGED_CONFIG_URL`. Override the managed config endpoint.
-    /// Defaults to `{proxy_url()}/deployment/config`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub managed_config_url: Option<String>,
-    /// Read by `load_management_api_key_sync()`. Declared for `serde_ignored`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub management_api_key: Option<String>,
-    /// Read by `load_gcs_service_account_key_sync()`. Declared for `serde_ignored`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gcs_service_account_key: Option<String>,
+/// The default is `context_window`, else the first listed window; the choices keep list order and include it.
+pub(crate) fn context_window_choices(
+    context_window: Option<NonZeroU64>,
+    listed: &[NonZeroU64],
+) -> Option<(NonZeroU64, Vec<NonZeroU64>)> {
+    let default = context_window.or_else(|| listed.first().copied())?;
+    if listed.is_empty() {
+        return Some((default, Vec::new()));
+    }
+    let mut choices = Vec::with_capacity(listed.len() + 1);
+    if !listed.contains(&default) {
+        choices.push(default);
+    }
+    for window in listed {
+        if !choices.contains(window) {
+            choices.push(*window);
+        }
+    }
+    Some((default, choices))
 }
-/// A blank or whitespace-only override counts as unset.
-/// Single source of truth for the "an empty value means not configured" rule shared by the endpoint resolvers.
-fn blank_as_unset(opt: &Option<String>) -> Option<String> {
-    opt.as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_owned)
-}
-impl EndpointsConfig {
-    pub fn has_custom_endpoint(&self) -> bool {
-        self.models_base_url.is_some() || self.models_list_url.is_some()
-    }
-    /// `default()` plus merged managed/requirements endpoint overrides, so startup fetches use the configured (not public) endpoints.
-    /// Only merges layers; never derives one endpoint from another.
-    /// Falls back to `default()` on load failure.
-    pub(crate) fn from_effective_config() -> Self {
-        match crate::config::load_effective_config() {
-            Ok(cfg) => Self::from_config_value(&cfg),
-            Err(_) => Self::default(),
-        }
-    }
-    /// Layer the `[endpoints]` table from `config` over the env/default base.
-    /// No field is derived from another; defaulting is done by the resolvers.
-    /// `pub`: the pager resolves the voice STT base through this same path.
-    pub fn from_config_value(config: &toml::Value) -> Self {
-        let default = Self::default();
-        let mut base = match toml::Value::try_from(default) {
-            Ok(v) => v,
-            Err(_) => return Self::default(),
-        };
-        if let Some(endpoints) = config.get("endpoints") {
-            crate::config::deep_merge_toml(&mut base, endpoints);
-        }
-        let resolved: Self = base.try_into().unwrap_or_default();
-        resolved
-    }
-    /// The cli-chat-proxy base URL through which all auxiliary services (and OAuth/session inference) resolve.
-    /// Explicit `cli_chat_proxy_base_url`, else the public default.
-    /// NEVER falls back to `codel_api_base_url`: that is the inference endpoint (API-key auth) only.
-    pub fn proxy_url(&self) -> String {
-        blank_as_unset(&self.cli_chat_proxy_base_url)
-            .unwrap_or_else(|| CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_owned())
-    }
-    pub(crate) fn resolve_inference_base_url(&self) -> String {
-        self.models_base_url
-            .clone()
-            .unwrap_or_else(|| self.proxy_url())
-    }
-    /// Feedback endpoint, an auxiliary service, so it defaults to the cli-chat-proxy, never `codel_api_base_url`.
-    pub(crate) fn resolve_feedback_base_url(&self) -> String {
-        blank_as_unset(&self.feedback_base_url).unwrap_or_else(|| self.proxy_url())
-    }
-    /// Trace upload endpoint, an auxiliary service, so it defaults to the cli-chat-proxy, never `codel_api_base_url`.
-    pub(crate) fn resolve_trace_upload_url(&self) -> String {
-        blank_as_unset(&self.trace_upload_url).unwrap_or_else(|| self.proxy_url())
-    }
-    /// Managed deployment-config URL (`codel setup`): explicit `managed_config_url`, else `proxy_url` + `/deployment/config`.
-    /// Never `codel_api_base_url`, so the deployment key reaches the proxy, not the inference host.
-    pub(crate) fn resolve_managed_config_url(&self) -> String {
-        blank_as_unset(&self.managed_config_url).unwrap_or_else(|| {
-            format!(
-                "{}/deployment/config",
-                self.proxy_url().trim_end_matches('/')
-            )
-        })
-    }
-    /// Resolve trace upload credentials: inline > file > `None` (ambient).
-    pub(crate) fn resolve_trace_credentials(&self) -> Option<String> {
-        if let Some(ref inline) = self.trace_upload_credentials {
-            let trimmed = inline.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
-            }
-        }
-        self.trace_upload_credentials_file
-            .as_deref()
-            .and_then(|path| {
-                std::fs::read_to_string(path)
-                    .inspect_err(|e| {
-                        tracing::warn!(
-                            path = %path,
-                            error = %e,
-                            "Failed to read trace upload credentials file"
-                        );
-                    })
-                    .ok()
-            })
-    }
-    /// Resolve direct-to-bucket upload method from `trace_upload_bucket`.
-    /// Returns `None` if no bucket is configured or scheme is unrecognized.
-    pub fn resolve_direct_upload_method(
+/// Trace upload methods on [`EndpointsConfig`].
+/// They are a trait because they need the upload types in this crate.
+pub trait TraceUploadEndpoints {
+    /// Builds an upload method that writes straight to `trace_upload_bucket`.
+    /// Returns `None` when no bucket is set or its scheme is not `gs://` or `s3://`.
+    fn resolve_direct_upload_method(&self) -> Option<crate::session::repo_changes::UploadMethod>;
+    fn has_noninteractive_upload_auth(&self) -> bool;
+    /// Tries `trace_upload_bucket`, then the proxy, then `gcs_service_account_key` from config.
+    /// The proxy needs an `auth_token` or a `deployment_key`.
+    fn resolve_upload_method(
         &self,
-    ) -> Option<crate::session::repo_changes::UploadMethod> {
+        auth_token: Option<String>,
+    ) -> Option<crate::session::repo_changes::UploadMethod>;
+    /// Returns the trace bucket URL from `CODEL_TELEMETRY_GCS_BUCKET`, else config, else the compiled-in default.
+    /// `None` disables direct GCS trace uploads.
+    fn resolve_trace_bucket_url(&self) -> Option<Resolved<String>>;
+    /// Whether `auth`'s privacy flags block trace uploads.
+    /// The coding-data opt-out governs sharing with Codel, so it does not apply when traces go to the deployment's own `trace_upload_bucket`. ZDR blocks every destination.
+    fn is_trace_upload_blocked_for(&self, auth: &codel_login::CodelAuth) -> bool;
+}
+impl TraceUploadEndpoints for EndpointsConfig {
+    fn resolve_direct_upload_method(&self) -> Option<crate::session::repo_changes::UploadMethod> {
         let bucket_url = self.trace_upload_bucket.as_deref()?.trim();
         if bucket_url.is_empty() {
             return None;
@@ -305,11 +197,10 @@ impl EndpointsConfig {
         );
         None
     }
-    pub fn has_noninteractive_upload_auth(&self) -> bool {
+    fn has_noninteractive_upload_auth(&self) -> bool {
         self.deployment_key.is_some() || self.resolve_direct_upload_method().is_some()
     }
-    /// Tries the direct bucket, then the proxy (if `auth_token` or `deployment_key`), then ambient GCS, else `None`.
-    pub fn resolve_upload_method(
+    fn resolve_upload_method(
         &self,
         auth_token: Option<String>,
     ) -> Option<crate::session::repo_changes::UploadMethod> {
@@ -332,9 +223,7 @@ impl EndpointsConfig {
         }
         None
     }
-    /// Resolve trace bucket URL: env > config > compiled-in default.
-    /// `None` disables direct GCS trace uploads.
-    pub fn resolve_trace_bucket_url(&self) -> Option<Resolved<String>> {
+    fn resolve_trace_bucket_url(&self) -> Option<Resolved<String>> {
         resolve_string_flag(
             None,
             "CODEL_TELEMETRY_GCS_BUCKET",
@@ -346,41 +235,15 @@ impl EndpointsConfig {
                 .map(|b| Resolved::new(format!("gs://{b}"), ConfigSource::Default))
         })
     }
-    /// `models_list_url` > `{models_base_url}/models` > `{proxy_base_url}/models`.
-    pub(crate) fn resolve_models_list_url(&self) -> String {
-        if let Some(ref url) = self.models_list_url {
-            return url.clone();
-        }
-        let base = self
-            .models_base_url
-            .clone()
-            .unwrap_or_else(|| self.proxy_url());
-        format!("{}/models", base)
-    }
-}
-impl Default for EndpointsConfig {
-    fn default() -> Self {
-        Self {
-            cli_chat_proxy_base_url: std::env::var("CODEL_CLI_CHAT_PROXY_BASE_URL").ok(),
-            codel_api_base_url: std::env::var("CODEL_CODEL_API_BASE_URL")
-                .unwrap_or_else(|_| CODEL_API_BASE_URL_DEFAULT.to_owned()),
-            alpha_test_key: None,
-            models_base_url: env_string("CODEL_MODELS_BASE_URL"),
-            models_list_url: env_string("CODEL_MODELS_LIST_URL"),
-            feedback_base_url: env_string("CODEL_FEEDBACK_BASE_URL"),
-            trace_upload_url: env_string("CODEL_TRACE_UPLOAD_URL"),
-            trace_upload_bucket: env_string("CODEL_TRACE_UPLOAD_BUCKET"),
-            trace_upload_region: env_string("CODEL_TRACE_UPLOAD_REGION"),
-            trace_upload_credentials_file: env_string("CODEL_TRACE_UPLOAD_CREDENTIALS_FILE"),
-            trace_upload_credentials: None,
-            trace_upload_endpoint_url: env_string("CODEL_TRACE_UPLOAD_ENDPOINT_URL"),
-            deployment_key: env_string("CODEL_DEPLOYMENT_KEY"),
-            managed_config_url: env_string("CODEL_MANAGED_CONFIG_URL"),
-            management_api_key: None,
-            gcs_service_account_key: None,
+    fn is_trace_upload_blocked_for(&self, auth: &codel_login::CodelAuth) -> bool {
+        if self.resolve_direct_upload_method().is_some() {
+            auth.is_zdr_team()
+        } else {
+            auth.is_data_collection_disabled()
         }
     }
 }
+pub use codel_config::AllowlistPin;
 pub use codel_config_types::{
     BoolFlag, ConfigSource, FEATURES, Feature, FeatureConfigLayer, FeatureConfigLayers,
     FeatureLayerValue, FeatureSources, LazinessDetectorPerModelConfig, Resolved,
@@ -393,13 +256,6 @@ pub(crate) enum GoalRoleModelChoice {
     InheritCurrent,
     /// Use this explicit pair (subject to auth/fail-open at spawn time).
     Explicit(crate::util::config::GoalRoleModel),
-}
-/// Fleet `allowed_models` pin. A list replaces the user/project allowlist;
-/// [`Self::FailClosed`] is a present-but-unreadable value (nothing selectable).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AllowlistPin {
-    List(Vec<String>),
-    FailClosed,
 }
 /// A requirement pin from `requirements.toml`. Wins over all other sources.
 #[derive(Debug, Clone)]
@@ -521,148 +377,7 @@ pub(crate) fn resolve_compaction_detail_from(
         .or_else(|| remote.and_then(CompactionDetail::parse))
         .unwrap_or_default()
 }
-/// Resolve a single vendor-compat cell: env > `[compat]` TOML > remote settings remote flag > default ON.
-fn resolve_compat_cell(
-    env: &str,
-    cfg: Option<bool>,
-    remote: Option<bool>,
-    default: bool,
-) -> Resolved<bool> {
-    resolve_compat_cell_with_env(codel_config::env_bool(env), cfg, remote, default)
-}
-pub(crate) fn resolve_compat_cell_with_env(
-    env: Option<bool>,
-    cfg: Option<bool>,
-    remote: Option<bool>,
-    default: bool,
-) -> Resolved<bool> {
-    if let Some(value) = env {
-        Resolved::new(value, ConfigSource::Env)
-    } else if let Some(value) = cfg {
-        Resolved::new(value, ConfigSource::Config)
-    } else if let Some(value) = remote {
-        Resolved::new(value, ConfigSource::Remote)
-    } else {
-        Resolved::new(default, ConfigSource::Default)
-    }
-}
-fn remote_compat_value(
-    remote: Option<&crate::util::config::RemoteSettings>,
-    key: Option<CompatRemoteKey>,
-) -> Option<bool> {
-    let remote = remote?;
-    match key? {
-        CompatRemoteKey::CursorSkills => remote.cursor_skills_enabled,
-        CompatRemoteKey::CursorRules => remote.cursor_rules_enabled,
-        CompatRemoteKey::CursorAgents => remote.cursor_agents_enabled,
-        CompatRemoteKey::CursorMcps => remote.cursor_mcps_enabled,
-        CompatRemoteKey::CursorHooks => remote.cursor_hooks_enabled,
-        CompatRemoteKey::CursorSessions => remote.cursor_sessions_enabled,
-        CompatRemoteKey::ClaudeSkills => remote.claude_skills_enabled,
-        CompatRemoteKey::ClaudeRules => remote.claude_rules_enabled,
-        CompatRemoteKey::ClaudeAgents => remote.claude_agents_enabled,
-        CompatRemoteKey::ClaudeMcps => remote.claude_mcps_enabled,
-        CompatRemoteKey::ClaudeHooks => remote.claude_hooks_enabled,
-        CompatRemoteKey::ClaudeSessions => remote.claude_sessions_enabled,
-        CompatRemoteKey::CodexSessions => remote.codex_sessions_enabled,
-    }
-}
-fn resolve_compat_config(
-    config: &CompatConfigToml,
-    remote: Option<&crate::util::config::RemoteSettings>,
-) -> CompatConfig {
-    let defaults = CompatConfig::default();
-    let mut resolved = defaults;
-    for cell in COMPAT_CELLS {
-        resolved.set(
-            cell,
-            resolve_compat_cell(
-                cell.env_var(),
-                config.value(cell),
-                remote_compat_value(remote, cell.remote_key()),
-                defaults.value(cell),
-            )
-            .value,
-        );
-    }
-    resolved
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompatConfigCellError {
-    Unavailable,
-    Malformed,
-}
-pub(crate) fn compat_config_cell(
-    raw_config: Result<&toml::Value, ()>,
-    cell: codel_tools::types::compat::CompatCell,
-) -> Result<Option<bool>, CompatConfigCellError> {
-    let raw = raw_config.map_err(|()| CompatConfigCellError::Unavailable)?;
-    let Some(compat) = raw.get("compat") else {
-        return Ok(None);
-    };
-    let compat = compat.as_table().ok_or(CompatConfigCellError::Malformed)?;
-    let Some(vendor) = compat.get(cell.vendor().as_ref()) else {
-        return Ok(None);
-    };
-    let vendor = vendor.as_table().ok_or(CompatConfigCellError::Malformed)?;
-    let Some(value) = vendor.get(cell.surface().as_ref()) else {
-        return Ok(None);
-    };
-    value
-        .as_bool()
-        .map(Some)
-        .ok_or(CompatConfigCellError::Malformed)
-}
-/// Resolve only picker-facing session cells from raw config independently.
-pub fn resolve_compat_sessions_from_raw(
-    raw_config: Result<&toml::Value, ()>,
-    remote: Option<&crate::util::config::RemoteSettings>,
-) -> CompatConfig {
-    let mut config = CompatConfigToml::default();
-    for cell in COMPAT_CELLS
-        .into_iter()
-        .filter(|cell| cell.surface() == CompatSurface::Sessions)
-    {
-        let value = match compat_config_cell(raw_config, cell) {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::warn!(
-                    vendor = cell.vendor().as_ref(),
-                    ?error,
-                    "invalid compat config; disabling foreign sessions"
-                );
-                Some(false)
-            }
-        };
-        match cell.vendor() {
-            CompatVendor::Cursor => config.cursor.sessions = value,
-            CompatVendor::Claude => config.claude.sessions = value,
-            CompatVendor::Codex => config.codex.sessions = value,
-        }
-    }
-    resolve_compat_config(&config, remote)
-}
-/// Resolve a string setting: cli > env > config > feature flag. `None` if no source provides a value.
-pub(crate) fn resolve_string_flag(
-    cli_arg: Option<&str>,
-    env_var: &str,
-    config_val: Option<&str>,
-    feature_flag_val: Option<&str>,
-) -> Option<Resolved<String>> {
-    if let Some(val) = cli_arg.filter(|s| !s.is_empty()) {
-        return Some(Resolved::new(val.to_owned(), ConfigSource::Cli));
-    }
-    if let Some(val) = env_string(env_var) {
-        return Some(Resolved::new(val, ConfigSource::Env));
-    }
-    if let Some(val) = config_val.filter(|s| !s.is_empty()) {
-        return Some(Resolved::new(val.to_owned(), ConfigSource::Config));
-    }
-    if let Some(val) = feature_flag_val.filter(|s| !s.is_empty()) {
-        return Some(Resolved::new(val.to_owned(), ConfigSource::Remote));
-    }
-    None
-}
+pub(crate) use codel_config::resolve_string_flag;
 /// Resolve `enabled` for section-based configs (memory, subagents, etc.).
 /// Feature flag only applies when the TOML section is absent.
 pub(crate) fn resolve_enabled(
@@ -686,62 +401,7 @@ pub(crate) fn resolve_enabled(
         .resolve()
 }
 pub use codel_logging::config::TelemetryConfig;
-/// Plugin system configuration from `[plugins]` section in config.toml.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct PluginsConfig {
-    /// Additional plugin directory paths to load.
-    #[serde(default)]
-    pub paths: Vec<String>,
-    /// Plugin IDs or names to disable.
-    /// Disabled plugins are discovered but their components are not loaded into the session.
-    #[serde(default)]
-    pub disabled: Vec<String>,
-    /// Plugin IDs or names to explicitly enable.
-    /// Used for project-scope plugins, which are disabled by default; adding a plugin here overrides that default.
-    #[serde(default)]
-    pub enabled: Vec<String>,
-    /// CLI `--plugin-dir` paths (populated by CLI arg processing, not config file).
-    #[serde(skip)]
-    pub cli_plugin_dirs: Vec<std::path::PathBuf>,
-}
-impl PluginsConfig {
-    /// Merge `enabledPlugins` from Claude settings files into this config. Reads `enabledPlugins` from `~/.claude/settings.json` only (user scope).
-    /// Project-level `<git_root>/.claude/settings.json` is intentionally NOT read here. A malicious repo could pre-populate `enabledPlugins` to bypass the project-plugin auto-disable logic in `populate_plugin_lists`.
-    /// That would enable attacker-controlled hooks (e.g. a SessionStart hook running arbitrary code). Native `.codel/config.toml` entries already present take precedence: a name is only added if it isn't already in the opposite list.
-    pub(crate) fn merge_claude_enabled_plugins(&mut self, _cwd: Option<&std::path::Path>) {
-        if crate::claude_import::is_claude_import_marked_with_log("merge_claude_enabled_plugins") {
-            return;
-        }
-        let mut paths = Vec::new();
-        if let Some(home) = codel_dirs::home_dir() {
-            paths.push(home.join(".claude").join("settings.json"));
-        }
-        for path in &paths {
-            let (claude_enabled, claude_disabled) =
-                codel_agent::plugins::marketplace::load_enabled_disabled_plugins(path);
-            for name in claude_enabled {
-                if !self.disabled.contains(&name) && !self.enabled.contains(&name) {
-                    self.enabled.push(name);
-                }
-            }
-            for name in claude_disabled {
-                if !self.enabled.contains(&name) && !self.disabled.contains(&name) {
-                    self.disabled.push(name);
-                }
-            }
-        }
-    }
-    pub(crate) fn to_discovery_config(
-        &self,
-    ) -> codel_agent::plugins::discovery::DiscoveryConfig {
-        codel_agent::plugins::discovery::DiscoveryConfig {
-            cli_plugin_dirs: self.cli_plugin_dirs.clone(),
-            config_paths: self.paths.iter().map(std::path::PathBuf::from).collect(),
-            disabled: self.disabled.clone(),
-            enabled: self.enabled.clone(),
-        }
-    }
-}
+pub use codel_workspace::plugins::PluginsConfig;
 /// Feedback submission configuration (`[feedback]` in config.toml).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1072,6 +732,9 @@ pub struct Config {
     /// Declared so documented sampling keys are not reported as unrecognized.
     #[serde(default)]
     pub prompt_suggestions: crate::util::config::PromptSuggestConfig,
+    /// `[file_acceleration]` section: the accelerator route override, read by `session::file_acceleration::settings`.
+    #[serde(default, skip_serializing)]
+    pub file_acceleration: codel_config_types::FileAccelerationConfig,
     /// What `[features]` said in the merged layers.
     /// One tier of [`Config::feature`].
     #[serde(skip)]
@@ -1153,7 +816,7 @@ pub struct Config {
     pub compaction: CompactionConfig,
     #[serde(default, skip_serializing)]
     pub managed_mcps: crate::config::ManagedMcpsConfig,
-    /// `[auth]` alias: consumed by `expand_auth_alias` before serde.
+    /// `[auth]` alias: consumed by `codel_login::expand_auth_alias` before serde.
     /// Typed as `CodelComConfig` (same schema) so sub-field typos are caught.
     #[serde(default, skip_serializing)]
     pub auth: Option<CodelComConfig>,
@@ -1461,6 +1124,7 @@ impl Default for Config {
             worktree: WorktreeConfigSection::default(),
             auto_mode: AutoModeConfig::default(),
             prompt_suggestions: crate::util::config::PromptSuggestConfig::default(),
+            file_acceleration: codel_config_types::FileAccelerationConfig::default(),
             feature_values: BTreeMap::new(),
             config_models: IndexMap::new(),
             config_warnings: Vec::new(),
@@ -1665,7 +1329,7 @@ impl Config {
         Ok((config, unrecognized_keys))
     }
     pub fn new_from_toml_cfg(raw_config: &toml::Value) -> Result<Self, String> {
-        let raw_config = &Self::expand_auth_alias(raw_config);
+        let raw_config = &codel_login::expand_auth_alias(raw_config);
         let super::config_model_override_parse::ParsedModelOverrides {
             models: config_models,
             warnings: config_warnings,
@@ -1727,6 +1391,7 @@ impl Config {
         config.harness.merge_deprecated_keys();
         config.mcp_servers = parsed_mcp_servers.into_iter().collect();
         config.config_models = config_models;
+        drop_model_tables_under_external_auth(&mut config);
         config.config_warnings = config_warnings;
         config.model_providers = model_providers;
         for spec in FEATURES {
@@ -1813,6 +1478,8 @@ impl Config {
             );
         }
         super::config_model_override_parse::log_config_warnings(&config.config_warnings);
+        config.codel_com_config =
+            CodelComConfig::from_effective_config(raw_config).map_err(|error| error.to_string())?;
         config.login_device_flow = match raw_config
             .get("codel_com_config")
             .and_then(toml::Value::as_table)
@@ -1982,9 +1649,14 @@ impl Config {
         if let Some(v) = ctx.remote_settings.and_then(|s| s.path_not_found_hints) {
             self.path_not_found_hints = v;
         }
-        self.compat_resolved = resolve_compat_config(&self.compat, ctx.remote_settings);
+        self.compat_resolved = codel_config::compat::resolve_compat_config(
+            &self.compat,
+            &codel_config::compat::CompatEnv::from_process(),
+            ctx.remote_settings,
+        );
     }
-    pub(crate) fn resolve_memory(
+    /// The memory resolution every backend applies.
+    pub fn resolve_memory(
         &self,
         memory_enabled_override: Option<bool>,
         remote: Option<&crate::util::config::RemoteSettings>,
@@ -2036,28 +1708,6 @@ impl Config {
         };
         self.resolve_runtime_fields(&ctx);
         crate::util::config::set_remote_campaigns_from_settings(self.remote_settings.as_ref());
-    }
-    /// If the TOML contains `[auth]`, copy its contents under `[codel_com_config]`.
-    /// `[codel_com_config]` takes precedence if both are present (explicit wins).
-    /// This lets customers write the shorter `[auth.oidc]` instead of `[codel_com_config.oidc]`.
-    fn expand_auth_alias(raw_config: &toml::Value) -> toml::Value {
-        let mut config = raw_config.clone();
-        if let toml::Value::Table(ref mut table) = config
-            && let Some(auth) = table.remove("auth")
-        {
-            if let Some(gcc) = table.get_mut("codel_com_config") {
-                if let (toml::Value::Table(gcc_table), toml::Value::Table(auth_table)) =
-                    (gcc, &auth)
-                {
-                    for (k, v) in auth_table {
-                        gcc_table.entry(k.clone()).or_insert(v.clone());
-                    }
-                }
-            } else {
-                table.insert("codel_com_config".to_owned(), auth);
-            }
-        }
-        config
     }
     fn apply_env_overrides(&mut self) {
         self.telemetry.apply_env_overrides();
@@ -2804,6 +2454,8 @@ pub fn apply_remote_settings_side_effects(
     crate::util::config::cache_remote_max_mcp_output_bytes(s.max_mcp_output_bytes);
     crate::util::config::cache_remote_auto_mode(s.auto_mode.clone());
     crate::util::config::cache_remote_prompt_suggestions(s.prompt_suggestions.clone());
+    crate::util::config::cache_remote_turn_summary_config(s.turn_summary_config.clone());
+    crate::util::config::cache_remote_session_recap_config(s.session_recap_config.clone());
     crate::util::config::cache_remote_remember_tool_approvals(s.remember_tool_approvals);
     crate::util::config::cache_remote_crash_handler_enabled(s.crash_handler_enabled);
     crate::util::config::cache_remote_accept_request_encodings(origin, &s.accept_request_encodings);
@@ -2817,6 +2469,28 @@ fn managed_settings_env_flag(key: &str) -> Option<bool> {
     let content = std::fs::read_to_string(&path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
     codel_workspace::permission::resolution::json_env_flag(json.get("env"), key)
+}
+/// External auth with a custom models endpoint takes every model from that endpoint.
+/// `[model.*]` tables then never reach the catalog, inference routing, or credential choice.
+/// `[models] allowed_models` is ignored too. A `requirements.toml` pin still applies.
+fn drop_model_tables_under_external_auth(config: &mut Config) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    if (config.config_models.is_empty() && config.models.allowed_models.is_none())
+        || crate::agent::remote_config::CatalogSource::for_config(config)
+            != crate::agent::remote_config::CatalogSource::ModelsEndpoint
+    {
+        return;
+    }
+    let ignored: Vec<String> = config.config_models.drain(..).map(|(key, _)| key).collect();
+    let ignored_allowed_models = config.models.allowed_models.take();
+    LOGGED
+        .call_once(|| {
+            tracing::info!(
+            ?ignored,
+            ?ignored_allowed_models,
+            "external auth with a custom models endpoint: ignoring [model.*] entries and allowed_models"
+        );
+        });
 }
 /// Assemble the final model map. Priority (highest wins):
 /// config.toml `[model.*]` > prefetched (remote) > hardcoded defaults.
@@ -2842,8 +2516,8 @@ pub(crate) fn resolve_model_list(
         for (key, entry) in prefetched.iter_mut() {
             let donor = resolved.get(key);
             if let Some(donor) = donor {
-                if entry.info.context_window.get() == default_cw
-                    && donor.info.context_window.get() != default_cw
+                if !has_explicit_context_window(&entry.info, default_cw)
+                    && has_explicit_context_window(&donor.info, default_cw)
                 {
                     tracing::debug!(
                         model_key = %key,
@@ -2854,6 +2528,7 @@ pub(crate) fn resolve_model_list(
                         "prefetched model missing context_window, inheriting from hardcoded default"
                     );
                     entry.info.context_window = donor.info.context_window;
+                    entry.info.context_windows = donor.info.context_windows.clone();
                 }
                 if entry.info.agent_type == DEFAULT_AGENT_TYPE {
                     entry.info.agent_type.clone_from(&donor.info.agent_type);
@@ -2876,7 +2551,7 @@ pub(crate) fn resolve_model_list(
         let base = resolved.shift_remove(key);
         if !had_base {
             tracing::debug!(model_key = %key, "config model adding new entry (not in defaults/prefetched)");
-            if model_override.context_window.is_none() {
+            if model_override.context_window.is_none() && model_override.context_windows.is_none() {
                 tracing::debug!(
                     model_key = %key,
                     default = 200_000,
@@ -2922,17 +2597,23 @@ pub(crate) fn resolve_model_list(
     }
     {
         let default_cw = DEFAULT_CONTEXT_WINDOW;
-        let donors: std::collections::HashMap<String, (std::num::NonZeroU64, ApiBackend)> =
-            resolved
-                .values()
-                .filter(|e| e.info.context_window.get() != default_cw)
-                .map(|e| {
+        let donors: std::collections::HashMap<
+            String,
+            (std::num::NonZeroU64, Vec<std::num::NonZeroU64>, ApiBackend),
+        > = resolved
+            .values()
+            .filter(|e| has_explicit_context_window(&e.info, default_cw))
+            .map(|e| {
+                (
+                    e.info.model.clone(),
                     (
-                        e.info.model.clone(),
-                        (e.info.context_window, e.info.api_backend.clone()),
-                    )
-                })
-                .collect();
+                        e.info.context_window,
+                        e.info.context_windows.clone(),
+                        e.info.api_backend.clone(),
+                    ),
+                )
+            })
+            .collect();
         let mut menu_donors: std::collections::HashMap<String, (Vec<ReasoningEffortOption>, bool)> =
             std::collections::HashMap::new();
         for (key, e) in &resolved {
@@ -2954,8 +2635,8 @@ pub(crate) fn resolve_model_list(
             }
         }
         for (key, entry) in resolved.iter_mut() {
-            if let Some((donor_cw, donor_backend)) = donors.get(&entry.info.model) {
-                if entry.info.context_window.get() == default_cw {
+            if let Some((donor_cw, donor_choices, donor_backend)) = donors.get(&entry.info.model) {
+                if !has_explicit_context_window(&entry.info, default_cw) {
                     tracing::debug!(
                         model = %entry.info.model,
                         from = default_cw,
@@ -2963,6 +2644,7 @@ pub(crate) fn resolve_model_list(
                         "slug-match: inheriting context_window from sibling catalog entry"
                     );
                     entry.info.context_window = *donor_cw;
+                    entry.info.context_windows.clone_from(donor_choices);
                 }
                 if !explicit_api_backend_keys.contains(key.as_str())
                     && entry.info.api_backend == ApiBackend::default()
@@ -3008,6 +2690,10 @@ pub(crate) fn resolve_model_list(
         entry.info.derive_reasoning_effort_fields();
     }
     resolved
+}
+/// A nonempty menu counts as explicit even when the scalar equals the parser fallback `default_cw`.
+fn has_explicit_context_window(info: &ModelInfo, default_cw: u64) -> bool {
+    info.context_window.get() != default_cw || !info.context_windows.is_empty()
 }
 /// Layer 6 of [`resolve_model_list`]: fold the global `[models].extra_headers` into every model as a base. The presence check is case-insensitive because the sampler lowers these into an `http::HeaderMap`.
 /// A global `X-Foo` must not shadow a per-model `x-foo`. A per-model `[model.<id>].extra_headers` (applied earlier) therefore wins per key.
@@ -3114,6 +2800,7 @@ struct DefaultModelJson {
     name: Option<String>,
     description: Option<String>,
     context_window: Option<NonZeroU64>,
+    context_windows: Option<Vec<NonZeroU64>>,
     temperature: Option<f32>,
     top_p: Option<f32>,
     max_completion_tokens: Option<u32>,
@@ -3144,6 +2831,7 @@ struct DefaultModelJson {
     auto_compact_threshold_percent: Option<u8>,
     #[serde(default)]
     system_prompt_label: Option<String>,
+    notice: Option<ModelNotice>,
 }
 fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryConfig> {
     let root: serde_json::Value = serde_json::from_str(crate::models::DEFAULT_MODELS_JSON)
@@ -3167,9 +2855,16 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 m.id
             );
             let key = m.id.clone().unwrap_or_else(|| m.model.clone());
-            let context_window = m
-                .context_window
-                .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero"));
+            let (context_window, context_windows) = context_window_choices(
+                m.context_window,
+                m.context_windows.as_deref().unwrap_or_default(),
+            )
+            .unwrap_or_else(|| {
+                (
+                    NonZeroU64::new(200_000).expect("200000 is non-zero"),
+                    Vec::new(),
+                )
+            });
             let config = ModelEntryConfig {
                 id: m.id,
                 model: m.model,
@@ -3178,7 +2873,9 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 api_base_url: Some(endpoints.codel_api_base_url.clone()),
                 name: m.name,
                 description: m.description,
+                notice: m.notice.and_then(ModelNotice::normalized),
                 context_window,
+                context_windows,
                 max_request_bytes: None,
                 auto_compact_threshold_percent: m.auto_compact_threshold_percent,
                 system_prompt_label: m.system_prompt_label,
@@ -3234,6 +2931,9 @@ pub struct ModelEntryConfig {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Message clients show while this model is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<ModelNotice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3277,6 +2977,8 @@ pub struct ModelEntryConfig {
     /// Used for auto-compact threshold calculations.
     /// Required: BYOK users must explicitly set this in config.toml.
     pub context_window: NonZeroU64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_windows: Vec<NonZeroU64>,
     /// Provider request-body cap in bytes; unset resolves to the `api_backend` default (30 MB for `messages`, else 50 MiB).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_request_bytes: Option<NonZeroU64>,
@@ -3355,6 +3057,7 @@ impl Default for ModelEntryConfig {
             base_url: String::new(),
             name: None,
             description: None,
+            notice: None,
             max_completion_tokens: None,
             temperature: None,
             top_p: None,
@@ -3369,6 +3072,7 @@ impl Default for ModelEntryConfig {
             variants: Vec::new(),
             extra_headers: IndexMap::new(),
             context_window: NonZeroU64::MIN,
+            context_windows: Vec::new(),
             max_request_bytes: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
@@ -3411,6 +3115,8 @@ pub struct ConfigModelOverride {
     pub mtls_cert_dir: Option<PathBuf>,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// A notice with blank `text` clears the inherited one.
+    pub notice: Option<ModelNotice>,
     pub api_key: Option<String>,
     /// Env var name(s) for the provider key: string or array in config.toml.
     pub env_key: Option<EnvKeys>,
@@ -3427,6 +3133,7 @@ pub struct ConfigModelOverride {
     #[serde(default)]
     pub env_http_headers: IndexMap<String, String>,
     pub context_window: Option<u64>,
+    pub context_windows: Option<Vec<NonZeroU64>>,
     pub max_request_bytes: Option<NonZeroU64>,
     /// Per-model auto-compact threshold override (0-100) from `[model.<id>]`.
     /// Read directly by `resolve_auto_compact_threshold_percent`.
@@ -3483,6 +3190,9 @@ impl ConfigModelOverride {
         if self.description.is_some() {
             entry.info.description.clone_from(&self.description);
         }
+        if let Some(notice) = &self.notice {
+            entry.info.notice = notice.clone().normalized();
+        }
         if self.max_completion_tokens.is_some() {
             entry.info.max_completion_tokens = self.max_completion_tokens;
         }
@@ -3504,8 +3214,20 @@ impl ConfigModelOverride {
         if !self.env_http_headers.is_empty() {
             entry.info.env_http_headers = self.env_http_headers.clone();
         }
-        if let Some(cw) = self.context_window.and_then(NonZeroU64::new) {
+        let scalar = self.context_window.and_then(NonZeroU64::new);
+        let windows = match self
+            .context_windows
+            .as_deref()
+            .filter(|listed| !listed.is_empty())
+        {
+            Some(listed) => context_window_choices(scalar, listed),
+            None => {
+                scalar.and_then(|cw| context_window_choices(Some(cw), &entry.info.context_windows))
+            }
+        };
+        if let Some((cw, choices)) = windows {
             entry.info.context_window = cw;
+            entry.info.context_windows = choices;
         }
         if self.max_request_bytes.is_some() {
             entry.info.max_request_bytes = self.max_request_bytes;
@@ -3599,6 +3321,9 @@ pub struct ModelInfo {
     /// Honored by both the picker (`/model`) and `/session-info`: when set, that's the label shown to users in either consumer.
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Message clients show while this model is selected; sent as ACP `_meta.notice`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<ModelNotice>,
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
@@ -3610,6 +3335,8 @@ pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub env_http_headers: IndexMap<String, String>,
     pub context_window: NonZeroU64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_windows: Vec<NonZeroU64>,
     /// Explicit request-body cap only; `sampling_config_for_model` applies the `api_backend` default so the catalog never persists it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_request_bytes: Option<NonZeroU64>,
@@ -3688,6 +3415,7 @@ impl ModelInfo {
             base_url: String::new(),
             name: None,
             description: None,
+            notice: None,
             max_completion_tokens: None,
             temperature: None,
             top_p: None,
@@ -3697,6 +3425,7 @@ impl ModelInfo {
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            context_windows: Vec::new(),
             max_request_bytes: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
@@ -3731,6 +3460,7 @@ impl ModelInfo {
             base_url: entry.base_url.clone(),
             name: entry.name.clone(),
             description: entry.description.clone(),
+            notice: entry.notice.clone(),
             max_completion_tokens: entry.max_completion_tokens,
             temperature: entry.temperature,
             top_p: entry.top_p,
@@ -3740,6 +3470,7 @@ impl ModelInfo {
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: entry.context_window,
+            context_windows: entry.context_windows.clone(),
             max_request_bytes: entry.max_request_bytes,
             auto_compact_threshold_percent: entry.auto_compact_threshold_percent,
             system_prompt_label: entry.system_prompt_label.clone(),
@@ -3768,6 +3499,10 @@ impl ModelInfo {
     /// Whether `id` is one of the ids this model sends: its own, or the one it uses at some effort.
     pub(crate) fn has_model_id(&self, id: &str) -> bool {
         self.model == id || self.variants.iter().any(|variant| variant.model_id == id)
+    }
+    /// Whether `window` is this model's default window or an entry in its menu.
+    pub(crate) fn supports_context_window(&self, window: NonZeroU64) -> bool {
+        self.context_window == window || self.context_windows.contains(&window)
     }
     /// The id to send at this effort.
     ///
@@ -4394,6 +4129,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 base_url: endpoints.resolve_inference_base_url(),
                 name: None,
                 description: None,
+                notice: None,
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
@@ -4403,6 +4139,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 query_params: IndexMap::new(),
                 env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
+                context_windows: Vec::new(),
                 max_request_bytes: None,
                 auto_compact_threshold_percent: None,
                 system_prompt_label: None,
@@ -4625,6 +4362,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             base_url: endpoints.resolve_inference_base_url(),
             name: None,
             description: None,
+            notice: None,
             max_completion_tokens: None,
             temperature: None,
             top_p: None,
@@ -4634,6 +4372,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            context_windows: Vec::new(),
             max_request_bytes: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
@@ -4721,37 +4460,6 @@ pub(crate) fn to_acp_model_info(
         .map(|(key, model)| {
             let info = model.info();
             let model_id = acp::ModelId::new(Arc::from(key.clone()));
-            let total_context_tokens = info.context_window.get();
-            let meta = {
-                let mut map = serde_json::Map::new();
-                map.insert(
-                    "totalContextTokens".to_string(),
-                    serde_json::Value::Number(total_context_tokens.into()),
-                );
-                map.insert(
-                    "agentType".to_string(),
-                    serde_json::Value::String(info.agent_type.clone()),
-                );
-                if info.supports_reasoning_effort {
-                    map.insert(
-                        "supportsReasoningEffort".to_string(),
-                        serde_json::Value::Bool(true),
-                    );
-                    if let Some(effort) = info.reasoning_effort {
-                        map.insert(
-                            REASONING_EFFORT_META_KEY.to_string(),
-                            reasoning_effort_meta_value(effort),
-                        );
-                    }
-                }
-                if !info.reasoning_efforts.is_empty() {
-                    map.insert(
-                        REASONING_EFFORTS_META_KEY.to_string(),
-                        reasoning_efforts_meta_value(&info.reasoning_efforts),
-                    );
-                }
-                if map.is_empty() { None } else { Some(map) }
-            };
             (
                 model_id.clone(),
                 acp::ModelInfo::new(
@@ -4759,10 +4467,51 @@ pub(crate) fn to_acp_model_info(
                     info.name.clone().unwrap_or_else(|| info.model.clone()),
                 )
                 .description(info.description.clone())
-                .meta(meta),
+                .meta(acp_model_meta(info)),
             )
         })
         .collect()
+}
+/// Build meta JSON: include non-null fields only.
+fn acp_model_meta(info: &ModelInfo) -> serde_json::Map<String, serde_json::Value> {
+    let total_context_tokens = info.context_window.get();
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "totalContextTokens".to_string(),
+        serde_json::Value::Number(total_context_tokens.into()),
+    );
+    map.insert(
+        "agentType".to_string(),
+        serde_json::Value::String(info.agent_type.clone()),
+    );
+    if info.supports_reasoning_effort {
+        map.insert(
+            "supportsReasoningEffort".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        if let Some(effort) = info.reasoning_effort {
+            map.insert(
+                REASONING_EFFORT_META_KEY.to_string(),
+                reasoning_effort_meta_value(effort),
+            );
+        }
+    }
+    if !info.reasoning_efforts.is_empty() {
+        map.insert(
+            REASONING_EFFORTS_META_KEY.to_string(),
+            reasoning_efforts_meta_value(&info.reasoning_efforts),
+        );
+    }
+    if info.context_windows.len() > 1 {
+        map.insert(
+            CONTEXT_WINDOWS_META_KEY.to_string(),
+            context_windows_meta_value(&info.context_windows),
+        );
+    }
+    if let Some(notice) = &info.notice {
+        map.insert(MODEL_NOTICE_META_KEY.to_owned(), notice.to_meta_value());
+    }
+    map
 }
 pub const MODEL_SWITCH_INCOMPATIBLE_AGENT: &str = "MODEL_SWITCH_INCOMPATIBLE_AGENT";
 /// Error code for model switch failure during the zero-turn full harness rebuild path.

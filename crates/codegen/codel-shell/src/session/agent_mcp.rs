@@ -226,7 +226,7 @@ fn acp_server_from_config(
         }
         return None;
     };
-    crate::session::managed_mcp::canonicalize_mcp_maps(&mut server);
+    codel_config::mcp_servers::canonicalize_mcp_maps(&mut server);
     Some(server)
 }
 
