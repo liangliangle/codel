@@ -2,8 +2,8 @@
 //!
 //! The auxiliary services (feedback, trace upload, managed config, telemetry) resolve to the cli-chat-proxy.
 //! Only API-key inference uses `codel_api_base_url`.
+use codel_env::{PROD_CLI_CHAT_PROXY_BASE_URL, env_string};
 use serde::{Deserialize, Serialize};
-use codel_env::{PROD_CLI_CHAT_PROXY_BASE_URL, env_bool, env_string};
 pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = PROD_CLI_CHAT_PROXY_BASE_URL;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -91,7 +91,7 @@ impl EndpointsConfig {
         if let Some(endpoints) = config.get("endpoints") {
             crate::deep_merge_toml(&mut base, endpoints);
         }
-        let mut resolved: Self = base.try_into().unwrap_or_default();
+        let resolved: Self = base.try_into().unwrap_or_default();
         resolved
     }
     /// The cli-chat-proxy base URL for the auxiliary services and for inference with OAuth or session auth.

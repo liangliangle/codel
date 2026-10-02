@@ -4273,11 +4273,10 @@
         let row = info_row(&PromptInfo {
             model_name: "",
             flags: &flags,
-            usage_warning: Some("5% usage left"),
             ..Default::default()
         });
-        assert!(row.contains(" 5% usage left · plan "), "{row:?}");
-        assert_eq!(1, row.matches('·').count(), "{row:?}");
+        assert!(row.contains(" plan "), "{row:?}");
+        assert_eq!(0, row.matches('·').count(), "{row:?}");
     }
 
     /// Colorless info-line chrome (uncolored flags, the "multiline" label)

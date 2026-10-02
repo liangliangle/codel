@@ -473,8 +473,8 @@ fn deferred_switch_prefers_authoritative_current_as_prev() {
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SwitchModel { model_id, prev_model_id, .. }
-            if *model_id == model_b && *prev_model_id == Some(server_model.clone())
+        Effect::SwitchModel { choice, prev_model_id, .. }
+            if choice.model_id == model_b && *prev_model_id == Some(server_model.clone())
     )));
 }
 #[test]
@@ -514,8 +514,8 @@ fn deferred_model_switch_applied_on_session_created() {
         Effect::SwitchModel {
             agent_id: a_id,
             session_id: s_id,
-            model_id: m_id,
-            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+            choice,
+            .. } if *a_id == id && *s_id == session_id && choice.model_id == model_id
     )));
 }
 fn painted_notice(id: &str, version: i32) -> crate::app::consent::ConsentState {
@@ -777,9 +777,7 @@ fn dispatch_new_worktree_session_repoints_dashboard_attached_agent() {
 #[test]
 fn translate_local_submit_always_returns_persist_always_for_new_session() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: (0..4)
@@ -822,9 +820,7 @@ fn translate_local_submit_always_returns_persist_always_for_new_session() {
 #[test]
 fn translate_local_submit_never_returns_persist_never_for_new_session() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: (0..4)
@@ -1554,8 +1550,7 @@ mod welcome_workspace_mode {
             crate::app::session_startup::CODEL_CHAT_LOCAL_WORKSPACE_ACK_ENV,
         );
         let home = tempfile::tempdir().unwrap();
-        let _home =
-            codel_test_support::EnvGuard::set("CODEL_HOME", home.path().to_str().unwrap());
+        let _home = codel_test_support::EnvGuard::set("CODEL_HOME", home.path().to_str().unwrap());
         set_active_local_workspace(None).unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = test_app();
@@ -1667,8 +1662,7 @@ mod welcome_workspace_mode {
             crate::app::session_startup::CODEL_CHAT_LOCAL_WORKSPACE_ACK_ENV,
         );
         let home = tempfile::tempdir().unwrap();
-        let _home =
-            codel_test_support::EnvGuard::set("CODEL_HOME", home.path().to_str().unwrap());
+        let _home = codel_test_support::EnvGuard::set("CODEL_HOME", home.path().to_str().unwrap());
         set_active_local_workspace(None).unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let mut app = test_app();

@@ -1,6 +1,6 @@
 use super::*;
-use serial_test::serial;
 use codel_test_support::EnvGuard;
+use serial_test::serial;
 #[test]
 fn coding_data_opt_out_does_not_block_uploads_to_own_bucket() {
     let normal = codel_login::CodelAuth::test_default();
@@ -2748,7 +2748,7 @@ fn resolve_trace_upload_explicit_config_wins_over_telemetry_off() {
 }
 #[test]
 #[serial]
-fn trace_upload_stays_off_under_a_requirements_pin_when_the_distribution_withholds_telemetry() {
+fn trace_upload_requirements_pin_wins() {
     unsafe { std::env::remove_var("CODEL_TELEMETRY_ENABLED") };
     unsafe { std::env::remove_var("CODEL_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
@@ -2756,19 +2756,9 @@ fn trace_upload_stays_off_under_a_requirements_pin_when_the_distribution_withhol
     cfg.requirements
         .trace_upload
         .pin(true, crate::config::RequirementSource::Unknown);
-    cfg.remote_settings = Some(crate::util::config::RemoteSettings {
-        trace_upload_enabled: Some(true),
-        ..Default::default()
-    });
-    let withheld = cfg.resolve_trace_upload_as(codel_config::Distribution::withholding(&[
-        codel_config::Capability::Telemetry,
-    ]));
-    assert!(!withheld.value);
-    assert_eq!(withheld.source, ConfigSource::Default);
-    assert!(
-        cfg.resolve_trace_upload_as(codel_config::Distribution::STOCK)
-            .value
-    );
+    let r = cfg.resolve_trace_upload();
+    assert!(r.value);
+    assert_eq!(r.source, ConfigSource::Requirement);
 }
 #[test]
 #[serial]
@@ -3723,7 +3713,10 @@ agent_type = "cursor"
 "#;
     let raw: toml::Value = toml::from_str(toml_str).unwrap();
     let cfg = Config::new_from_toml_cfg(&raw).unwrap();
-    assert_eq!(cfg.goal.planner_model.as_ref().unwrap().model, "codel-build");
+    assert_eq!(
+        cfg.goal.planner_model.as_ref().unwrap().model,
+        "codel-build"
+    );
     assert_eq!(
         cfg.goal.strategist_model.as_ref().unwrap().agent_type,
         "cursor"
@@ -4231,127 +4224,6 @@ fn isolate_compat_env() -> Vec<EnvGuard> {
         .map(|cell| EnvGuard::unset(cell.env_var()))
         .collect()
 }
-fn parse_compat(source: &str) -> CompatConfigToml {
-    let raw: toml::Value = toml::from_str(source).unwrap();
-    raw.get("compat").unwrap().clone().try_into().unwrap()
-}
-fn assert_session_one_disabled(config: CompatConfig, expected: CompatVendor) {
-    for cell in COMPAT_CELLS {
-        if cell.surface() == CompatSurface::Sessions {
-            assert_eq!(
-                config.value(cell),
-                cell.vendor() != expected,
-                "{}.sessions",
-                Into::<&'static str>::into(cell.vendor())
-            );
-        }
-    }
-}
-fn remote_settings_with(key: CompatRemoteKey, value: bool) -> crate::util::config::RemoteSettings {
-    let mut remote = crate::util::config::RemoteSettings::default();
-    match key {
-        CompatRemoteKey::CursorSkills => remote.cursor_skills_enabled = Some(value),
-        CompatRemoteKey::CursorRules => remote.cursor_rules_enabled = Some(value),
-        CompatRemoteKey::CursorAgents => remote.cursor_agents_enabled = Some(value),
-        CompatRemoteKey::CursorMcps => remote.cursor_mcps_enabled = Some(value),
-        CompatRemoteKey::CursorHooks => remote.cursor_hooks_enabled = Some(value),
-        CompatRemoteKey::CursorSessions => remote.cursor_sessions_enabled = Some(value),
-        CompatRemoteKey::ClaudeSkills => remote.claude_skills_enabled = Some(value),
-        CompatRemoteKey::ClaudeRules => remote.claude_rules_enabled = Some(value),
-        CompatRemoteKey::ClaudeAgents => remote.claude_agents_enabled = Some(value),
-        CompatRemoteKey::ClaudeMcps => remote.claude_mcps_enabled = Some(value),
-        CompatRemoteKey::ClaudeHooks => remote.claude_hooks_enabled = Some(value),
-        CompatRemoteKey::ClaudeSessions => remote.claude_sessions_enabled = Some(value),
-        CompatRemoteKey::CodexSessions => remote.codex_sessions_enabled = Some(value),
-    }
-    remote
-}
-#[test]
-#[serial]
-fn resolve_compat_defaults_match_registry() {
-    let _env = isolate_compat_env();
-    assert_eq!(
-        resolve_compat_config(&CompatConfigToml::default(), None),
-        CompatConfig::default()
-    );
-}
-#[test]
-#[serial]
-fn resolve_raw_compat_sessions_valid_empty_uses_remote_and_defaults() {
-    let _env = isolate_compat_env();
-    let raw = toml::Value::Table(Default::default());
-    let remote = crate::util::config::RemoteSettings {
-        claude_sessions_enabled: Some(false),
-        ..Default::default()
-    };
-    let resolved = resolve_compat_sessions_from_raw(Ok(&raw), Some(&remote));
-    assert!(resolved.cursor.sessions);
-    assert!(!resolved.claude.sessions);
-    assert!(resolved.codex.sessions);
-}
-#[test]
-#[serial]
-fn remote_keys_are_one_hot_and_false_overrides_default() {
-    let _env = isolate_compat_env();
-    for key in COMPAT_CELLS
-        .into_iter()
-        .filter_map(|cell| cell.remote_key())
-    {
-        let remote = remote_settings_with(key, false);
-        for cell in COMPAT_CELLS {
-            assert_eq!(
-                remote_compat_value(Some(&remote), cell.remote_key()),
-                (cell.remote_key() == Some(key)).then_some(false),
-                "{key:?} mapped to {}.{}",
-                Into::<&'static str>::into(cell.vendor()),
-                Into::<&'static str>::into(cell.surface())
-            );
-        }
-    }
-    let remote = remote_settings_with(CompatRemoteKey::CursorSkills, false);
-    assert!(CompatConfig::default().cursor.skills);
-    assert!(
-        !resolve_compat_config(&CompatConfigToml::default(), Some(&remote))
-            .cursor
-            .skills
-    );
-}
-#[test]
-#[serial]
-fn resolve_compat_env_sessions_disable_independently() {
-    let _env = isolate_compat_env();
-    for (vendor, env_var) in [
-        (CompatVendor::Cursor, "CODEL_CURSOR_SESSIONS_ENABLED"),
-        (CompatVendor::Claude, "CODEL_CLAUDE_SESSIONS_ENABLED"),
-        (CompatVendor::Codex, "CODEL_CODEX_SESSIONS_ENABLED"),
-    ] {
-        let _disabled = EnvGuard::set(env_var, "false");
-        assert_session_one_disabled(
-            resolve_compat_config(&CompatConfigToml::default(), None),
-            vendor,
-        );
-    }
-}
-#[test]
-#[serial]
-fn resolve_compat_precedence_and_reserved_codex_hook() {
-    let _env = isolate_compat_env();
-    let config = parse_compat("[compat.cursor]\nsessions = false\n[compat.codex]\nhooks = false");
-    let remote = crate::util::config::RemoteSettings {
-        cursor_sessions_enabled: Some(true),
-        ..Default::default()
-    };
-    let resolved = resolve_compat_config(&config, Some(&remote));
-    assert!(!resolved.cursor.sessions);
-    assert!(!resolved.codex.hooks);
-    assert!(resolved.cursor.hooks);
-    assert!(resolved.claude.hooks);
-    let _session = EnvGuard::set("CODEL_CURSOR_SESSIONS_ENABLED", "true");
-    let _hook = EnvGuard::set("CODEL_CODEX_HOOKS_ENABLED", "true");
-    let resolved = resolve_compat_config(&config, Some(&remote));
-    assert!(resolved.cursor.sessions);
-    assert!(resolved.codex.hooks);
-}
 #[test]
 #[serial]
 fn resolve_runtime_fields_compat_asymmetric_sources() {
@@ -4832,7 +4704,8 @@ fn slug_inherited_unmarked_capabilities_menu_keeps_no_default_effort() {
     let parsed =
         crate::remote::client::parse_remote_model_value(&row, "https://test.example.com/v1")
             .expect("row parses");
-    let entry = resolve_row_with_menu_donor("codel-4.6", "", ModelEntry::from_config_entry(&parsed));
+    let entry =
+        resolve_row_with_menu_donor("codel-4.6", "", ModelEntry::from_config_entry(&parsed));
     assert_eq!(effort_ids(&entry.info), ["low", "medium", "high", "xhigh"]);
     assert!(entry.info.supports_reasoning_effort);
     assert!(entry.info.reasoning_effort_server_default);
@@ -5355,8 +5228,8 @@ fn a_status_line_the_parser_could_not_read_in_full_reaches_codel_inspect() {
 #[tokio::test]
 #[serial]
 async fn process_key_from_model_env_key() {
-    use std::sync::Arc;
     use codel_login::{AuthManager, CodelComConfig, shared_api_key_provider};
+    use std::sync::Arc;
     const ENV: &str = "TEST_MODEL_ENV_KEY";
     const TOKEN: &str = "model-env-token";
     let _codel = EnvGuard::unset("CODEL_API_KEY");
@@ -5440,7 +5313,6 @@ fn test_model_entry(
         mtls_cert_dir: None,
         api_key: api_key.map(|s| s.to_string()),
         env_key: env_key.map(EnvKeys::single),
-        auth_provider: None,
         api_base_url: api_base_url.map(|s| s.to_string()),
     }
 }

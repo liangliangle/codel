@@ -63,12 +63,12 @@ use crate::app::actions::{
     Action, Effect, ModelChoice, SubagentKillOutcome, SwitchModelError, TaskResult,
     WorkspaceMutation, WorkspaceWriteCompletion,
 };
-use crate::app::app_view::tests::test_app;
 use crate::app::agent::{AgentId, AgentSession, AgentState};
 use crate::app::agent_view::{ActivePane, AgentView, PromptMode};
+use crate::app::app_view::tests::test_app;
 use crate::app::app_view::{
-    ActiveView, AppView, AuthState, PendingCodingDataWrite, TrustState, VoiceState, VoiceTarget,
-    WelcomeAnnouncementState,
+    ActiveView, AppView, AuthState, Partial, PendingCodingDataWrite, TrustState, VoiceState,
+    VoiceTarget, WelcomeAnnouncementState,
 };
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{SessionEvent, ToolCallBlock};
@@ -724,8 +724,7 @@ fn enqueue_permission_with_enable_always_approve(
     response_rx
 }
 const POLICY_WARNING: &str =
-    codel_workspace::permission::resolution::YoloPinReason::DisableBypassPermissionsMode
-        .message();
+    codel_workspace::permission::resolution::YoloPinReason::DisableBypassPermissionsMode.message();
 fn agent_toast(app: &AppView) -> Option<String> {
     test_agent(app, AgentId(0))
         .toast

@@ -97,9 +97,6 @@ impl ModelsEndpoint for SlowEndpoint {
     }
 }
 
-
-
-
 #[tokio::test(start_paused = true)]
 async fn hanging_fetch_does_not_block_refresh() {
     let mgr = cold_manager(config::Config::default(), Arc::new(HangingEndpoint));
@@ -114,7 +111,6 @@ async fn hanging_fetch_does_not_block_refresh() {
         "a timed-out fetch must not mark a real catalog",
     );
 }
-
 
 #[tokio::test(start_paused = true)]
 async fn etag_refresh_is_bounded_and_single_flighted() {
@@ -174,7 +170,6 @@ async fn etag_refresh_is_bounded_and_single_flighted() {
     );
 }
 
-
 #[tokio::test(start_paused = true)]
 async fn first_catalog_wait_unblocks_on_failed_fetch() {
     let mgr = cold_manager(
@@ -220,7 +215,6 @@ async fn first_catalog_wait_skips_doomed_signed_out_fetch() {
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);
 }
 
-
 #[tokio::test(start_paused = true)]
 async fn new_fetch_attempt_supersedes_failed_latch() {
     let mgr = cold_manager(
@@ -252,12 +246,9 @@ async fn new_fetch_attempt_supersedes_failed_latch() {
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);
 }
 
-
 fn config_from_toml(toml: &str) -> config::Config {
     config::Config::new_from_toml_cfg(&toml::from_str(toml).unwrap()).unwrap()
 }
-
-
 
 #[test]
 fn default_model_honors_allowlist_when_no_default_set() {
@@ -424,9 +415,6 @@ async fn model_switch_generation_snapshot_reflects_current_state() {
     assert_eq!(mgr.model_switch_generation(), start + 2);
 }
 
-
-
-
 #[test]
 fn current_reasoning_effort_round_trip() {
     let mgr = test_manager();
@@ -451,8 +439,6 @@ fn current_reasoning_effort_seeded_from_config() {
     );
     assert_eq!(mgr.current_reasoning_effort(), Some(ReasoningEffort::Xhigh),);
 }
-
-
 
 #[test]
 fn config_menu_only_model_derives_support_and_default() {
@@ -523,7 +509,6 @@ fn config_menu_only_model_derives_support_and_default() {
     assert!(mgr.model_reasoning_efforts("plain").is_empty());
 }
 
-
 #[test]
 fn apply_refresh_result_only_updates_etag_on_success() {
     let mgr = test_manager();
@@ -548,8 +533,6 @@ fn apply_refresh_result_only_updates_etag_on_success() {
     );
 }
 
-
-
 #[test]
 fn spawn_background_refresh_is_noop_when_real_catalog_present() {
     let mgr = test_manager();
@@ -557,8 +540,6 @@ fn spawn_background_refresh_is_noop_when_real_catalog_present() {
     mgr.spawn_background_refresh_inner(true);
     assert!(mgr.has_fetched_real_catalog());
 }
-
-
 
 #[test]
 fn from_config_without_prefetch_produces_usable_catalog() {
@@ -586,29 +567,9 @@ fn from_config_without_prefetch_produces_usable_catalog() {
     );
 }
 
-
-
-
-
-
-
-
-
-
 fn test_cache_manager(dir: &std::path::Path) -> ModelsCacheManager {
     ModelsCacheManager::at(dir.join(MODELS_CACHE_FILE), CACHE_TTL)
 }
-
-
-
-
-
-
-
-
-
-
-
 
 #[test]
 #[serial]
@@ -673,7 +634,7 @@ fn custom_endpoint_scope_ignores_session_identity() {
 }
 #[test]
 #[serial]
-fn custom_endpoint_scope_keys_on_the_third_party_provider_login() {
+fn custom_endpoint_scope_keys_on_the_login() {
     let _no_key = EnvGuard::unset("CODEL_API_KEY");
     let _no_legacy = EnvGuard::unset("CODEL_CODE_CODEL_API_KEY");
     let endpoints = config::EndpointsConfig::default();
@@ -683,7 +644,7 @@ fn custom_endpoint_scope_keys_on_the_third_party_provider_login() {
     let provider_login = |key: &str| CodelAuth {
         key: key.to_owned(),
         user_id: String::new(),
-        auth_mode: codel_login::AuthMode::External,
+        auth_mode: codel_login::AuthMode::ApiKey,
         ..CodelAuth::test_default()
     };
     let login_a = identity_for(Some(&provider_login("provider-token-a")));
@@ -756,8 +717,6 @@ fn resolve_live_keeps_fetch_origin_when_disk_auth_absent() {
     );
 }
 
-
-
 #[test]
 fn is_campaign_only_flip_detects_campaign_driven_changes() {
     let camp: std::collections::HashSet<String> = ["beta".into()].into_iter().collect();
@@ -789,10 +748,8 @@ fn is_campaign_only_flip_detects_campaign_driven_changes() {
     ));
 }
 
-
-
-use serial_test::serial;
 use codel_test_support::EnvGuard;
+use serial_test::serial;
 #[test]
 #[serial]
 fn resolve_custom_endpoint_always_wins() {
@@ -917,8 +874,6 @@ fn prefetch_env_resolves_when_remote_fetch_enabled() {
     );
 }
 
-
-
 #[test]
 fn visible_for_auth_logic() {
     let mut info = config::ModelInfo::fallback("test");
@@ -931,6 +886,20 @@ fn visible_for_auth_logic() {
     info.supported_in_api = false;
     assert!(info.visible_for_auth(true));
     assert!(!info.visible_for_auth(false));
+}
+fn make_model_entry(model_id: &str) -> ModelEntry {
+    ModelEntry {
+        info: config::ModelInfo::fallback(model_id),
+        mtls_cert_dir: None,
+        api_key: None,
+        env_key: None,
+        api_base_url: None,
+    }
+}
+fn make_prefetched(ids: &[&str]) -> IndexMap<String, ModelEntry> {
+    ids.iter()
+        .map(|id| (id.to_string(), make_model_entry(id)))
+        .collect()
 }
 fn make_entry_config(model: &str, name: Option<&str>) -> config::ModelEntryConfig {
     make_entry_config_with_id(None, model, name)
@@ -1002,14 +971,6 @@ fn build_prefetched_map_duplicate_id_overwrites() {
     assert_eq!(build.info.name.as_deref(), Some("Second"));
 }
 
-
-
-
-
-
-
-
-
 fn test_available_keys(keys: &[&str]) -> IndexMap<acp::ModelId, acp::ModelInfo> {
     keys.iter()
         .map(|k| {
@@ -1038,8 +999,6 @@ async fn bounded_auth_refresh_passes_through_ready_value() {
         "a ready session must pass through unchanged"
     );
 }
-
-
 
 #[test]
 fn personal_offline_boot_does_not_emit_a_managed_degraded_warn() {
@@ -1195,8 +1154,8 @@ async fn empty_models_reply_is_a_failed_refresh_that_keeps_the_last_list() {
     assert!(mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["proxy-a"])), None));
     let endpoints = cfg.endpoints.clone();
     let auth = CodelAuth {
-        key: "external-provider-token".to_owned(),
-        auth_mode: codel_login::AuthMode::External,
+        key: "api-key-token".to_owned(),
+        auth_mode: codel_login::AuthMode::ApiKey,
         ..CodelAuth::default()
     };
     let reply = tokio::task::spawn_blocking(move || {
@@ -1463,8 +1422,8 @@ async fn picker_lists_exactly_the_mocked_models_endpoint_under_external_auth() {
     let standard = config_from_toml(&endpoint_and_table);
     let endpoints = external.endpoints.clone();
     let auth = CodelAuth {
-        key: "external-provider-token".to_owned(),
-        auth_mode: codel_login::AuthMode::External,
+        key: "api-key-token".to_owned(),
+        auth_mode: codel_login::AuthMode::ApiKey,
         ..CodelAuth::default()
     };
     let fetched = tokio::task::spawn_blocking(move || {

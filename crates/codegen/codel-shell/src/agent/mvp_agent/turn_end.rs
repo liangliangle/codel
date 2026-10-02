@@ -726,7 +726,7 @@ mod tests {
             let (agent, gateway_rx) =
                 crate::agent::mvp_agent::tests::build_agent_with_auth_and_proxy(
                     codel_login::CodelAuth {
-                        oidc_issuer: Some(codel_login::CODEL_OAUTH2_ISSUER.to_owned()),
+                        oidc_issuer: Some("https://auth.codel.dev".to_owned()),
                         ..codel_login::CodelAuth::test_default()
                     },
                     base_url,

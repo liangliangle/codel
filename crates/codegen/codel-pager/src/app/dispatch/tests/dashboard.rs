@@ -18,10 +18,7 @@ fn workspace_identity_rebind_only_activates_for_live_v2_dashboard_state() {
     assert!(super::super::dashboard::WorkspaceIdentityRebind::capture(&app).is_active());
 }
 /// `app` as a dashboard v2 client over `store`, ready for writes.
-fn ready_workspace_app(
-    mut app: AppView,
-    store: codel_dashboard_store::WorkspaceStore,
-) -> AppView {
+fn ready_workspace_app(mut app: AppView, store: codel_dashboard_store::WorkspaceStore) -> AppView {
     let snapshot = store.snapshot().unwrap();
     app.workspace_dashboard_enabled = true;
     app.workspace_membership.set_ready_for_test(store, snapshot);
@@ -149,7 +146,8 @@ fn voice_dashboard_peek_reply_submit_tears_down_voice() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::DashboardPeekReply(AgentId(0)),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let _ = dispatch_dashboard_peek_reply(
         &mut app,
@@ -1934,9 +1932,11 @@ fn confirmed_workspace_archive_reports_when_session_became_busy() {
     let effects = dispatch_dashboard_delete(&mut app);
     assert!(effects.is_empty());
     assert!(app.agents.contains_key(&id));
-    assert!(!app.workspace_membership.removal_pending_for_test(
-        &codel_dashboard_store::SessionId::new("archive-race").unwrap()
-    ));
+    assert!(
+        !app.workspace_membership.removal_pending_for_test(
+            &codel_dashboard_store::SessionId::new("archive-race").unwrap()
+        )
+    );
     let dashboard = app.dashboard.as_ref().unwrap();
     assert!(dashboard.delete_confirm.is_none());
     assert_eq!(

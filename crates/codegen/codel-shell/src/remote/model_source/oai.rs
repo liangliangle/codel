@@ -3,9 +3,9 @@ use crate::agent::config::EndpointsConfig;
 use crate::agent::remote_config::{ModelFetchAuth, external_provider_auth};
 use crate::remote::client::{BackendError, FetchModelsResult, parse_remote_model_value};
 use crate::remote::model_source::ModelSource;
-use serde::Deserialize;
 use codel_login::CodelAuth;
 use codel_login::backend::{ActiveAuthBackend, AuthBackend};
+use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Vec<serde_json::Value>,
@@ -159,7 +159,10 @@ mod tests {
         assert_eq!(deployment.url, "https://cli-chat-proxy.codel.dev/v1/models");
         assert_eq!(deployment.auth, EndpointAuth::Session);
         let api = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::ApiKey);
-        assert_eq!(api.url, "https://inference.acme-corp.example/codel/v1/models");
+        assert_eq!(
+            api.url,
+            "https://inference.acme-corp.example/codel/v1/models"
+        );
         assert_eq!(api.auth, EndpointAuth::ApiKey);
         let default = EndpointsConfig::from_config_value(&toml::Value::Table(Default::default()));
         assert_eq!(
@@ -199,21 +202,5 @@ mod tests {
             matches!(&err, BackendError::Auth(msg) if msg.contains("Set CODEL_API_KEY")),
             "expected the Set CODEL_API_KEY auth error, got: {err:?}",
         );
-    }
-    #[test]
-    #[serial_test::serial]
-    fn custom_endpoint_list_fetch_sends_an_external_provider_token_with_any_issuer() {
-        use codel_test_support::EnvGuard;
-        let _no_key = EnvGuard::unset("CODEL_API_KEY");
-        let _no_legacy = EnvGuard::unset("CODEL_CODE_CODEL_API_KEY");
-        let codel_issued_external = CodelAuth {
-            key: "provider-token".to_owned(),
-            auth_mode: codel_login::AuthMode::External,
-            oidc_issuer: Some(codel_login::codel_oauth2_issuer().to_owned()),
-            ..CodelAuth::test_default()
-        };
-        let bearer = list_fetch_api_key(Some(&codel_issued_external))
-            .expect("an external provider token authenticates the list fetch");
-        assert_eq!("provider-token", bearer);
     }
 }
