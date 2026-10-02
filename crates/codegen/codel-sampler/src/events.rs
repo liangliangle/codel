@@ -341,8 +341,8 @@ impl From<&SamplingError> for SamplingErrorInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::StatusCode;
     use codel_sampling_types::ApiErrorCode;
+    use reqwest::StatusCode;
 
     #[test]
     fn from_sampling_error_carries_should_retry_header() {

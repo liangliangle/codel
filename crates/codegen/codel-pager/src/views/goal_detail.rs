@@ -1372,7 +1372,8 @@ mod tests {
     #[test]
     fn render_per_model_breakdown_shows_each_model() {
         let mut goal = make_goal();
-        goal.live_tokens_by_model = vec![("codel-4".into(), 12_300), ("codel-3-mini".into(), 8_000)];
+        goal.live_tokens_by_model =
+            vec![("codel-4".into(), 12_300), ("codel-3-mini".into(), 8_000)];
         let text = render_to_text(&goal);
         assert!(text.contains("codel-4"), "first model must render:\n{text}");
         assert!(

@@ -121,7 +121,6 @@ async fn test_codel_session_notification_storage_roundtrip() {
     }
 }
 
-
 /// Test that totalTokens can be extracted from both ACP and Codel notifications.
 #[tokio::test]
 async fn test_extract_total_tokens_from_mixed_updates() {

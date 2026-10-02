@@ -114,7 +114,9 @@ fn required_fields_the_case_omits_are_filled_on_codel_build() {
         ),
     ];
     for (tool, codel_build_name, arguments, expected) in cases {
-        let picked = tool.pick(&offered(&[codel_build_name]), &arguments).unwrap();
+        let picked = tool
+            .pick(&offered(&[codel_build_name]), &arguments)
+            .unwrap();
         assert_eq!(expected, picked.arguments, "{tool:?}");
     }
 }
@@ -138,7 +140,9 @@ fn field_the_case_wrote_is_kept_over_its_fill() {
         ),
     ];
     for (tool, codel_build_name, arguments) in cases {
-        let picked = tool.pick(&offered(&[codel_build_name]), &arguments).unwrap();
+        let picked = tool
+            .pick(&offered(&[codel_build_name]), &arguments)
+            .unwrap();
         assert_eq!(arguments, picked.arguments, "{tool:?}");
     }
 }

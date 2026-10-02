@@ -17,10 +17,10 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use dashmap::DashMap;
 use codel_file_utils::queue::UploadQueueStats;
 use codel_session_events::{Event, EventWriter, ToolCompletedSource, ToolOutcome};
 use codel_tool_protocol::{IdleWithholdReason, ToolServerLifecycleStatus, ToolServerStatusPayload};
+use dashmap::DashMap;
 
 const LIFECYCLE_NONE: u8 = 0;
 const LIFECYCLE_DRAINING: u8 = 1;

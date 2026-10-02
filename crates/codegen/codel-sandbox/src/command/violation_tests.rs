@@ -646,9 +646,9 @@ fn a_protected_target_under_a_writable_parent_is_the_floor_not_the_os() {
     policy.protected.push(Protected::Path {
         path: config.clone(),
     });
-    policy
-        .protected
-        .push(Protected::Path { path: codel.clone() });
+    policy.protected.push(Protected::Path {
+        path: codel.clone(),
+    });
     assert!(
         policy.is_protected(&config)
             && !policy.would_allow(&Blocked::FsWrite {

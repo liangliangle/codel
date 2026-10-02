@@ -721,7 +721,6 @@ mod tests {
         assert_eq!(reparsed, serialized, "round-trip must be lossless");
     }
 
-
     /// Drift guard: every `#[serde(alias)]` on [`ConfigModelOverride`] must have a matching `ALIASES` pair, and vice versa.
     /// An unregistered alias would send both-keys configs to the empty-override fallback.
     #[test]

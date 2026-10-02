@@ -338,8 +338,9 @@ fn write_refuses_the_home_folder_whose_workspace_file_is_the_user_layer() {
     let codel_home = home.join(".codel");
     std::fs::create_dir_all(&codel_home).unwrap();
     for spelling in [home.clone(), home.join("proj/..")] {
-        let error = super::write_workspace_sandbox_mode_in(&spelling, &codel_home, SandboxMode::Off)
-            .unwrap_err();
+        let error =
+            super::write_workspace_sandbox_mode_in(&spelling, &codel_home, SandboxMode::Off)
+                .unwrap_err();
         assert!(
             matches!(error, super::SandboxModeWriteError::UserLayer { .. }),
             "{error}"

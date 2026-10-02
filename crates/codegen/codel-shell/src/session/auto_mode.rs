@@ -97,9 +97,9 @@ impl PermissionModeChange {
 
 #[cfg(test)]
 mod tests {
+    use codel_logging::enums::PermissionMode::{AlwaysApprove, Ask, Auto};
     use rstest::rstest;
     use serde_json::json;
-    use codel_logging::enums::PermissionMode::{AlwaysApprove, Ask, Auto};
 
     use super::*;
 

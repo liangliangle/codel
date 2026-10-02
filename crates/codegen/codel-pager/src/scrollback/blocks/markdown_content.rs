@@ -194,10 +194,7 @@ impl MarkdownContent {
     }
 
     /// Access the pre-wrap hyperlink targets via a closure, avoiding allocation.
-    pub fn with_hyperlinks<R>(
-        &self,
-        f: impl FnOnce(&[codel_markdown::HyperlinkTarget]) -> R,
-    ) -> R {
+    pub fn with_hyperlinks<R>(&self, f: impl FnOnce(&[codel_markdown::HyperlinkTarget]) -> R) -> R {
         let state = self.state.borrow();
         f(state.renderer.view().hyperlinks)
     }

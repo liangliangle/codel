@@ -1,5 +1,8 @@
 use super::actions::Effect;
 use super::app_view::{ActiveView, AppView, SessionPickerEntry};
+use codel_foreign_sessions::{
+    EnabledForeignSessionSources, ForeignSessionSummary, ForeignSessionTool, RecentForeignSession,
+};
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::future::Future;
@@ -7,9 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Semaphore;
-use codel_foreign_sessions::{
-    EnabledForeignSessionSources, ForeignSessionSummary, ForeignSessionTool, RecentForeignSession,
-};
 pub(crate) const RESUME_HINT_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 #[derive(Debug, Clone)]
 pub(crate) struct ForeignResumeLaunch {
@@ -464,9 +464,9 @@ pub(crate) fn replace_native_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codel_foreign_sessions::ForeignSessionSource;
     use std::cell::RefCell;
     use std::time::{Duration, UNIX_EPOCH};
-    use codel_foreign_sessions::ForeignSessionSource;
     struct CancellationSignal(Option<tokio::sync::oneshot::Sender<()>>);
     impl Drop for CancellationSignal {
         fn drop(&mut self) {

@@ -643,7 +643,8 @@ impl SessionActor {
             .filter(|td| !backend_search_active || td.function.name != "web_search")
             .collect();
         let tool_definitions_count = tool_defs.len();
-        let tool_definitions_tokens = codel_chat_state::estimate_tool_definitions_tokens(&tool_defs);
+        let tool_definitions_tokens =
+            codel_chat_state::estimate_tool_definitions_tokens(&tool_defs);
         let message_count = self.chat_state_handle.get_conversation_len().await;
         let message_tokens = self.chat_state_handle.get_estimated_messages_tokens().await;
         let usage_categories = self.usage_categories().await;

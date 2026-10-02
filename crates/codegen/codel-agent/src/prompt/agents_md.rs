@@ -843,7 +843,11 @@ mod tests {
         fs::write(nested.join("rules/home.md"), "nested-home-rule").unwrap();
         fs::write(repo.join("AGENTS.md"), "repo-named").unwrap();
         fs::write(nested.join("AGENTS.md"), "nested-named").unwrap();
-        fs::write(nested.join(".codel/rules/project.md"), "nested-project-rule").unwrap();
+        fs::write(
+            nested.join(".codel/rules/project.md"),
+            "nested-project-rule",
+        )
+        .unwrap();
 
         let configs = read_agents_config_with_roots(
             nested.to_str().unwrap(),

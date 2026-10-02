@@ -758,14 +758,7 @@ mod tests {
         })
     }
 
-
-
     /// Both tests that observe `REDIRECT_DRAIN_IN_FLIGHT` hold this, since the
     /// flag is process-wide and the test binary runs tests in parallel.
     static IN_FLIGHT_FLAG_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-
-
-
-
 }

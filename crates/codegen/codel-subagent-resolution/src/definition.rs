@@ -1,11 +1,10 @@
 //! Subagent definition discovery and tool-policy resolution, matching the production spawn path.
 use crate::config::{SubagentPersona, SubagentRole};
 use crate::types::{EffectiveRuntimeConfig, ResolutionError};
-use std::collections::HashMap;
-use std::path::Path;
 use codel_agent::config::{AgentDefinition, IsolationMode};
 use codel_agent::plugins::PluginRegistry;
 use codel_agent::prompt::context::{PromptAudience, PromptContext};
+use codel_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
 use codel_tools::implementations::codel_build::task::types::{
     SubagentCapabilityModeExt, SubagentRuntimeOverrides, prune_orphaned_background_task_tools,
 };
@@ -13,7 +12,8 @@ use codel_tools::registry::types::ToolConfig;
 use codel_tools::types::compat::CompatConfig;
 use codel_tools::types::template_renderer::TemplateRenderer;
 use codel_tools::types::tool::ToolKind;
-use codel_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
+use std::collections::HashMap;
+use std::path::Path;
 /// Inputs that affect definition discovery and spawn permission.
 pub struct DefinitionResolutionContext<'a> {
     pub cwd: &'a Path,
@@ -64,18 +64,14 @@ pub fn discover_agent_definition(
     subagent_type: &str,
     context: &DefinitionResolutionContext<'_>,
 ) -> Option<AgentDefinition> {
-    codel_agent::discovery::by_name_in_cwd_with_plugins(
-        subagent_type,
-        context.cwd,
-        context.plugins,
-    )
-    .or_else(|| {
-        context
-            .cli_agents
-            .iter()
-            .find(|definition| definition.name == subagent_type)
-            .cloned()
-    })
+    codel_agent::discovery::by_name_in_cwd_with_plugins(subagent_type, context.cwd, context.plugins)
+        .or_else(|| {
+            context
+                .cli_agents
+                .iter()
+                .find(|definition| definition.name == subagent_type)
+                .cloned()
+        })
 }
 /// Sorted agent names the model can request under the current discovery context.
 pub fn available_agent_names(context: &DefinitionResolutionContext<'_>) -> Vec<String> {

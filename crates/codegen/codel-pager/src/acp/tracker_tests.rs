@@ -1006,8 +1006,8 @@ fn tool_output_bash_serde_roundtrip() {
 /// Completed ToolCallUpdate (from acp_session completion handler).
 #[test]
 fn production_execute_sequence() {
-    use serde_json::json;
     use codel_tools::types::output::{BashOutput, ToolOutput};
+    use serde_json::json;
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     let tc_id = "call_abc123";

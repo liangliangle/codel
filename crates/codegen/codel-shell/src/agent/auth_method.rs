@@ -26,7 +26,8 @@ pub(crate) fn new_shared_auth_method_id(initial: Option<acp::AuthMethodId>) -> S
 // (auth needs them without pulling in shell's `ModelEntry`); re-exported here so
 // `crate::agent::auth_method::{CODEL_API_KEY_ENV_VAR, ..}` call sites keep resolving.
 pub use codel_login::auth_method::{
-    LEGACY_CODEL_API_KEY_ENV_VAR, CODEL_API_KEY_ENV_VAR, has_codel_api_key_env, read_codel_api_key_env,
+    CODEL_API_KEY_ENV_VAR, LEGACY_CODEL_API_KEY_ENV_VAR, has_codel_api_key_env,
+    read_codel_api_key_env,
 };
 
 /// The ACP method id for the API-key method.
@@ -35,7 +36,8 @@ pub const CODEL_API_KEY_METHOD_ID: &str = "codel.api_key";
 pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Set CODEL_API_KEY, or add api_key/env_key to a [model.<id>] entry in ~/.codel/config.toml.";
 
 /// Error when the kill switch forbids API-key auth and nothing else can authenticate.
-pub const AUTH_ERROR_API_KEY_DISABLED: &str = "API-key authentication is disabled for this deployment and no other method exists.";
+pub const AUTH_ERROR_API_KEY_DISABLED: &str =
+    "API-key authentication is disabled for this deployment and no other method exists.";
 
 /// Whether `codel.api_key` should be advertised (and pushed FIRST) when building the `auth_methods` list at `initialize()` time.
 /// Regression: `codel.api_key` must stay first when only per-model credentials exist (no global `CODEL_API_KEY`).
@@ -170,10 +172,15 @@ mod tests {
         let built = build_auth_methods(true);
         assert_eq!(built.methods.len(), 1);
         assert_eq!(
-            built.default_auth_method_id.as_ref().map(|id| id.0.to_string()),
+            built
+                .default_auth_method_id
+                .as_ref()
+                .map(|id| id.0.to_string()),
             Some(CODEL_API_KEY_METHOD_ID.to_owned()),
         );
-        assert!(AuthMethodKind::from_id(&acp::AuthMethodId::new(CODEL_API_KEY_METHOD_ID)).is_api_key());
+        assert!(
+            AuthMethodKind::from_id(&acp::AuthMethodId::new(CODEL_API_KEY_METHOD_ID)).is_api_key()
+        );
     }
 
     #[test]
@@ -185,8 +192,12 @@ mod tests {
 
     #[test]
     fn no_method_is_session_based() {
-        assert!(!is_session_based_method(&acp::AuthMethodId::new(CODEL_API_KEY_METHOD_ID)));
-        assert!(!AuthMethodKind::from_id(&acp::AuthMethodId::new("cached_token")).is_session_based());
+        assert!(!is_session_based_method(&acp::AuthMethodId::new(
+            CODEL_API_KEY_METHOD_ID
+        )));
+        assert!(
+            !AuthMethodKind::from_id(&acp::AuthMethodId::new("cached_token")).is_session_based()
+        );
     }
 
     #[test]

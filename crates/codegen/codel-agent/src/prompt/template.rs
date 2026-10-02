@@ -62,9 +62,9 @@ mod tests {
             obj.insert(key.to_owned(), val);
         }
     }
-    use std::collections::HashMap;
     use codel_tools::types::template_renderer::TemplateRenderer;
     use codel_tools::types::tool::ToolKind;
+    use std::collections::HashMap;
 
     /// Verify the pre-generated encrypted file matches the current template sources.
     /// If this fails, run: `python3 scripts/encrypt_templates.py`

@@ -9,6 +9,11 @@ use std::collections::VecDeque;
 use std::io::{self, stdout};
 use std::time::Duration;
 
+use codel_pager::scrollback::{
+    RenderBlock, ScratchBuffer, ScrollbackPane, ScrollbackSearchState, ScrollbackState,
+};
+use codel_pager::theme::Theme;
+use codel_pager::views::picker::render_search_bar_with_viewport;
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -20,11 +25,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
-use codel_pager::scrollback::{
-    RenderBlock, ScratchBuffer, ScrollbackPane, ScrollbackSearchState, ScrollbackState,
-};
-use codel_pager::theme::Theme;
-use codel_pager::views::picker::render_search_bar_with_viewport;
 
 struct App {
     scrollback: ScrollbackState,

@@ -7,13 +7,13 @@
 //! The id is resolved to a display label through the tracker's registry; an unknown id falls back to the raw id.
 
 use agent_client_protocol as acp;
-use serde::Deserialize;
 use codel_tools::implementations::codel_build::send_subagent_message::{
     SEND_SUBAGENT_MESSAGE_TOOL_NAME, SendSubagentMessageDisposition, SendSubagentMessageOutput,
 };
 use codel_tools::tool_taxonomy::{CanonicalToolMeta, TOOL_META_KEY, TOOL_META_VERSION};
 use codel_tools::types::output::ToolOutput;
 use codel_tools::types::tool::ToolKind;
+use serde::Deserialize;
 
 use crate::acp::subagent_label_registry::SubagentLabelRegistry;
 use crate::scrollback::block::RenderBlock;

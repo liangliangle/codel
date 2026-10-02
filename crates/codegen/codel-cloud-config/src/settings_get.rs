@@ -9,10 +9,10 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
 use codel_config::{EndpointsConfig, RemoteSettings};
-use codel_login::{CodelAuth, CodelComConfig};
 use codel_logging::instrumentation::{
     InstrumentationMode, InstrumentationTimer, TARGET, current_mode,
 };
+use codel_login::{CodelAuth, CodelComConfig};
 
 use crate::commit::evaluate_commit;
 use crate::settings_cache::{SettingsCacheManager, SettingsCacheMode, SettingsLoad};

@@ -189,8 +189,7 @@ pub(crate) fn marketplace_install(
         .ok_or_else(|| {
             install_source_missing_error(
                 &super::load_marketplace_sources(),
-                &codel_workspace::permission::resolution::managed_settings()
-                    .marketplace_allowlist,
+                &codel_workspace::permission::resolution::managed_settings().marketplace_allowlist,
                 source_url_or_path,
             )
         })?;
@@ -465,8 +464,7 @@ pub(crate) fn direct_install(
     registry: &mut InstallRegistry,
 ) -> Result<String, DirectInstallError> {
     // Direct installs must not bypass the marketplace lockdown (hooks execute).
-    let policy =
-        &codel_workspace::permission::resolution::managed_settings().marketplace_allowlist;
+    let policy = &codel_workspace::permission::resolution::managed_settings().marketplace_allowlist;
     if let Some(reason) = direct_install_block_reason(policy, source) {
         return Err(DirectInstallError::Blocked { reason });
     }

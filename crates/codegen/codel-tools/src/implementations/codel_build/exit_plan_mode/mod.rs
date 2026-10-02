@@ -200,7 +200,10 @@ mod tests {
     #[test]
     fn tool_name_and_description() {
         let tool = ExitPlanModeTool;
-        assert_eq!(codel_tool_runtime::Tool::id(&tool).as_str(), "exit_plan_mode");
+        assert_eq!(
+            codel_tool_runtime::Tool::id(&tool).as_str(),
+            "exit_plan_mode"
+        );
     }
 
     #[test]

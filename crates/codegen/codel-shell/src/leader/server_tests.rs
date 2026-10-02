@@ -215,7 +215,6 @@ async fn workspace_start_errors_when_cancelled_before_auth() {
     );
 }
 
-
 async fn setup_test_server(
     temp: &TempDir,
 ) -> (PathBuf, CancellationToken, mpsc::UnboundedReceiver<String>) {
@@ -2078,7 +2077,8 @@ fn inject_yolo_notification_adds_client_identifier() {
         pv(r#"{"jsonrpc":"2.0","method":"codel/yolo_mode_changed","params":{"yolo_mode":true}}"#);
 
     assert!(inject_client_identity_into_yolo_notification(
-        &mut json, "codel-tui"
+        &mut json,
+        "codel-tui"
     ));
     assert_eq!(j(&json, "/params/clientIdentifier"), "codel-tui");
     assert_eq!(j(&json, "/params/yolo_mode"), true);
@@ -2090,7 +2090,8 @@ fn inject_yolo_notification_skips_non_yolo_methods() {
     let before = json.clone();
 
     assert!(!inject_client_identity_into_yolo_notification(
-        &mut json, "codel-tui"
+        &mut json,
+        "codel-tui"
     ));
     assert_eq!(json, before);
 }

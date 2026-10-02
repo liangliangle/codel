@@ -172,13 +172,10 @@ fn require_codel_auth_for_share(
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
-    use std::sync::Arc;
-    use tempfile::tempdir;
     use codel_login::CodelComConfig;
     use codel_login::{AuthMode, CodelAuth};
-
-
-
+    use std::sync::Arc;
+    use tempfile::tempdir;
 
     #[test]
     fn share_fails_with_no_auth_at_all() {

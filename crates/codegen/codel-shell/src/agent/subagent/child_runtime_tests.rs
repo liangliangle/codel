@@ -1,5 +1,4 @@
 use super::*;
-use tokio_util::sync::CancellationToken;
 use codel_tools::implementations::codel_build::task::backend::{ChannelBackend, SubagentBackend};
 use codel_tools::implementations::codel_build::task::coordinator::{
     ActiveMessageAdmission, ChildCompletion, ChildControl, ChildRunOutput, ChildRunRequest,
@@ -10,6 +9,7 @@ use codel_tools::implementations::codel_build::task::types::{
     ActiveAgentMessageRequest, SubagentDescribeOutcome, SubagentOwner, SubagentRequest,
     SubagentValidateTypeOutcome,
 };
+use tokio_util::sync::CancellationToken;
 
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -58,8 +58,7 @@ struct SnapshotProbeRunner {
 
 impl ChildRunner for SnapshotProbeRunner {
     type Control = SnapshotProbeControl;
-    type RootControl =
-        codel_tools::implementations::codel_build::task::root_control::NoRootControl;
+    type RootControl = codel_tools::implementations::codel_build::task::root_control::NoRootControl;
     type CompletionData = ();
     type RunFuture = LocalBoxFuture<ChildRunOutput<()>>;
     type ValidateFuture = LocalBoxFuture<SubagentValidateTypeOutcome>;

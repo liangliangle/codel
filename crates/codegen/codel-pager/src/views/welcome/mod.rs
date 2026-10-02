@@ -1283,8 +1283,7 @@ fn render_welcome_done(
     #[cfg(feature = "local-workspace")]
     // Keep the segmented control (and ACK y/N) visible when history is open if first-run Local ACK is pending
     // Otherwise the confirm is unpainted while the ACK handler still swallows keys
-    let show_workspace_picker =
-        p.chat_mode && (!show_picker || p.workspace_mode_ack_pending);
+    let show_workspace_picker = p.chat_mode && (!show_picker || p.workspace_mode_ack_pending);
     #[cfg(feature = "local-workspace")]
     let workspace_picker_rows = if show_workspace_picker {
         workspace_mode::WORKSPACE_MODE_MENU_ROWS
@@ -1655,7 +1654,11 @@ fn render_welcome_done(
         cursor_pos,
         post_flush_escapes,
         menu_rects,
-        prompt_rect: if show_picker { None } else { Some(layout.prompt) },
+        prompt_rect: if show_picker {
+            None
+        } else {
+            Some(layout.prompt)
+        },
         session_picker_hit_areas: picker_close_button,
         import_banner_rect,
         consent_link_rects: Vec::new(),
@@ -1991,10 +1994,7 @@ mod tests {
     /// The hero footer prints a channel only on alpha and beta builds, so on stable it must not end on a separator.
     #[test]
     fn version_badge_carries_no_release_label() {
-        let full = badge_text(
-            VersionBadgeMode::Full,
-            Some("acme"),
-        );
+        let full = badge_text(VersionBadgeMode::Full, Some("acme"));
         let inline = badge_text(VersionBadgeMode::HeroInline, None);
         let footer = badge_text(VersionBadgeMode::HeroFooter, Some("acme"));
 
@@ -2012,10 +2012,6 @@ mod tests {
             "footer must not end on a separator: {footer:?}"
         );
     }
-
-
-
-
 
     fn make_entry(id: &str, summary: &str, repo_name: &str) -> SessionPickerEntry {
         SessionPickerEntry {
@@ -2172,7 +2168,6 @@ mod tests {
             "writing the clear must commit ownership"
         );
     }
-
 
     #[test]
     fn picker_welcome_returns_paired_overlay_clear() {
@@ -3322,11 +3317,6 @@ mod tests {
         assert_eq!(extract_user_code("https://codel/d?user_code="), None);
         assert_eq!(extract_user_code("https://codel/d?user_code=AB%20CD"), None);
     }
-
-
-
-
-
 
     fn long_ann() -> codel_announcements::RemoteAnnouncement {
         codel_announcements::RemoteAnnouncement {

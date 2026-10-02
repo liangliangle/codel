@@ -1,11 +1,11 @@
 use super::load::load_config_from_toml;
 use super::mcp::{Config, user_config_path};
 use anyhow::Result;
+use codel_agent::prompt::skills::SkillsConfig;
+use codel_config::fs_atomic::BoundDest;
 use std::path::Path;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
-use codel_agent::prompt::skills::SkillsConfig;
-use codel_config::fs_atomic::BoundDest;
 /// Process-wide write lock for `~/.codel/config.toml`.
 /// Serializes the read-modify-write in `save_config` so two rapid settings toggles can't interleave and clobber each other.
 static SAVE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

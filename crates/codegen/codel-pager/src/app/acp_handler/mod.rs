@@ -17,9 +17,6 @@ use crate::views::permission_view::{
 };
 use crate::views::plan_approval_view::PlanReviewSource;
 use agent_client_protocol as acp;
-use std::collections::hash_map::Entry;
-use std::path::PathBuf;
-use std::sync::Arc;
 use codel_acp_lib::AcpClientMessage;
 use codel_shell::extensions::notification::{
     SessionNotification, SessionUpdate as CodelSessionUpdate, is_reauthable_failure,
@@ -27,6 +24,9 @@ use codel_shell::extensions::notification::{
 use codel_shell::tools::todo::todo_item_from_plan_entry;
 use codel_tools::notification::ScheduledTaskRemovedReason;
 use codel_workspace::permission::bash_command_splitting::BashCommandHighlights;
+use std::collections::hash_map::Entry;
+use std::path::PathBuf;
+use std::sync::Arc;
 mod background;
 mod follow_ups;
 mod interactions;

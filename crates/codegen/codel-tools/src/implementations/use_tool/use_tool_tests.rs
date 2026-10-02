@@ -43,10 +43,9 @@ impl codel_tool_runtime::ToolDispatch for CapturingDispatch {
             tool_id.as_str(),
             "server__tool" | "linear__save_issue" | "linear__list_issues"
         ) {
-            return codel_tool_runtime::terminal_only(Err(codel_tool_runtime::ToolError::not_found(
-                tool_id,
-                "Tool not found",
-            )));
+            return codel_tool_runtime::terminal_only(Err(
+                codel_tool_runtime::ToolError::not_found(tool_id, "Tool not found"),
+            ));
         }
         *self.captured_args.lock().unwrap() = Some(args);
         let value = serde_json::to_value(ToolOutput::Text("ok".into())).unwrap();
@@ -144,7 +143,10 @@ async fn rejects_builtin_tool_names() {
     .await;
 
     let err = result.unwrap_err();
-    assert_eq!(err.kind, codel_tool_runtime::ToolErrorKind::InvalidArguments);
+    assert_eq!(
+        err.kind,
+        codel_tool_runtime::ToolErrorKind::InvalidArguments
+    );
     assert!(err.detail.contains("not a valid MCP tool name"));
     assert!(err.detail.contains("read_file"));
 }
@@ -165,7 +167,10 @@ async fn errors_when_inner_dispatch_not_set() {
     .await;
 
     let err = result.unwrap_err();
-    assert_eq!(err.kind, codel_tool_runtime::ToolErrorKind::InvalidArguments);
+    assert_eq!(
+        err.kind,
+        codel_tool_runtime::ToolErrorKind::InvalidArguments
+    );
     assert!(err.detail.contains("inner_dispatch not set"));
 }
 
@@ -226,8 +231,10 @@ impl crate::types::resources::ManagedGatewayToolCaller for MockGatewayCaller {
         call_id: &str,
         arguments: serde_json::Value,
         _caller: &str,
-    ) -> Result<crate::types::resources::ManagedGatewayToolCallResponse, codel_tool_runtime::ToolError>
-    {
+    ) -> Result<
+        crate::types::resources::ManagedGatewayToolCallResponse,
+        codel_tool_runtime::ToolError,
+    > {
         if let Some(expected) = self.expected_call_id {
             assert_eq!(call_id, expected);
         }
@@ -534,7 +541,10 @@ async fn gateway_catalog_collision_propagates_local_non_not_found_error() {
     .await;
 
     let err = result.unwrap_err();
-    assert_eq!(err.kind, codel_tool_runtime::ToolErrorKind::InvalidArguments);
+    assert_eq!(
+        err.kind,
+        codel_tool_runtime::ToolErrorKind::InvalidArguments
+    );
     assert!(err.detail.contains("local validation failed"));
     assert!(gateway_captured.lock().unwrap().is_none());
 }

@@ -1706,7 +1706,6 @@ impl codel_tool_runtime::Tool for McpErasedTool {
     }
 }
 
-
 /// Check whether a `ServiceError` indicates the underlying transport has died and a fresh connection could recover it.
 fn is_retriable_transport_error(err: &ServiceError) -> bool {
     matches!(

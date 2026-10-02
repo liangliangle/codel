@@ -851,9 +851,9 @@ mod tests {
     };
     use crate::types::resources::Resources;
     use crate::types::tool_metadata::test_ctx;
+    use codel_tool_types::SubagentCapabilityMode;
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use codel_tool_types::SubagentCapabilityMode;
 
     /// Backend whose `ValidateType` events are auto-acked with `Ok`.
     fn make_backend() -> (
@@ -1777,7 +1777,8 @@ mod tests {
         input.model = Some("invented-model".to_string());
 
         let result =
-            codel_tool_runtime::Tool::run(&TaskTool, test_ctx(resources.into_shared()), input).await;
+            codel_tool_runtime::Tool::run(&TaskTool, test_ctx(resources.into_shared()), input)
+                .await;
 
         let msg = result
             .expect_err("invalid model must reject before spawn")

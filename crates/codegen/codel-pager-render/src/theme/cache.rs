@@ -750,7 +750,10 @@ mod tests {
     #[test]
     fn codel_theme_wins_over_lc_and_config() {
         with_test_env(|| {
-            let env = theme_env(&[("CODEL_THEME", "codelday"), ("LC_CODEL_THEME", "tokyonight")]);
+            let env = theme_env(&[
+                ("CODEL_THEME", "codelday"),
+                ("LC_CODEL_THEME", "tokyonight"),
+            ]);
             assert_eq!(
                 resolve_initial_theme_from(
                     env_theme_name_from(&env),

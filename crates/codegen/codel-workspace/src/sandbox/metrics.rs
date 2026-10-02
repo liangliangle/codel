@@ -3,15 +3,15 @@
 
 use std::sync::LazyLock;
 
-use prometheus::{IntCounterVec, register_int_counter_vec};
+use codel_logging::events::{
+    SandboxBlockedKind, SandboxCommandEnded, SandboxCommandOutcome, SandboxExpiryKind,
+    SandboxGrantScopeKind, SandboxGrantSubjectKind, SandboxModeTag, SandboxSettlement,
+    SandboxViolationSettled,
+};
 use codel_sandbox::command::grants::{Expiry, Grant, GrantScope, GrantSubject};
 use codel_sandbox::command::violation::Blocked;
 use codel_sandbox::command::{BackendName, SandboxMode, Violation};
-use codel_logging::events::{
-    SandboxBlockedKind, SandboxCommandEnded, SandboxCommandOutcome, SandboxExpiryKind,
-    SandboxGrantScopeKind, SandboxGrantSubjectKind,
-    SandboxModeTag, SandboxSettlement, SandboxViolationSettled,
-};
+use prometheus::{IntCounterVec, register_int_counter_vec};
 
 static COMMAND_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
@@ -199,7 +199,6 @@ pub(crate) fn grant(grant: &Grant) {
         ])
         .inc();
 }
-
 
 fn blocked_kind(blocked: &Blocked) -> SandboxBlockedKind {
     match blocked {

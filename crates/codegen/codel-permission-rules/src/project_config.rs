@@ -69,7 +69,10 @@ pub fn find_project_configs_under(
     home: Option<&Path>,
     codel_home: Option<&Path>,
 ) -> Vec<PathBuf> {
-    find_project_configs_in(&RepoDirChain::resolve_under_home(cwd, home).dirs, codel_home)
+    find_project_configs_in(
+        &RepoDirChain::resolve_under_home(cwd, home).dirs,
+        codel_home,
+    )
 }
 
 /// [`find_project_configs`] over a precomputed [`RepoDirChain`], repo-root-first.

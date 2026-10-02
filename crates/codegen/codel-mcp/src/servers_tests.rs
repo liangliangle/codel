@@ -4029,19 +4029,6 @@ async fn try_call_tool_http_structured_content_reaches_the_result() {
     assert_eq!(Some(folders_payload()), result.structured_content);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[test]
 fn test_mcp_state_is_initialized_requires_empty_initializing_servers() {
     let mut state = McpState::new(vec![make_stdio_server("a", "/bin/a")]);

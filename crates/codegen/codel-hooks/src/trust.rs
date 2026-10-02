@@ -77,7 +77,9 @@ impl DisabledHooks {
     /// Read the disabled-hooks file under `codel_home`; `managed_only` is the resolved `allow_managed_hooks_only` pin, which the caller reads from managed settings.
     pub fn load(codel_home: Option<&Path>, managed_only: bool) -> Self {
         let names = codel_home
-            .and_then(|codel_home| std::fs::read_to_string(codel_home.join(DISABLED_HOOKS_FILE)).ok())
+            .and_then(|codel_home| {
+                std::fs::read_to_string(codel_home.join(DISABLED_HOOKS_FILE)).ok()
+            })
             .map(|content| {
                 content
                     .lines()

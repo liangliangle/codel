@@ -192,7 +192,9 @@ async fn run_both(resources: &SharedResources, input: GrepSearchInput) -> Card {
     let mut terminal = None;
     while let Some(item) = stream.next().await {
         match item {
-            codel_tool_runtime::ToolStreamItem::Progress(p) => deltas.push_str(&read_grep_delta(&p)),
+            codel_tool_runtime::ToolStreamItem::Progress(p) => {
+                deltas.push_str(&read_grep_delta(&p))
+            }
             codel_tool_runtime::ToolStreamItem::Terminal(result) => {
                 terminal = Some(Card::from(result.unwrap()));
             }

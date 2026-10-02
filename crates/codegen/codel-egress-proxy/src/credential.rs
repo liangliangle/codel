@@ -11,10 +11,10 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 
 use base64::Engine;
+use codel_sandbox::command::CommandTag;
 use rand::TryRngCore;
 use rand::rngs::OsRng;
 use subtle::ConstantTimeEq;
-use codel_sandbox::command::CommandTag;
 
 use crate::error::ProxyError;
 

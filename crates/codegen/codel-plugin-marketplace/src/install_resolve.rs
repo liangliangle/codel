@@ -460,7 +460,10 @@ mod tests {
                 "Mirror A",
                 "https://github.com/codel-org/plugin-marketplace.git",
             ),
-            git_source("Mirror B", "git@github.com:codel-org/plugin-marketplace.git"),
+            git_source(
+                "Mirror B",
+                "git@github.com:codel-org/plugin-marketplace.git",
+            ),
         ];
         assert_eq!(
             resolve_qualified_source("codel-org/plugin-marketplace", &sources),

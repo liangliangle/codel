@@ -1838,8 +1838,7 @@ fn is_hash_key(key: &KeyEvent) -> bool {
 }
 /// Check `[features] remember_mode` in config.toml. Defaults to `false`.
 fn remember_mode_enabled() -> bool {
-    let path =
-        codel_tools::util::codel_home::codel_home().join(codel_config::USER_CONFIG_FILENAME);
+    let path = codel_tools::util::codel_home::codel_home().join(codel_config::USER_CONFIG_FILENAME);
     let Some(doc) = crate::config_toml_edit::read_config_document_for_edit(&path) else {
         return false;
     };

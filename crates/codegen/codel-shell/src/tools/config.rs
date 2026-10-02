@@ -1,8 +1,8 @@
 use crate::models;
-use serde::{Deserialize, Serialize};
 use codel_sampler::SamplerConfig;
 use codel_tools::implementations::codel_build;
 use codel_tools::registry::types::ToolConfig;
+use serde::{Deserialize, Serialize};
 
 /// The tool-server binary defaults to a 5-minute foreground ceiling (`DEFAULT_MAX_TIMEOUT_MS`).
 /// Production opts *up* to 10h by sending this explicitly, overridable via config.toml.

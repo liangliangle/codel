@@ -24,11 +24,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde::Deserialize;
 use codel_shell::session::storage::{
     ReplayEmission, ReplayLookupFallback, ReplayPathHint, ReplayedUpdate, replay_would_emit,
     stream_replay_updates_at_hinted,
 };
+use serde::Deserialize;
 
 mod lifecycle;
 

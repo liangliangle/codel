@@ -6,10 +6,6 @@ use crate::error::AgentBuildError;
 use crate::prompt::context::{PromptAudience, PromptContext};
 use crate::system_reminder::ReminderPolicy;
 use crate::tool_list::{ToolList, listed_tools, subagent_types};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use tracing::Instrument;
 use codel_tools::bridge::ToolBridge;
 use codel_tools::computer::types::{AsyncFileSystem, TerminalBackend};
 use codel_tools::implementations::codel_build::task::model_policy::{
@@ -18,6 +14,10 @@ use codel_tools::implementations::codel_build::task::model_policy::{
 use codel_tools::notification::ToolNotificationHandle;
 use codel_tools::registry::types::SessionContext;
 use codel_tools::types::tool::ToolKind;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tracing::Instrument;
 /// Builds an [`Agent`] from an [`AgentDefinition`] (`from_definition`) or programmatic `with_*` calls, plus session context.
 #[derive(Clone)]
 pub struct AgentBuilder {
@@ -152,9 +152,7 @@ fn sole_enabled_allowlist_entry<'a>(
     }
     found
 }
-fn task_lifecycle_satisfier(
-    tool_config: &codel_tools::registry::types::ToolServerConfig,
-) -> bool {
+fn task_lifecycle_satisfier(tool_config: &codel_tools::registry::types::ToolServerConfig) -> bool {
     use codel_tools::types::tool::ToolNamespace;
     let has = |ns: ToolNamespace, id: &str, needs_bg: bool| {
         let fq = format!("{ns}:{id}");
@@ -623,10 +621,7 @@ impl AgentBuilder {
         self
     }
     /// Threaded into startup discovery and the dynamic-discovery seeds (`SkillManager` / `AgentsMdTracker`).
-    pub fn with_compat_config(
-        mut self,
-        compat: codel_tools::types::compat::CompatConfig,
-    ) -> Self {
+    pub fn with_compat_config(mut self, compat: codel_tools::types::compat::CompatConfig) -> Self {
         self.compat = compat;
         self
     }
@@ -880,8 +875,7 @@ impl AgentBuilder {
                 codel_tools::implementations::codel_build::SendFeedbackTool,
             >()
             .id;
-            let feedback_name =
-                codel_tools::implementations::codel_build::SEND_FEEDBACK_TOOL_NAME;
+            let feedback_name = codel_tools::implementations::codel_build::SEND_FEEDBACK_TOOL_NAME;
             tool_config.tools.retain(|tool| {
                 !matches!(
                     tool.kind,
@@ -1362,13 +1356,14 @@ impl AgentBuilder {
     }
 }
 /// CLI naming for the shared [`codel_tool_types::build_task_description`] builder.
-const TASK_TOOL_NAMING: codel_tool_types::TaskToolNaming<'static> = codel_tool_types::TaskToolNaming {
-    task_tool: "${{ tools.by_kind.task }}",
-    run_in_background_param: "${{ params.task.run_in_background }}",
-    resume_from_param: "${{ params.task.resume_from }}",
-    background_retrieval_tool: "${{ tools.by_kind.background_task_action }}",
-    isolation_param: "${{ params.task.isolation }}",
-};
+const TASK_TOOL_NAMING: codel_tool_types::TaskToolNaming<'static> =
+    codel_tool_types::TaskToolNaming {
+        task_tool: "${{ tools.by_kind.task }}",
+        run_in_background_param: "${{ params.task.run_in_background }}",
+        resume_from_param: "${{ params.task.resume_from }}",
+        background_retrieval_tool: "${{ tools.by_kind.background_task_action }}",
+        isolation_param: "${{ params.task.isolation }}",
+    };
 /// Child sessions get a concise description that discourages recursive delegation.
 const CHILD_TASK_DESCRIPTION: &str = "\
 Launch a sub-agent to handle a specific sub-task. Use this only when \n\
@@ -1457,14 +1452,13 @@ mod tests {
     #[tokio::test]
     async fn memory_v2_access_sets_prompt_roots_from_policy() {
         use codel_tools::computer::local::LocalTerminalBackend;
-        let access = codel_tools::types::memory_v2::MemoryV2AccessResource(Arc::new(
-            TestMemoryV2Access {
+        let access =
+            codel_tools::types::memory_v2::MemoryV2AccessResource(Arc::new(TestMemoryV2Access {
                 roots: [
                     PathBuf::from("/memory/global"),
                     PathBuf::from("/memory/workspace"),
                 ],
-            },
-        ));
+            }));
         let builder = AgentBuilder::new(
             std::env::temp_dir(),
             Arc::new(LocalTerminalBackend::new()),
@@ -1632,10 +1626,9 @@ mod tests {
         use codel_tools::computer::local::LocalTerminalBackend;
         let mut definition = crate::config::AgentDefinition::default_codel_build();
         definition.inject_default_tools = false;
-        definition.tool_config.tools =
-            vec![codel_tools::registry::types::ToolConfig::for_tool::<
-                codel_tools::implementations::codel_build::SendSubagentMessageTool,
-            >()];
+        definition.tool_config.tools = vec![codel_tools::registry::types::ToolConfig::for_tool::<
+            codel_tools::implementations::codel_build::SendSubagentMessageTool,
+        >()];
         let build = |enabled| {
             AgentBuilder::new(
                 std::env::temp_dir(),
@@ -2571,8 +2564,7 @@ mod tests {
         }
         let bash = disabled
             .tool_bridge()
-            .read_resource::<Params<codel_tools::implementations::codel_build::bash::BashParams>>(
-            )
+            .read_resource::<Params<codel_tools::implementations::codel_build::bash::BashParams>>()
             .await
             .expect("bash params");
         assert!(bash.0.enabled_background);

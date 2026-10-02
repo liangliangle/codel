@@ -3,12 +3,10 @@ use crate::capability::CapabilityMode;
 use crate::handle::tests::{
     background_capable_cfg, make_confining_handle, make_handle, start_background_sleep,
 };
-use std::sync::Arc;
-use codel_tools::implementations::codel_build::scheduler::types::{
-    ScheduledTask, SchedulerState,
-};
-use codel_tools::types::resources::State;
 use codel_tool_protocol::turn_hook;
+use codel_tools::implementations::codel_build::scheduler::types::{ScheduledTask, SchedulerState};
+use codel_tools::types::resources::State;
+use std::sync::Arc;
 async fn next_item(
     stream: &mut ToolStream<TypedToolOutput>,
 ) -> Option<codel_tool_runtime::ToolStreamItem<TypedToolOutput>> {
@@ -1673,9 +1671,7 @@ async fn dispatch_store_session_image_rejects_invalid_input_without_writing() {
 #[tokio::test]
 async fn dispatch_store_session_image_enforces_size_limit_without_writing() {
     use base64::Engine;
-    use codel_workspace_types::rpc::fs::{
-        MAX_SESSION_IMAGE_BASE64_BYTES, MAX_SESSION_IMAGE_BYTES,
-    };
+    use codel_workspace_types::rpc::fs::{MAX_SESSION_IMAGE_BASE64_BYTES, MAX_SESSION_IMAGE_BYTES};
     let (handler, folder) = session_image_handler().await;
     let root = handler.workspace.root_cwd().unwrap();
     let before = directory_entries(&root);
@@ -2962,8 +2958,8 @@ async fn dispatch_knows_every_typed_method() {
 #[tokio::test]
 async fn dispatch_stamps_client_rpc_activity_for_mutations_only() {
     use crate::file_system::{FsListReq, FsWriteFileReq};
-    use codel_workspace_types::rpc::workspace::DropSessionReq;
     use codel_tool_protocol::IdleWithholdReason;
+    use codel_workspace_types::rpc::workspace::DropSessionReq;
     let handler = WorkspaceRpcHandler::new(make_handle());
     let tracker = handler.workspace.activity_tracker().clone();
     assert_eq!(tracker.snapshot().withhold_reason, None);
@@ -3006,8 +3002,8 @@ async fn dispatch_stamps_client_rpc_activity_for_mutations_only() {
 }
 #[tokio::test]
 async fn presence_note_stamps_only_visible_notes_for_live_sessions() {
-    use codel_workspace_types::rpc::presence::PresenceNoteReq;
     use codel_tool_protocol::IdleWithholdReason;
+    use codel_workspace_types::rpc::presence::PresenceNoteReq;
     let handle = crate::handle::tests::make_handle_with_status_config(crate::StatusConfig {
         presence_keepalive_enabled: true,
         ..crate::StatusConfig::default()

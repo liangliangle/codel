@@ -33,8 +33,6 @@ async fn product_skill_infos_none_without_auth() {
     assert!(product_skill_infos(None).await.is_none());
 }
 
-
-
 fn all_gated() -> CommandAvailability {
     CommandAvailability::all_enabled()
 }

@@ -7,11 +7,13 @@ use codel_logging::events::{
     CanonicalToolId, InvocationId, InvocationSource, PathScope, ProductModelId, ReadProfile,
     ToolCallCompleted, ToolContractVersion, ToolOutputLimit, ToolSourceReason, ToolSourceStatus,
 };
-use codel_tools::implementations::codex::CodexReadFileTool;
+use codel_tool_protocol::ToolId;
+use codel_tool_runtime::Tool;
 use codel_tools::implementations::codel_build::{ReadFileTool, SearchReplaceTool};
 use codel_tools::implementations::codel_build_concise::{
     ReadFileConciseTool, SearchReplaceConciseTool,
 };
+use codel_tools::implementations::codex::CodexReadFileTool;
 use codel_tools::implementations::opencode::OpenCodeWriteTool;
 use codel_tools::registry::types::{FinalizedToolset, RegisteredToolIdentity};
 use codel_tools::types::output::{GrepSearchOutput, ToolOutput};
@@ -19,8 +21,6 @@ use codel_tools::types::resources::resolve_model_path;
 use codel_tools::types::source_summary::ToolSourceSummary;
 use codel_tools::types::tool::ToolNamespace;
 use codel_tools::types::tool_call_origin::ToolCallOrigin;
-use codel_tool_protocol::ToolId;
-use codel_tool_runtime::Tool;
 
 use crate::session::events::ToolOutcome;
 
@@ -518,20 +518,18 @@ mod tests {
     use super::qualified_id;
     use super::*;
     use crate::session::events::ToolOutcome;
-    use std::path::Path;
-    use codel_logging::events::{
-        CanonicalToolId, PathScope, ToolSourceReason, ToolSourceStatus,
-    };
-    use codel_tools::implementations::codex::CodexReadFileTool;
+    use codel_logging::events::{CanonicalToolId, PathScope, ToolSourceReason, ToolSourceStatus};
+    use codel_tool_runtime::Tool;
     use codel_tools::implementations::codel_build::{GrepTool, ReadFileTool, SearchReplaceTool};
     use codel_tools::implementations::codel_build_concise::{
         ReadFileConciseTool, SearchReplaceConciseTool,
     };
+    use codel_tools::implementations::codex::CodexReadFileTool;
     use codel_tools::implementations::opencode::OpenCodeWriteTool;
     use codel_tools::types::output::{GrepSearchOutput, TextOutput};
     use codel_tools::types::resources::resolve_model_path;
     use codel_tools::types::tool::ToolNamespace;
-    use codel_tool_runtime::Tool;
+    use std::path::Path;
 
     fn registered(namespace: ToolNamespace, tool: &impl Tool) -> CanonicalToolId {
         CanonicalToolId::from_qualified(&qualified_id(namespace, &tool.id())).expect("qualified id")

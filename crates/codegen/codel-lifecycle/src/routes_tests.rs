@@ -433,8 +433,8 @@ async fn put_rejects_invalid_names_and_bodies_with_400() {
 #[cfg(unix)]
 #[tokio::test]
 async fn routes_work_over_a_unix_socket_through_the_diag_server() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use codel_diag_server::{DiagHandle, DiagListener, DiagServeOptions};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     async fn request(sock: &std::path::Path, method: &str, path: &str, body: &str) -> (u16, Value) {
         let mut stream = tokio::net::UnixStream::connect(sock)
@@ -520,8 +520,8 @@ async fn routes_work_over_a_unix_socket_through_the_diag_server() {
 #[cfg(unix)]
 #[tokio::test]
 async fn dribbled_trigger_body_is_answered_within_the_smallest_budget_plus_the_epsilon() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use codel_diag_server::{DiagHandle, DiagListener, DiagServeOptions};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let test = TestBroker::new();
     let sock = test.path("ws.sock");

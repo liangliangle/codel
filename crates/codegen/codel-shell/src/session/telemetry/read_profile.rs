@@ -7,6 +7,7 @@ use codel_logging::events::{
     ReadLimitKind, ReadProfile, ReadSelection, ReadSkillMatch, ReadSkillSource, ToolOutputLimit,
     ToolSourceReason, ToolSourceStatus,
 };
+use codel_tool_runtime::Tool;
 use codel_tools::implementations::codel_build::ReadFileTool;
 use codel_tools::implementations::skills::types::SkillScope;
 use codel_tools::types::source_summary::{
@@ -14,7 +15,6 @@ use codel_tools::types::source_summary::{
 };
 use codel_tools::types::tool::ToolNamespace;
 use codel_tools::types::tool_call_origin::ToolCallOrigin;
-use codel_tool_runtime::Tool;
 
 use super::tool_call::SourceProjection;
 
@@ -63,9 +63,7 @@ pub(crate) fn invocation_source(origin: Option<&ToolCallOrigin>) -> Option<Invoc
         codel_tools::types::tool_call_origin::InvocationSource::UserDirect => {
             InvocationSource::UserDirect
         }
-        codel_tools::types::tool_call_origin::InvocationSource::System => {
-            InvocationSource::System
-        }
+        codel_tools::types::tool_call_origin::InvocationSource::System => InvocationSource::System,
     })
 }
 
@@ -200,9 +198,7 @@ fn map_reason(reason: ReadReason) -> ToolSourceReason {
     }
 }
 
-fn map_output_limit(
-    limit: codel_tools::types::source_summary::ToolOutputLimit,
-) -> ToolOutputLimit {
+fn map_output_limit(limit: codel_tools::types::source_summary::ToolOutputLimit) -> ToolOutputLimit {
     match limit {
         codel_tools::types::source_summary::ToolOutputLimit::Unobserved => {
             ToolOutputLimit::Unobserved

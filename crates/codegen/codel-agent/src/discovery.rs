@@ -257,7 +257,12 @@ fn by_name_with_home(
 /// Project-level `.codel/agents/` has highest priority, then falls back to built-ins, user-level, and finally bundled definitions.
 pub fn by_name_in_cwd(name: &str, cwd: &Path) -> Option<AgentDefinition> {
     let codel = codel_config::user_codel_home();
-    by_name_in_cwd_with_home(name, cwd, codel_dirs::home_dir().as_deref(), codel.as_deref())
+    by_name_in_cwd_with_home(
+        name,
+        cwd,
+        codel_dirs::home_dir().as_deref(),
+        codel.as_deref(),
+    )
 }
 
 fn by_name_in_cwd_with_home(
@@ -906,9 +911,13 @@ mod tests {
             "Bundled only",
         );
 
-        let def =
-            by_name_in_cwd_with_home("bundled-only", &cwd, Some(&home), Some(&home.join(".codel")))
-                .unwrap();
+        let def = by_name_in_cwd_with_home(
+            "bundled-only",
+            &cwd,
+            Some(&home),
+            Some(&home.join(".codel")),
+        )
+        .unwrap();
         assert_eq!(def.scope, AgentScope::Bundled);
         assert_eq!(def.description, "Bundled only");
     }
@@ -945,8 +954,9 @@ mod tests {
 
         write_agent_file(&bundled_dir, "explore.md", "explore", "Bundled explore");
 
-        let def = by_name_in_cwd_with_home("explore", &cwd, Some(&home), Some(&home.join(".codel")))
-            .unwrap();
+        let def =
+            by_name_in_cwd_with_home("explore", &cwd, Some(&home), Some(&home.join(".codel")))
+                .unwrap();
         assert_eq!(def.scope, AgentScope::BuiltIn);
         assert_ne!(def.description, "Bundled explore");
     }

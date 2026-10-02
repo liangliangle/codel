@@ -218,7 +218,10 @@ fn the_codel_home_is_a_floor_tree_but_the_command_dir_or_a_workspace_inside_it()
     let ws = Path::new("/opt/ws-fixture/ws");
     let got = floor(&inputs(&ServedRoot::pin(ws), &codel_home, home));
     let own_session = codel_config::sessions_cwd_dir_in(&codel_home, "/opt/ws-fixture/ws");
-    assert!(is_protected(&codel_home.join("extensions/new/run.sh"), &got));
+    assert!(is_protected(
+        &codel_home.join("extensions/new/run.sh"),
+        &got
+    ));
     assert!(is_protected(&codel_home.join("sessions/other/x"), &got));
     assert!(is_protected(&own_session.join("notes.md"), &got));
     assert!(!is_protected(&own_session.join("commands/out.log"), &got));

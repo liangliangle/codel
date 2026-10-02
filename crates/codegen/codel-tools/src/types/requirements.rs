@@ -217,8 +217,9 @@ impl ToolRequirement {
     }
 
     /// Require a specific tool (by namespace + id).
-    pub fn tool<T: crate::types::tool_metadata::ToolMetadata + codel_tool_runtime::Tool + Default>()
-    -> Self {
+    pub fn tool<
+        T: crate::types::tool_metadata::ToolMetadata + codel_tool_runtime::Tool + Default,
+    >() -> Self {
         let t = T::default();
         Self::Tool {
             namespace: t.tool_namespace().to_string(),

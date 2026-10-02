@@ -185,12 +185,6 @@ fn slash_dropdown_never_paints_outside_a_short_dashboard() {
     }
 }
 
-
-
-
-
-
-
 fn row_text(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width).fold(String::new(), |mut text, x| {
         if let Some(cell) = buf.cell((x, y)) {
@@ -248,8 +242,6 @@ fn render_empty_state_paints_hint_line() {
     );
 }
 
-
-
 /// While the local session roster is still loading the empty body shows a loading hint instead of the "no agents" copy.
 #[test]
 fn render_empty_state_paints_loading_hint() {
@@ -279,7 +271,6 @@ fn render_empty_state_paints_on_single_row_area() {
         "expected empty-state hint on 1-row area, got: {content:?}"
     );
 }
-
 
 /// Narrow-mode rendering truncates labels and still registers row_rects.
 #[test]
@@ -2585,7 +2576,6 @@ fn render_narrow_viewport_follows_selected_section_header() {
         );
     }
 }
-
 
 /// The location picker modal paints its title and candidate rows and records the content hit areas for mouse handling.
 #[test]

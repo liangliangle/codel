@@ -10,6 +10,12 @@ use crate::views::modal_list::{self, ListRow, RowStatus, RowTag};
 use crate::views::modal_window::{
     self, ModalContentArea, ModalSizing, ModalWindowConfig, ModalWindowState, Shortcut,
 };
+use codel_agent::config::{AgentDefinition, AgentScope, BuiltinAgentName};
+use codel_shell::agent::config::AgentSelectionConfig;
+use codel_tools::implementations::skills::discovery::extract_first_paragraph;
+use codel_tools::registry::types::ToolServerConfig;
+use codel_tools::types::template_renderer::TemplateRenderer;
+use codel_tools::types::tool::ToolKind;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -17,12 +23,6 @@ use ratatui::style::{Modifier, Style};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
-use codel_agent::config::{AgentDefinition, AgentScope, BuiltinAgentName};
-use codel_shell::agent::config::AgentSelectionConfig;
-use codel_tools::implementations::skills::discovery::extract_first_paragraph;
-use codel_tools::registry::types::ToolServerConfig;
-use codel_tools::types::template_renderer::TemplateRenderer;
-use codel_tools::types::tool::ToolKind;
 /// Which tab is active in the agents modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentsTab {
@@ -513,7 +513,10 @@ pub fn merge_persona_lists(bundle: &BundleState, cwd: &Path) -> Vec<PersonaDetai
         }
     }
     let dirs = [
-        (ConfigFileScope::Project, cwd.join(".codel").join("personas")),
+        (
+            ConfigFileScope::Project,
+            cwd.join(".codel").join("personas"),
+        ),
         (ConfigFileScope::User, codel_home.join("personas")),
     ];
     for (scope, dir) in dirs {
@@ -3336,9 +3339,7 @@ mod tests {
         assert!(description_text.starts_with("1234567890"));
     }
     /// Fixture: a one-plugin registry whose `agents/` dir holds `reviewer.md`.
-    fn plugin_registry_with_reviewer(
-        plugin_root: &Path,
-    ) -> codel_agent::plugins::PluginRegistry {
+    fn plugin_registry_with_reviewer(plugin_root: &Path) -> codel_agent::plugins::PluginRegistry {
         use codel_agent::plugins::discovery::PluginId;
         use codel_agent::plugins::{
             DiscoveredPlugin, PluginManifest, PluginOrigin, PluginRegistry, PluginScope,

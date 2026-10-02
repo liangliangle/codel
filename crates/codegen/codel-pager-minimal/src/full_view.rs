@@ -109,11 +109,11 @@ fn finish_transcript(app: &mut AppView, id: codel_pager::app::agent::AgentId, ou
         }
         Err(e) => {
             if let Some(agent) = app.agents.get_mut(&id) {
-                agent.scrollback.push_block(
-                    codel_pager::scrollback::block::RenderBlock::system(format!(
-                        "Failed to write transcript: {e}"
-                    )),
-                );
+                agent
+                    .scrollback
+                    .push_block(codel_pager::scrollback::block::RenderBlock::system(
+                        format!("Failed to write transcript: {e}"),
+                    ));
             }
         }
     }

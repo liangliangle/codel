@@ -1416,9 +1416,9 @@ fn build_content_blocks_with_prefixes_and_caps_ref(
             ImageContent::new(data, mime_type)
                 .uri(uri)
                 // Record the `[Image #N]` display number so the server resolves the token by number, not list position. See `AttachedImages`.
-                .meta(Some(
-                    codel_shared::placeholder_images::display_number_meta(img.display_number),
-                )),
+                .meta(Some(codel_shared::placeholder_images::display_number_meta(
+                    img.display_number,
+                ))),
         ));
     }
 
@@ -1486,11 +1486,9 @@ fn resolve_orphan_placeholders(
                     ImageContent::new(data, loaded.mime_type)
                         .uri(uri)
                         // Same `[Image #N]` display-number mapping as inline images
-                        .meta(Some(
-                            codel_shared::placeholder_images::display_number_meta(
-                                ph.display_number,
-                            ),
-                        )),
+                        .meta(Some(codel_shared::placeholder_images::display_number_meta(
+                            ph.display_number,
+                        ))),
                 );
                 tracing::info!(
                     path = ?ph.path,

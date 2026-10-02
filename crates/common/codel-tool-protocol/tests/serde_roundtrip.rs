@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 
-use serde_json::{Value, json};
 use codel_tool_protocol::{
     AttachRoute, AuthRefreshParams, AuthRefreshResult, ConnectionId, ConnectionKind, ERROR_CODES,
     FrameSeq, HelloAckMsg, HelloMsg, HookEvent, HookFrame, HookKind, IMAGE_CAPABILITIES_V1,
@@ -26,6 +25,7 @@ use codel_tool_protocol::{
     WireCustomNotification, WireToolNotification, error_codes,
 };
 use codel_tool_types::ToolDescription;
+use serde_json::{Value, json};
 
 fn roundtrip<T>(value: &T) -> Value
 where

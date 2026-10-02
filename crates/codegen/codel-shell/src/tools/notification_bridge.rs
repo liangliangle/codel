@@ -4,16 +4,16 @@ use crate::session::commands::{NotificationPriority, NotificationSource};
 use crate::session::persistence::{DurableAppendError, PersistenceHandle, PersistenceMsg};
 use crate::tools::task_completed_frame;
 use agent_client_protocol::{self as acp, Client as _};
+use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use codel_hunk_tracker::HunkTrackerHandle;
+use codel_tools::notification::types::{ToolNotification, ToolNotificationHandle};
+use codel_tools::types::output::{BashOutput, ToolOutput};
+use codel_workspace::session::file_state::FileStateTracker;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
-use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use codel_tools::notification::types::{ToolNotification, ToolNotificationHandle};
-use codel_tools::types::output::{BashOutput, ToolOutput};
-use codel_workspace::session::file_state::FileStateTracker;
-use codel_hunk_tracker::HunkTrackerHandle;
 const TASK_WAKE_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 pub(crate) struct NotificationBridgeConfig {
     /// ACP gateway for sending streaming updates to TUI
@@ -379,8 +379,7 @@ async fn handle_notification(
         }
         ToolNotification::SubagentCompleted(_) => {}
         ToolNotification::TaskCompleted(task_snapshot) => {
-            let is_monitor =
-                task_snapshot.kind == codel_tools::computer::types::TaskKind::Monitor;
+            let is_monitor = task_snapshot.kind == codel_tools::computer::types::TaskKind::Monitor;
             let task_id = task_snapshot.task_id.clone();
             let goal_loop_active = config
                 .goal_loop_active

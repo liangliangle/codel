@@ -12,10 +12,8 @@ use crate::permission::{AccessKind, PermissionHookTransport};
 use crate::sandbox::metrics;
 use crate::sandbox::{MODE_LAYER_WRITE_TEXT, WorkspaceSandbox};
 use crate::session::WorkspaceSession;
-use serde_json::Value;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use codel_computer_hub_sdk::ToolServer;
+use codel_logging::events::SandboxSettlement;
 use codel_sandbox::command::grants::{
     Expiry, Grant, GrantDecision, GrantId, GrantScope, GrantSubject, PROVENANCE_COMMAND_MAX_CHARS,
     Provenance,
@@ -24,12 +22,14 @@ use codel_sandbox::command::violation::{Blocked, Replay};
 use codel_sandbox::command::{
     BackendName, CallId, SandboxMode, Violation, canonical_path, is_same_path,
 };
-use codel_logging::events::SandboxSettlement;
+use codel_tool_runtime::{ToolApprovalPolicy, ToolError, ToolErrorKind};
 use codel_tools::implementations::codex::apply_patch::{Hunk, parse_patch};
 use codel_tools::types::ToolInput;
 use codel_tools::types::resources::resolve_model_path;
 use codel_tools::types::tool::{ToolKind, ToolNamespace};
-use codel_tool_runtime::{ToolApprovalPolicy, ToolError, ToolErrorKind};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 /// What the hub does with one tool call on a folder, decided before dispatch from the tool's
 /// kind and namespace and the sandbox's mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -486,10 +486,10 @@ fn new_grant_id() -> GrantId {
 pub(crate) mod text {
     use super::EgressProxyState;
     use crate::permission::sandbox_wire::is_wire_expressible;
-    use std::fmt::Display;
     use codel_sandbox::command::Violation;
     use codel_sandbox::command::grants::GrantSubject;
     use codel_sandbox::command::violation::InformationalReason;
+    use std::fmt::Display;
     /// The way out of a denial no grant can lift — an unproxied connection,
     /// a path the command never named: the same words the informational card shows.
     pub const RECOVERY_LINE: &str = "Run it in your terminal, or set the folder to `observe` in Settings (`[sandbox] mode = \"observe\"` in `.codel/workspaced.toml`).";

@@ -5,14 +5,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use agent_client_protocol::{self as acp, Agent as _};
-use serde_json::json;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use codel_acp_lib::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     LineBufferedRead,
 };
 use codel_shell::agent::config::Config as AgentConfig;
 use codel_shell::agent::mvp_agent::MvpAgent;
+use serde_json::json;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Matches production's `MAX_BUFFER_SIZE` in `agent::app`.
 pub const DUPLEX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
@@ -367,10 +367,8 @@ where
 
 /// [`run_agent_test`] with a custom `/v1/models` catalog.
 #[allow(dead_code)]
-pub fn run_agent_test_with_models<F, Fut>(
-    models: Vec<codel_test_support::MockModelEntry>,
-    body: F,
-) where
+pub fn run_agent_test_with_models<F, Fut>(models: Vec<codel_test_support::MockModelEntry>, body: F)
+where
     F: FnOnce(std::path::PathBuf, std::rc::Rc<codel_test_support::MockInferenceServer>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
@@ -386,7 +384,9 @@ pub fn run_agent_test_with_models<F, Fut>(
         .expect("mock runtime");
     let server = std::rc::Rc::new(
         mock_rt
-            .block_on(codel_test_support::MockInferenceServer::start_with_models(models))
+            .block_on(codel_test_support::MockInferenceServer::start_with_models(
+                models,
+            ))
             .expect("mock server"),
     );
     let codel_home = tempfile::TempDir::new().expect("codel home");

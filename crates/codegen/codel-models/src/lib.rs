@@ -31,8 +31,7 @@ struct DefaultModels {
 }
 
 static DEFAULTS: LazyLock<DefaultModels> = LazyLock::new(|| {
-    serde_json::from_str(DEFAULT_MODELS_JSON)
-        .expect("default_models.json: invalid JSON")
+    serde_json::from_str(DEFAULT_MODELS_JSON).expect("default_models.json: invalid JSON")
 });
 
 /// Primary model for coding tasks.

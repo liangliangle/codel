@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-use pretty_assertions::assert_eq;
 use codel_feedback::{
     FEEDBACK_DRAFTS_FILENAME, FeedbackDraftInput, FeedbackDraftStore, FeedbackFailureMode,
     FeedbackStoreError, FeedbackTaskCategory, FeedbackType,
 };
+use pretty_assertions::assert_eq;
 
 use super::*;
 use crate::types::resources::{Resources, SessionFolder};
@@ -122,7 +122,10 @@ async fn storage_and_join_failures_are_execution_errors() {
         .await
         .unwrap_err();
     let join_error = map_append_result(Err(join_error)).unwrap_err();
-    assert_eq!(join_error.kind, codel_tool_runtime::ToolErrorKind::Execution);
+    assert_eq!(
+        join_error.kind,
+        codel_tool_runtime::ToolErrorKind::Execution
+    );
     assert!(!join_error.detail.contains(SUCCESS_MESSAGE));
 }
 

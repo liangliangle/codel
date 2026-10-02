@@ -1,6 +1,6 @@
 use crate::util::config::RemoteSettings;
-use toml::Value as TomlValue;
 use codel_sampling_types::ReasoningEffort;
+use toml::Value as TomlValue;
 
 pub(crate) const ENV_PROMPT_SUGGESTIONS: &str = "CODEL_PROMPT_SUGGESTIONS";
 

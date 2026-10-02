@@ -296,9 +296,8 @@ pub async fn fetch_gcs_version_from_base(channel: &str, base_url: &str) -> Resul
 
 async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<String> {
     let url = format!("{}/{}", base_url, channel);
-    let client = codel_extra_ca::build_reqwest_client(|builder| {
-        builder.timeout(Duration::from_secs(15))
-    })?;
+    let client =
+        codel_extra_ca::build_reqwest_client(|builder| builder.timeout(Duration::from_secs(15)))?;
 
     let max_retries: u32 = 3;
     let mut last_err = None;
@@ -582,12 +581,15 @@ mod tests {
             ("codel-0.2.5-windows-x86_64.exe", Some("0.2.5")),
             // Pre-releases must round-trip whole
             // Truncating to "0.1.220" would make an alpha install masquerade as the release and mask updates from alpha to stable
-            ("codel-0.1.220-alpha.4-linux-x86_64", Some("0.1.220-alpha.4")),
+            (
+                "codel-0.1.220-alpha.4-linux-x86_64",
+                Some("0.1.220-alpha.4"),
+            ),
             ("codel-0.1.220-alpha.4", Some("0.1.220-alpha.4")), // npm layout
             ("codel-pager-0.1.5-darwin-arm64", None),           // "pager" is not a version
             ("codel-garbage-darwin-arm64", None),               // unparseable version
             ("codel-0.2.46", Some("0.2.46")),                   // no platform suffix
-            ("other-0.2.46-darwin-arm64", None),               // wrong prefix
+            ("other-0.2.46-darwin-arm64", None),                // wrong prefix
             ("codel-latest", None),                             // symlink alias, not a version
             ("codel", None),                                    // bare name
             ("", None),

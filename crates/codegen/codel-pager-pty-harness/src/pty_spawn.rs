@@ -10,9 +10,9 @@ use std::path::Path;
 
 #[cfg(unix)]
 use anyhow::{Context, Result};
-use portable_pty::CommandBuilder;
 #[cfg(any(unix, test))]
 use codel_test_support::TestSandbox;
+use portable_pty::CommandBuilder;
 
 use crate::pty::EnvOp;
 

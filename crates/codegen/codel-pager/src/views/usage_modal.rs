@@ -693,9 +693,7 @@ fn tab_content(state: &UsageInfoModalState, theme: &Theme, width: u16) -> TabCon
         UsageInfoTab::ContextUsage => {
             TabContent::from_lines(context_tab_lines(state, theme, width))
         }
-        UsageInfoTab::SessionUsage => {
-            TabContent::from_lines(session_usage_lines(state, theme))
-        }
+        UsageInfoTab::SessionUsage => TabContent::from_lines(session_usage_lines(state, theme)),
         UsageInfoTab::SessionInfo => session_info_content(state, theme),
     }
 }
@@ -748,7 +746,6 @@ fn session_usage_lines(state: &UsageInfoModalState, theme: &Theme) -> Vec<Line<'
     }
     lines
 }
-
 
 fn session_info_content(state: &UsageInfoModalState, theme: &Theme) -> TabContent {
     if let Some(error) = &state.session_error {
@@ -890,8 +887,7 @@ mod tests {
     #[test]
     fn session_usage_tab_shows_the_token_cost_summary() {
         let mut state = state_with_session();
-        state.session_usage_text =
-            Some("Session usage\ntokens: 12\ncost: $0.01".to_string());
+        state.session_usage_text = Some("Session usage\ntokens: 12\ncost: $0.01".to_string());
         let theme = Theme::current();
         let text: Vec<String> = session_usage_lines(&state, &theme)
             .iter()

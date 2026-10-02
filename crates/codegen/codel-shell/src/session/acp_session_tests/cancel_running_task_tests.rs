@@ -23,9 +23,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
             let tmp = tempfile::TempDir::new().unwrap();
             let session_dir = tmp.path().join("session");
             let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
-            let fs = Arc::new(codel_workspace::file_system::MockFs::new(
-                cwd.to_path_buf(),
-            ));
+            let fs = Arc::new(codel_workspace::file_system::MockFs::new(cwd.to_path_buf()));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
             let hunk_tracker_handle = codel_hunk_tracker::HunkTrackerActor::spawn(
@@ -538,9 +536,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 cwd: session_dir.path().to_string_lossy().to_string(),
             };
             let cwd = AbsPathBuf::new(session_dir.path().to_path_buf()).unwrap();
-            let fs = Arc::new(codel_workspace::file_system::MockFs::new(
-                cwd.to_path_buf(),
-            ));
+            let fs = Arc::new(codel_workspace::file_system::MockFs::new(cwd.to_path_buf()));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
             let hunk_tracker_handle = codel_hunk_tracker::HunkTrackerActor::spawn(
@@ -901,16 +897,12 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel::<
-                codel_acp_lib::AcpClientMessage,
-            >();
-            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel::<
-                PersistenceMsg,
-            >();
+            let (gateway_tx, _gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<codel_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
-            let fs = Arc::new(
-                codel_workspace::file_system::MockFs::new(cwd.to_path_buf()),
-            );
+            let fs = Arc::new(codel_workspace::file_system::MockFs::new(cwd.to_path_buf()));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
             let hunk_tracker_handle = codel_hunk_tracker::HunkTrackerActor::spawn(
@@ -920,14 +912,8 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 codel_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
-            let tool_context = ToolContext::new(
-                cwd.clone(),
-                None,
-                None,
-                fs,
-                terminal,
-                hunk_tracker_handle,
-            );
+            let tool_context =
+                ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
             let state = TokioMutex::new(State {
                 running_task: None,
                 finalization_gate: Default::default(),
@@ -941,9 +927,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 hook_block_hold: Default::default(),
                 nudges_used_this_session: 0,
             });
-            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<
-                SessionEvent,
-            >();
+            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let agent = test_agent_default().await;
             agent
                 .tool_bridge()
@@ -982,23 +966,19 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 attach_non_interactive: std::rc::Rc::new(std::cell::Cell::new(false)),
                 chat_state_handle: codel_chat_state::ChatStateHandle::noop(),
                 unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
-                current_prompt_id: std::sync::Arc::new(
-                    std::sync::Mutex::new(Some("running".to_string())),
-                ),
+                current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(Some(
+                    "running".to_string(),
+                ))),
                 active_work: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                pending_interactions: std::sync::Arc::new(
-                    std::sync::Mutex::new(std::collections::HashMap::new()),
-                ),
-                current_prompt_mode: Arc::new(
-                    parking_lot::Mutex::new(PromptMode::Agent),
-                ),
+                pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
+                current_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 supports_backend_search: std::cell::Cell::new(false),
                 tool_overrides: std::cell::RefCell::new(None),
-                resolved_tool_overrides: std::sync::Arc::new(
-                    arc_swap::ArcSwapOption::empty(),
-                ),
+                resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
                 doom_loop_recovery: None,
@@ -1008,11 +988,12 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 startup_hints: StartupHints::default(),
                 forked_tool_override: None,
                 compaction: test_compaction_config(85),
-                long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
-                    enabled: false,
-                    tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
-                    delay: crate::session::long_reasoning_reminder::DEFAULT_DELAY,
-                },
+                long_reasoning_reminder:
+                    crate::session::long_reasoning_reminder::LongReasoningReminder {
+                        enabled: false,
+                        tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
+                        delay: crate::session::long_reasoning_reminder::DEFAULT_DELAY,
+                    },
                 long_reasoning_turn_state: Default::default(),
                 memory: crate::session::memory_state::SessionMemory {
                     configured_mode: None,
@@ -1023,9 +1004,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     v2_legacy_carryover: false,
                     prompt_sync_pending: std::sync::atomic::AtomicBool::new(false),
                     flush_config: crate::config::MemoryFlushConfig::default(),
-                    is_flushing: std::sync::Arc::new(
-                        std::sync::atomic::AtomicBool::new(false),
-                    ),
+                    is_flushing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     capture_worker: std::cell::RefCell::new(None),
                     dream_workers: crate::session::memory_state::V2DreamWorkers::default(),
                     last_capture_failure: std::cell::RefCell::new(None),
@@ -1042,9 +1021,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     search_counter: std::cell::RefCell::new(None),
                     injection_count: std::sync::atomic::AtomicU64::new(0),
                     compaction_recovery_count: std::sync::atomic::AtomicU64::new(0),
-                    chunks_added: std::sync::Arc::new(
-                        std::sync::atomic::AtomicU64::new(0),
-                    ),
+                    chunks_added: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                     init_reindex_handle: std::cell::RefCell::new(None),
                     dream_config: Default::default(),
                     dream_count: std::sync::atomic::AtomicU64::new(0),
@@ -1073,42 +1050,30 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 agent: std::cell::RefCell::new(agent),
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
                 git_head_enabled: false,
-                status_line_enabled: std::sync::Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
+                status_line_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 models_manager: Default::default(),
                 display_cwd: std::sync::OnceLock::new(),
                 active_agent_type: parking_lot::Mutex::new(None),
-                queue_exit_reminder_on_approved_exit: Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
-                emit_local_background_tasks: Arc::new(
-                    std::sync::atomic::AtomicBool::new(true),
-                ),
+                queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(
+                    false,
+                )),
+                emit_local_background_tasks: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 active_skill: parking_lot::Mutex::new(None),
-                plan_mode: Arc::new(
-                    parking_lot::Mutex::new(
-                        crate::session::plan_mode::PlanModeTracker::new(
-                            std::path::PathBuf::from("/tmp/test-session"),
-                        ),
-                    ),
-                ),
+                plan_mode: Arc::new(parking_lot::Mutex::new(
+                    crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
+                        "/tmp/test-session",
+                    )),
+                )),
                 goal_enabled: false,
                 background_workflows_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
-                goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(
-                    false,
-                ),
-                goal_tracker: Arc::new(
-                    parking_lot::Mutex::new(
-                        crate::session::goal_tracker::GoalTracker::new(
-                            std::path::PathBuf::from("/tmp/test-session"),
-                        ),
-                    ),
-                ),
-                goal_turn_task_ids: parking_lot::Mutex::new(
-                    std::collections::HashSet::new(),
-                ),
+                goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
+                goal_tracker: Arc::new(parking_lot::Mutex::new(
+                    crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
+                        "/tmp/test-session",
+                    )),
+                )),
+                goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
                 goal_blocked_streak: std::sync::atomic::AtomicU32::new(0),
                 goal_update_rx: std::cell::RefCell::new(None),
@@ -1123,7 +1088,8 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 goal_verifier_skeptic_count: 1,
                 goal_role_models: Default::default(),
                 goal_use_current_model_only: false,
-                goal_classifier_max_runs: crate::session::goal_classifier::GOAL_CLASSIFIER_MAX_RUNS_DEFAULT,
+                goal_classifier_max_runs:
+                    crate::session::goal_classifier::GOAL_CLASSIFIER_MAX_RUNS_DEFAULT,
                 goal_strategist_every: 5,
                 goal_reverify_after: crate::session::acp_session::GOAL_REVERIFY_AFTER_DEFAULT,
                 goal_plan_reconciled: std::sync::atomic::AtomicBool::new(false),
@@ -1133,9 +1099,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
                 managed_mcp_handle: Default::default(),
                 initial_client_mcp_servers: Default::default(),
-                tool_metadata_snapshot: Arc::new(
-                    std::sync::Mutex::new(Default::default()),
-                ),
+                tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
                 mcp_announcements: Default::default(),
                 mcp_reminder_mode: McpReminderMode::Delta,
                 mcp_reminder_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1150,9 +1114,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 weak_self: std::sync::Weak::new(),
                 startup_tasks: Default::default(),
                 extension_registry: codel_agent_lifecycle::LocalExtensionRegistry::default(),
-                last_announced_local_date: std::cell::Cell::new(
-                    chrono::Local::now().date_naive(),
-                ),
+                last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
                 prefix_carries_fallback_date: std::cell::Cell::new(false),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -1166,9 +1128,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 hook_load_errors: std::cell::RefCell::new(Vec::new()),
                 plugin_registry: std::cell::RefCell::new(None),
                 plugin_registry_handle: None,
-                events: crate::session::events::EventTracker::new(
-                    std::path::Path::new("/tmp"),
-                ),
+                events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
                 turn_phases: std::sync::Arc::default(),
@@ -1182,20 +1142,12 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 next_title_refresh_idx: std::cell::Cell::new(0),
                 turn_summary_enabled: false,
                 title_refresh_enabled: false,
-                session_turn_active: std::sync::Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
-                streaming_turn_capture: parking_lot::Mutex::new(
-                    StreamingTurnCapture::default(),
-                ),
+                session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
                 stream_apply_span: parking_lot::Mutex::new(None),
                 current_turn_span_id: parking_lot::Mutex::new(None),
-                turn_stream_drained: parking_lot::Mutex::new(
-                    std::collections::HashMap::new(),
-                ),
-                pending_image_strip: parking_lot::Mutex::new(
-                    std::collections::HashMap::new(),
-                ),
+                turn_stream_drained: parking_lot::Mutex::new(std::collections::HashMap::new()),
+                pending_image_strip: parking_lot::Mutex::new(std::collections::HashMap::new()),
                 image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
                 sampler_handle: codel_sampler::SamplerHandle::noop(),
                 sampling_gate: None,
@@ -1212,42 +1164,35 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
             let bridge = actor.agent.borrow().tool_bridge().clone();
             {
                 let mut state = actor.state.lock().await;
-                state.running_task = Some(
-                    AgentTask::new(
-                        "running",
-                        tokio::task::spawn_local(async move {
-                                tokio::time::sleep(std::time::Duration::from_secs(60))
-                                    .await;
-                            })
-                            .abort_handle(),
-                    ),
-                );
-                state
-                    .pending_inputs
-                    .push_back(InputItem {
-                        prompt_id: "running".into(),
-                        prompt_blocks: vec![],
-                        prompt_mode: PromptMode::Agent,
-                        trace_gcs_config: None,
-                        artifact_tracker: None,
-                        client_identifier: None,
-                        screen_mode: None,
-                        verbatim: false,
-                        json_schema: None,
-                        input_origin: InputOrigin::new(
-                            crate::session::PromptOrigin::User,
-                        ),
-                        task_wake_fallback: None,
-                        tool_overrides_update: None,
-                        respond_to: tx,
-                        persist_ack: None,
-                        parsed_prompt_tx: None,
-                        initial_child_prompt_ready: None,
-                        queue_meta: None,
-                        queue_mutation_policy: QueueMutationPolicy::hidden(),
-                        send_now: false,
-                        traceparent: None,
-                    });
+                state.running_task = Some(AgentTask::new(
+                    "running",
+                    tokio::task::spawn_local(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    })
+                    .abort_handle(),
+                ));
+                state.pending_inputs.push_back(InputItem {
+                    prompt_id: "running".into(),
+                    prompt_blocks: vec![],
+                    prompt_mode: PromptMode::Agent,
+                    trace_gcs_config: None,
+                    artifact_tracker: None,
+                    client_identifier: None,
+                    screen_mode: None,
+                    verbatim: false,
+                    json_schema: None,
+                    input_origin: InputOrigin::new(crate::session::PromptOrigin::User),
+                    task_wake_fallback: None,
+                    tool_overrides_update: None,
+                    respond_to: tx,
+                    persist_ack: None,
+                    parsed_prompt_tx: None,
+                    initial_child_prompt_ready: None,
+                    queue_meta: None,
+                    queue_mutation_policy: QueueMutationPolicy::hidden(),
+                    send_now: false,
+                    traceparent: None,
+                });
             }
             let _ = actor
                 .cancel_running_task(crate::session::CancelOptions {
@@ -1263,14 +1208,18 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 >()
                 .await;
             assert!(
-                    scoped_prompt_id.is_none()
-                        || scoped_prompt_id.as_ref().is_some_and(|p| p.0.is_empty()),
-                    "CurrentPromptIdResource should be cleared on cancellation"
-                );
+                scoped_prompt_id.is_none()
+                    || scoped_prompt_id.as_ref().is_some_and(|p| p.0.is_empty()),
+                "CurrentPromptIdResource should be cleared on cancellation"
+            );
             assert!(
-                    actor.current_prompt_id.lock().expect("current_prompt_id mutex poisoned").is_none(),
-                    "current_prompt_id should be cleared on cancellation"
-                );
+                actor
+                    .current_prompt_id
+                    .lock()
+                    .expect("current_prompt_id mutex poisoned")
+                    .is_none(),
+                "current_prompt_id should be cleared on cancellation"
+            );
             let state = actor.state.lock().await;
             assert!(state.running_task.is_none());
             assert!(state.pending_inputs.is_empty());
@@ -2415,25 +2364,22 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let app = Router::new()
-                .route(
-                    "/v1/responses",
-                    post(|| async {
-                        let chunk = serde_json::json!({
-                            "type": "response.output_text.delta",
-                            "sequence_number": 1,
-                            "item_id": "item-1",
-                            "output_index": 0,
-                            "content_index": 0,
-                            "delta": "hi",
-                        });
-                        let first = Ok::<
-                            _,
-                            std::convert::Infallible,
-                        >(Event::default().data(chunk.to_string()));
-                        Sse::new(stream::iter(vec![first]).chain(stream::pending()))
-                    }),
-                );
+            let app = Router::new().route(
+                "/v1/responses",
+                post(|| async {
+                    let chunk = serde_json::json!({
+                        "type": "response.output_text.delta",
+                        "sequence_number": 1,
+                        "item_id": "item-1",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": "hi",
+                    });
+                    let first =
+                        Ok::<_, std::convert::Infallible>(Event::default().data(chunk.to_string()));
+                    Sse::new(stream::iter(vec![first]).chain(stream::pending()))
+                }),
+            );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             let server_task = tokio::spawn(async move {
@@ -2449,24 +2395,19 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 idle_timeout_secs: Some(60),
                 ..Default::default()
             };
-            let (sampler_event_tx, _sampler_event_rx) = tokio::sync::mpsc::unbounded_channel::<
-                codel_sampler::SamplingEvent,
-            >();
+            let (sampler_event_tx, _sampler_event_rx) =
+                tokio::sync::mpsc::unbounded_channel::<codel_sampler::SamplingEvent>();
             let sampler_handle = codel_sampler::SamplerActor::spawn(
                 cfg,
                 codel_sampler::RetryPolicy::default(),
                 sampler_event_tx,
             );
-            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel::<
-                codel_acp_lib::AcpClientMessage,
-            >();
-            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel::<
-                PersistenceMsg,
-            >();
+            let (gateway_tx, _gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<codel_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
-            let fs = Arc::new(
-                codel_workspace::file_system::MockFs::new(cwd.to_path_buf()),
-            );
+            let fs = Arc::new(codel_workspace::file_system::MockFs::new(cwd.to_path_buf()));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
             let hunk_tracker_handle = codel_hunk_tracker::HunkTrackerActor::spawn(
@@ -2476,14 +2417,8 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 codel_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
-            let tool_context = ToolContext::new(
-                cwd.clone(),
-                None,
-                None,
-                fs,
-                terminal,
-                hunk_tracker_handle,
-            );
+            let tool_context =
+                ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
             let state = TokioMutex::new(State {
                 running_task: None,
                 finalization_gate: Default::default(),
@@ -2497,9 +2432,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 hook_block_hold: Default::default(),
                 nudges_used_this_session: 0,
             });
-            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<
-                SessionEvent,
-            >();
+            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let agent = test_agent_default().await;
             agent
                 .tool_bridge()
@@ -2538,23 +2471,19 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 attach_non_interactive: std::rc::Rc::new(std::cell::Cell::new(false)),
                 chat_state_handle: codel_chat_state::ChatStateHandle::noop(),
                 unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
-                current_prompt_id: std::sync::Arc::new(
-                    std::sync::Mutex::new(Some("running".to_string())),
-                ),
+                current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(Some(
+                    "running".to_string(),
+                ))),
                 active_work: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                pending_interactions: std::sync::Arc::new(
-                    std::sync::Mutex::new(std::collections::HashMap::new()),
-                ),
-                current_prompt_mode: Arc::new(
-                    parking_lot::Mutex::new(PromptMode::Agent),
-                ),
+                pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
+                current_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
                 turn_prompt_mode: Arc::new(parking_lot::Mutex::new(PromptMode::Agent)),
                 supports_backend_search: std::cell::Cell::new(false),
                 tool_overrides: std::cell::RefCell::new(None),
-                resolved_tool_overrides: std::sync::Arc::new(
-                    arc_swap::ArcSwapOption::empty(),
-                ),
+                resolved_tool_overrides: std::sync::Arc::new(arc_swap::ArcSwapOption::empty()),
                 compactions_remaining: std::cell::Cell::new(None),
                 compaction_at_tokens: std::cell::Cell::new(None),
                 doom_loop_recovery: None,
@@ -2564,11 +2493,12 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 startup_hints: StartupHints::default(),
                 forked_tool_override: None,
                 compaction: test_compaction_config(85),
-                long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
-                    enabled: false,
-                    tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
-                    delay: crate::session::long_reasoning_reminder::DEFAULT_DELAY,
-                },
+                long_reasoning_reminder:
+                    crate::session::long_reasoning_reminder::LongReasoningReminder {
+                        enabled: false,
+                        tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
+                        delay: crate::session::long_reasoning_reminder::DEFAULT_DELAY,
+                    },
                 long_reasoning_turn_state: Default::default(),
                 memory: crate::session::memory_state::SessionMemory {
                     configured_mode: None,
@@ -2579,9 +2509,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     v2_legacy_carryover: false,
                     prompt_sync_pending: std::sync::atomic::AtomicBool::new(false),
                     flush_config: crate::config::MemoryFlushConfig::default(),
-                    is_flushing: std::sync::Arc::new(
-                        std::sync::atomic::AtomicBool::new(false),
-                    ),
+                    is_flushing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     capture_worker: std::cell::RefCell::new(None),
                     dream_workers: crate::session::memory_state::V2DreamWorkers::default(),
                     last_capture_failure: std::cell::RefCell::new(None),
@@ -2598,9 +2526,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     search_counter: std::cell::RefCell::new(None),
                     injection_count: std::sync::atomic::AtomicU64::new(0),
                     compaction_recovery_count: std::sync::atomic::AtomicU64::new(0),
-                    chunks_added: std::sync::Arc::new(
-                        std::sync::atomic::AtomicU64::new(0),
-                    ),
+                    chunks_added: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                     init_reindex_handle: std::cell::RefCell::new(None),
                     dream_config: Default::default(),
                     dream_count: std::sync::atomic::AtomicU64::new(0),
@@ -2629,42 +2555,30 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 agent: std::cell::RefCell::new(agent),
                 last_reported_branch: std::sync::Arc::new(parking_lot::Mutex::new(None)),
                 git_head_enabled: false,
-                status_line_enabled: std::sync::Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
+                status_line_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 models_manager: Default::default(),
                 display_cwd: std::sync::OnceLock::new(),
                 active_agent_type: parking_lot::Mutex::new(None),
-                queue_exit_reminder_on_approved_exit: Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
-                emit_local_background_tasks: Arc::new(
-                    std::sync::atomic::AtomicBool::new(true),
-                ),
+                queue_exit_reminder_on_approved_exit: Arc::new(std::sync::atomic::AtomicBool::new(
+                    false,
+                )),
+                emit_local_background_tasks: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 active_skill: parking_lot::Mutex::new(None),
-                plan_mode: Arc::new(
-                    parking_lot::Mutex::new(
-                        crate::session::plan_mode::PlanModeTracker::new(
-                            std::path::PathBuf::from("/tmp/test-session"),
-                        ),
-                    ),
-                ),
+                plan_mode: Arc::new(parking_lot::Mutex::new(
+                    crate::session::plan_mode::PlanModeTracker::new(std::path::PathBuf::from(
+                        "/tmp/test-session",
+                    )),
+                )),
                 goal_enabled: false,
                 background_workflows_enabled: false,
                 goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
-                goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(
-                    false,
-                ),
-                goal_tracker: Arc::new(
-                    parking_lot::Mutex::new(
-                        crate::session::goal_tracker::GoalTracker::new(
-                            std::path::PathBuf::from("/tmp/test-session"),
-                        ),
-                    ),
-                ),
-                goal_turn_task_ids: parking_lot::Mutex::new(
-                    std::collections::HashSet::new(),
-                ),
+                goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
+                goal_tracker: Arc::new(parking_lot::Mutex::new(
+                    crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
+                        "/tmp/test-session",
+                    )),
+                )),
+                goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
                 goal_continuation_streak: std::sync::atomic::AtomicU32::new(0),
                 goal_blocked_streak: std::sync::atomic::AtomicU32::new(0),
                 goal_update_rx: std::cell::RefCell::new(None),
@@ -2679,7 +2593,8 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 goal_verifier_skeptic_count: 1,
                 goal_role_models: Default::default(),
                 goal_use_current_model_only: false,
-                goal_classifier_max_runs: crate::session::goal_classifier::GOAL_CLASSIFIER_MAX_RUNS_DEFAULT,
+                goal_classifier_max_runs:
+                    crate::session::goal_classifier::GOAL_CLASSIFIER_MAX_RUNS_DEFAULT,
                 goal_strategist_every: 5,
                 goal_reverify_after: crate::session::acp_session::GOAL_REVERIFY_AFTER_DEFAULT,
                 goal_plan_reconciled: std::sync::atomic::AtomicBool::new(false),
@@ -2689,9 +2604,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
                 managed_mcp_handle: Default::default(),
                 initial_client_mcp_servers: Default::default(),
-                tool_metadata_snapshot: Arc::new(
-                    std::sync::Mutex::new(Default::default()),
-                ),
+                tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
                 mcp_announcements: Default::default(),
                 mcp_reminder_mode: McpReminderMode::Delta,
                 mcp_reminder_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2706,9 +2619,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 weak_self: std::sync::Weak::new(),
                 startup_tasks: Default::default(),
                 extension_registry: codel_agent_lifecycle::LocalExtensionRegistry::default(),
-                last_announced_local_date: std::cell::Cell::new(
-                    chrono::Local::now().date_naive(),
-                ),
+                last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
                 prefix_carries_fallback_date: std::cell::Cell::new(false),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -2722,9 +2633,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 hook_load_errors: std::cell::RefCell::new(Vec::new()),
                 plugin_registry: std::cell::RefCell::new(None),
                 plugin_registry_handle: None,
-                events: crate::session::events::EventTracker::new(
-                    std::path::Path::new("/tmp"),
-                ),
+                events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
                 turn_phases: std::sync::Arc::default(),
@@ -2738,20 +2647,12 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 next_title_refresh_idx: std::cell::Cell::new(0),
                 turn_summary_enabled: false,
                 title_refresh_enabled: false,
-                session_turn_active: std::sync::Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
-                streaming_turn_capture: parking_lot::Mutex::new(
-                    StreamingTurnCapture::default(),
-                ),
+                session_turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
                 stream_apply_span: parking_lot::Mutex::new(None),
                 current_turn_span_id: parking_lot::Mutex::new(None),
-                turn_stream_drained: parking_lot::Mutex::new(
-                    std::collections::HashMap::new(),
-                ),
-                pending_image_strip: parking_lot::Mutex::new(
-                    std::collections::HashMap::new(),
-                ),
+                turn_stream_drained: parking_lot::Mutex::new(std::collections::HashMap::new()),
+                pending_image_strip: parking_lot::Mutex::new(std::collections::HashMap::new()),
                 image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
                 sampler_handle: sampler_handle.clone(),
                 sampling_gate: None,
@@ -2768,15 +2669,11 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             let request_id_for_task = request_id.clone();
             let sampler_for_task = sampler_handle.clone();
             let request = ConversationRequest {
-                items: vec![ConversationItem::User(
-                        codel_sampling_types::UserItem {
-                            content: vec![codel_sampling_types::ContentPart::Text {
-                                text: "hi".into(),
-                            }],
-                            synthetic_reason: SyntheticReason::Human,
-                            ..Default::default()
-                        },
-                    )],
+                items: vec![ConversationItem::User(codel_sampling_types::UserItem {
+                    content: vec![codel_sampling_types::ContentPart::Text { text: "hi".into() }],
+                    synthetic_reason: SyntheticReason::Human,
+                    ..Default::default()
+                })],
                 ..Default::default()
             };
             let task = tokio::task::spawn_local(async move {
@@ -2793,9 +2690,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             }
             {
                 let mut state = actor.state.lock().await;
-                state.running_task = Some(
-                    AgentTask::new("running", task.abort_handle()),
-                );
+                state.running_task = Some(AgentTask::new("running", task.abort_handle()));
                 state.pending_inputs.push_back(user_item("running", "test"));
             }
             let _ = actor
@@ -2815,9 +2710,9 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             assert!(
-                    !still_active,
-                    "cancel_running_task did not propagate to the sampler"
-                );
+                !still_active,
+                "cancel_running_task did not propagate to the sampler"
+            );
             server_task.abort();
         })
         .await;

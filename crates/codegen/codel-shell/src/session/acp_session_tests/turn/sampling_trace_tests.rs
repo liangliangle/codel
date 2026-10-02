@@ -1,9 +1,9 @@
 use super::rate_limit_backoff_tests::{SessionKind, actor_under_test};
 use super::transient_retry_loop_tests::{on_session_stack, run_paused, sampler_surfaces_5xx};
 use super::*;
+use codel_test_support::{MockInferenceServer, MockModelEntry};
 use std::time::Duration;
 use tracing::Instrument;
-use codel_test_support::{MockInferenceServer, MockModelEntry};
 
 fn trace_id(traceparent: &str) -> &str {
     traceparent
@@ -25,8 +25,8 @@ fn sampling_request_header_carries_the_turn_trace_id() {
                 actor_under_test(&server, SessionKind::Main, sampler_surfaces_5xx(), false).await;
 
             let turn_root = tracing::info_span!("test.turn_root");
-            let root_traceparent =
-                codel_trace_context::span_traceparent(&turn_root).expect("root span has a trace id");
+            let root_traceparent = codel_trace_context::span_traceparent(&turn_root)
+                .expect("root span has a trace id");
             let outcome = tokio::time::timeout(
                 Duration::from_secs(300),
                 actor

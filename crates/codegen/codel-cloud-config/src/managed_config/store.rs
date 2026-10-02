@@ -36,10 +36,7 @@ pub(super) fn remove_managed_config_files(home: &std::path::Path) {
     }
     let atomic_write_tmp_prefixes = [
         format!("{}.", codel_config::MANAGED_CONFIG_CACHE_FILE),
-        format!(
-            "{}.",
-            codel_config::signed_policy::SIGNATURE_SIDECAR_FILE
-        ),
+        format!("{}.", codel_config::signed_policy::SIGNATURE_SIDECAR_FILE),
         format!(
             "{}.",
             codel_config::signed_policy::MANAGED_IDENTITY_SIDECAR_FILE
@@ -242,8 +239,7 @@ pub(super) fn gate_snapshot_locked(home: &std::path::Path) -> GateSnapshot {
 
 /// Marker-scoped: key-scoped markers never purge here, and config.toml blips are not switches.
 fn purge_prior_tenant_locked(home: &std::path::Path) {
-    let codel_config::ServingIdentity::Team(team_id) = current_serving_identity_any_expiry()
-    else {
+    let codel_config::ServingIdentity::Team(team_id) = current_serving_identity_any_expiry() else {
         return;
     };
     if let Some(evicted) = codel_config::confirmed_team_switch_at(home, &team_id) {
@@ -361,11 +357,8 @@ pub(super) fn apply_fetched(
     {
         return Ok(ApplyOutcome::StaleStage);
     }
-    let identity_changed = codel_config::managed_config_identity_changed_at(
-        &home,
-        new_principal,
-        new_key_fingerprint,
-    );
+    let identity_changed =
+        codel_config::managed_config_identity_changed_at(&home, new_principal, new_key_fingerprint);
     let wrote = match apply_managed_config(&home, body) {
         // A switch's destructive half lands only with its constructive half: the policy
         // files are converged above, so only the prior principal's sidecars go.

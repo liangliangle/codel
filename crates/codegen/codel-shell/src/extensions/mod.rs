@@ -1,5 +1,4 @@
 pub mod agent_runtime;
-pub mod feedback;
 pub mod auth;
 pub(crate) mod auth_gate;
 pub(crate) mod background_task;
@@ -10,6 +9,7 @@ pub mod code_nav;
 pub mod consent;
 pub mod content;
 pub mod debug;
+pub mod feedback;
 pub mod feedback_drafts;
 pub(crate) mod feedback_trace;
 pub mod fs;

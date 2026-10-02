@@ -16,8 +16,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
 use codel_sqlite_journal::JournalMode;
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::recovery;
 

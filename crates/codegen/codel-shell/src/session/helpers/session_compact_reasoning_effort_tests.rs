@@ -5,12 +5,12 @@ use axum::body::Bytes;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::post;
+use codel_sampling_types::ReasoningEffort;
 use futures_util::stream;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use codel_sampling_types::ReasoningEffort;
 
 const SUMMARY: &str = "<summary>ok</summary>";
 

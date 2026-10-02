@@ -1,7 +1,7 @@
 use super::*;
+use codel_tool_types::ForegroundSpawnInterrupt;
 use codel_tools::bridge::BackgroundNoticeNames;
 use codel_tools::implementations::codel_build::task::backend::ChannelBackend;
-use codel_tool_types::ForegroundSpawnInterrupt;
 
 const HAND_OFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 

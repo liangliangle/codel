@@ -10,14 +10,14 @@ use std::time::Instant;
 use agent_client_protocol::{self as acp};
 
 use crate::acp_harness;
-use serde_json::Value;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use codel_acp_lib::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     LineBufferedRead,
 };
 use codel_shell::agent::config::Config as AgentConfig;
 use codel_shell::agent::mvp_agent::MvpAgent;
+use serde_json::Value;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[derive(Debug)]
 pub struct DispatchEvent {

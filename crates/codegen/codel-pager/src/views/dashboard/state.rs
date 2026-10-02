@@ -2460,9 +2460,7 @@ impl DashboardState {
             file,
             text,
         );
-        if completion == ClipboardPasteCompletion::FullMiss && ctx.source.is_clipboard_key() {
-            
-        }
+        if completion == ClipboardPasteCompletion::FullMiss && ctx.source.is_clipboard_key() {}
         completion
     }
 

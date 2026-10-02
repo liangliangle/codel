@@ -30,7 +30,8 @@ pub const FREE_USAGE_EXHAUSTED_ERROR_CODE: &str = "subscription:free-usage-exhau
 
 /// User-facing free-usage exhaustion copy (paywall).
 /// Promises no reset duration; the backend config drives the quota window.
-pub const FREE_USAGE_USER_MESSAGE: &str = "You\u{2019}ve reached your usage limit for now. Try again later.";
+pub const FREE_USAGE_USER_MESSAGE: &str =
+    "You\u{2019}ve reached your usage limit for now. Try again later.";
 
 /// Whether flattened server detail is free-usage-quota exhaustion (paywall), not transient throttling.
 /// Sniffs the well-known code embedded by `parse_error_bytes`.
@@ -774,7 +775,7 @@ mod tests {
         }
     }
 
-        /// A 403 body reaches the user unchanged: there is no login session to end, so
+    /// A 403 body reaches the user unchanged: there is no login session to end, so
     /// no hint tells them to `codel logout`.
     #[test]
     #[serial_test::serial]

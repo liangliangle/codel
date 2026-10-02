@@ -6,9 +6,9 @@ use crate::session::normalize_cache::{
 use agent_client_protocol::ImageContent;
 use base64::Engine as _;
 use bytes::Bytes;
-use std::borrow::Cow;
 use codel_tools::util::format_bytes;
 use codel_tools::util::image_compress::{FilterType, ReEncodeParams, re_encode_under_limit};
+use std::borrow::Cow;
 /// Kept low so many images fit under the inference proxy's ~50 MB request-body limit before the downstream byte budget starts evicting images.
 /// Base64 inflates raw bytes by ~4/3, so a 1.5 MB image is ~2 MB on the wire and ~25 fit under the limit.
 /// A low per-image cost means a conversation rarely reaches the eviction threshold, so the server-side KV-cache prefix is rarely rewritten.
@@ -242,8 +242,8 @@ pub(crate) fn render_compression_notice(
 /// Cheap: a format sniff, a structural walk, and a header dimension probe; a pixel decode only for ICO, bounded.
 /// The reason is logged when the loader strips an image; the strip is re-persisted (irreversible), so the evidence must reach logs.
 pub(crate) fn persisted_image_reject_reason(bytes: &[u8]) -> Option<String> {
-    use image::ImageFormat as F;
     use codel_tools::util::image_validate as iv;
+    use image::ImageFormat as F;
     let Ok(format) = image::guess_format(bytes) else {
         return Some(format!("unrecognized format ({} bytes)", bytes.len()));
     };
@@ -294,8 +294,7 @@ pub(crate) fn inline_attach_verdict(data_b64: &str) -> InlineAttachVerdict {
     let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(data_b64) else {
         return InlineAttachVerdict::Unreadable;
     };
-    let Ok((w, h, _)) =
-        codel_tools::util::image_validate::validate_image_bytes_with(&raw, false)
+    let Ok((w, h, _)) = codel_tools::util::image_validate::validate_image_bytes_with(&raw, false)
     else {
         return InlineAttachVerdict::Unreadable;
     };

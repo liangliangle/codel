@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use serde::Serialize;
 use codel_pager_pty_harness::{ContentController, PtyExitPoll, PtyHarness};
+use serde::Serialize;
 
 const WELCOME_SENTINEL: &str = "Quit";
 const COMPOSER_PROBE_KEYS: &str = "zzx";

@@ -2,10 +2,10 @@
 
 use std::fmt;
 
+use codel_circuit_breaker::RetryPolicy;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use codel_circuit_breaker::RetryPolicy;
 
 use crate::provider_error::{parse_provider_error, parse_provider_error_str};
 
@@ -646,7 +646,9 @@ pub const MAX_USER_ERROR_BODY_CHARS: usize = 280;
 pub fn status_user_message(status: StatusCode) -> String {
     match status.as_u16() {
         code @ 502..=504 => {
-            format!("Codel is temporarily unavailable. Please try again in a moment. (HTTP {code}).")
+            format!(
+                "Codel is temporarily unavailable. Please try again in a moment. (HTTP {code})."
+            )
         }
         // Upstream capacity, not an edge failure; see [`SamplingError::is_overloaded`]
         code @ 529 => {

@@ -7,8 +7,8 @@
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
-use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
 use codel_sqlite_journal::JournalMode;
+use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
 
 use crate::storage::MemoryStorage;
 use crate::v2::{V2ManifestBudget, V2MemoryScope, regenerate_scope_manifest};

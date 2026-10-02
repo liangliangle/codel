@@ -1554,8 +1554,7 @@ pub(crate) mod test_fixtures {
             codel_workspace::permission::resolution::MarketplaceAllowlist {
                 allowed_urls: urls.iter().map(|u| u.to_string()).collect(),
                 source_path: None,
-                authority:
-                    codel_workspace::permission::resolution::PolicySourceAuthority::Native,
+                authority: codel_workspace::permission::resolution::PolicySourceAuthority::Native,
             },
         )
     }
@@ -2073,7 +2072,10 @@ mod tests {
     fn plan_install_qualifier_ambiguous_lists_source_names() {
         let sources = [
             git_source("Mirror A", OFFICIAL_URL),
-            git_source("Mirror B", "git@github.com:codel-org/plugin-marketplace.git"),
+            git_source(
+                "Mirror B",
+                "git@github.com:codel-org/plugin-marketplace.git",
+            ),
         ];
         let err = plan_install(
             &sources,

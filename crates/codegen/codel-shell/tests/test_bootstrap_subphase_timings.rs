@@ -22,9 +22,8 @@ fn startup_completed_carries_bootstrap_subphase_fields() {
     codel_logging::startup::PendingStartup::new()
         .finish(codel_logging::startup::StartupOutcome::Ok);
 
-    let log =
-        String::from_utf8(codel_logging::unified_log::snapshot_log().expect("unified log"))
-            .expect("utf8");
+    let log = String::from_utf8(codel_logging::unified_log::snapshot_log().expect("unified log"))
+        .expect("utf8");
     let ctx = log
         .lines()
         .find_map(|line| {

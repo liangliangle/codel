@@ -41,7 +41,6 @@ fn voice_slash_submit_starts_recording_in_plan_mode() {
     );
 }
 
-
 #[test]
 fn voice_final_appends_to_prompt_with_single_space() {
     let mut app = test_app_with_agent();
@@ -363,8 +362,6 @@ fn voice_ctrl_space_release_leaves_toggle_recording_running() {
         "no PttRelease for a non-hold session"
     );
 }
-
-
 
 #[test]
 fn voice_interim_sets_then_error_clears_state() {
@@ -1222,8 +1219,7 @@ fn stale_events_are_dropped_except_a_notice_and_the_stopped_sessions_final() {
 #[test]
 fn without_voice_the_chord_is_refused() {
     let mut app = test_app_with_agent();
-    app.distribution =
-        codel_config::Distribution::withholding(&[codel_config::Capability::Voice]);
+    app.distribution = codel_config::Distribution::withholding(&[codel_config::Capability::Voice]);
     app.apply_voice_mode_enabled(true);
 
     assert!(dispatch(Action::VoiceToggle, &mut app).is_empty());

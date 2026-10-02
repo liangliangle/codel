@@ -8,9 +8,9 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use std::time::Duration;
 
+use codel_config::BearerTokenPath;
 use http::HeaderValue;
 use tokio::task::JoinHandle;
-use codel_config::BearerTokenPath;
 
 /// Tokens are short; anything larger is the wrong file.
 const MAX_TOKEN_FILE_BYTES: u64 = 16 * 1024;

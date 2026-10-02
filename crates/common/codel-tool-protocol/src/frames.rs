@@ -59,9 +59,6 @@ pub struct ToolCallResult {
     pub chat_completion_output: Option<serde_json::Value>,
 }
 
-
-
-
 /// Body of a `tool_call_progress` notification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallProgressFrame {

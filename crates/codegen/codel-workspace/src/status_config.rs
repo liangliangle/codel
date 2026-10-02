@@ -1078,7 +1078,12 @@ mod tests {
     #[test]
     fn from_env_reads_preview_activity_scrape_interval() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("CODEL_WORKSPACE_PREVIEW_ACTIVITY_SCRAPE_INTERVAL_MS", "5000") };
+        unsafe {
+            std::env::set_var(
+                "CODEL_WORKSPACE_PREVIEW_ACTIVITY_SCRAPE_INTERVAL_MS",
+                "5000",
+            )
+        };
         let cfg = StatusConfig::from_env();
         unsafe { std::env::remove_var("CODEL_WORKSPACE_PREVIEW_ACTIVITY_SCRAPE_INTERVAL_MS") };
         assert_eq!(

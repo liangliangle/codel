@@ -261,8 +261,7 @@ impl SessionActor {
         let backend =
             crate::session::memory::MemoryBackendImpl::from_session_params(storage.clone(), params);
         *self.memory.search_counter.borrow_mut() = Some(backend.search_counter.clone());
-        let backend: Arc<dyn codel_tools::types::memory_backend::MemoryBackend> =
-            Arc::new(backend);
+        let backend: Arc<dyn codel_tools::types::memory_backend::MemoryBackend> = Arc::new(backend);
         let bridge = self.agent.borrow().tool_bridge().clone();
         bridge.update_resource(backend.clone()).await;
         if let Err(e) = self.register_memory_tools(&bridge).await {
@@ -365,9 +364,9 @@ impl SessionActor {
             self.memory.dream_workers.cancel_and_join().await;
         }
         let bridge = self.agent.borrow().tool_bridge().clone();
-        if !bridge.unregister_tool_by_name(
-            codel_tools::implementations::memory::MEMORY_SEARCH_TOOL_NAME,
-        ) {
+        if !bridge
+            .unregister_tool_by_name(codel_tools::implementations::memory::MEMORY_SEARCH_TOOL_NAME)
+        {
             tracing::debug!("memory_search tool was not registered during unregister");
         }
         if !bridge
@@ -512,12 +511,11 @@ impl SessionActor {
 
         let conversation = self.chat_state_handle.get_conversation().await;
         let manifest_block = match conversation.first() {
-            Some(codel_sampling_types::ConversationItem::System(sys)) if memory_v2_enabled => {
-                sys.content
-                    .find(codel_chat_state::MEMORY_CONTEXT_OPEN_TAG)
-                    .and_then(|start| sys.content.get(start..))
-                    .map(str::to_owned)
-            }
+            Some(codel_sampling_types::ConversationItem::System(sys)) if memory_v2_enabled => sys
+                .content
+                .find(codel_chat_state::MEMORY_CONTEXT_OPEN_TAG)
+                .and_then(|start| sys.content.get(start..))
+                .map(str::to_owned),
             _ => None,
         };
         let head = match manifest_block {

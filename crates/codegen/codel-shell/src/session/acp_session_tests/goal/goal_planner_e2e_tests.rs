@@ -3,12 +3,12 @@
 
 use super::support::*;
 use super::*;
-use std::sync::Arc as StdArc;
-use std::sync::atomic::{AtomicUsize, Ordering as SeqOrd};
-use tempfile::TempDir;
 use codel_tools::implementations::codel_build::task::types::{
     SubagentCancelTarget, SubagentEvent, SubagentResult, SubagentSpawnRequest,
 };
+use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicUsize, Ordering as SeqOrd};
+use tempfile::TempDir;
 
 /// Pull the planner's plan-file path from the prompt by its backtick-quoted `.md` token.
 /// Rewording the surrounding sentence therefore can't silently break the fake, which would otherwise write nothing and fail far from the cause.

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 pub use codel_config::ClaudeImport;
 use codel_config::compat::CompatHooks;
 use codel_config::resolve_global_hook_sources;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{self, HookSpec};
 use crate::error::HookError;
@@ -392,7 +392,9 @@ pub fn discover_hook_source_paths(options: DiscoveryOptions<'_>) -> HookSourcePa
                 root.join(".claude").join("settings.local.json"),
             ));
         }
-        project.push(classify_codel_hook_source(root.join(".codel").join("hooks")));
+        project.push(classify_codel_hook_source(
+            root.join(".codel").join("hooks"),
+        ));
         if include_cursor {
             project.push(HookSourceConfig::SettingsFile(
                 root.join(".cursor").join("hooks.json"),

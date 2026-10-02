@@ -10,7 +10,8 @@ use codel_sampling_types::ConversationItem;
 /// Serializes `items` the way a main turn would, so auxiliary calls can be compared against the real wire shape.
 fn main_turn_input(items: Vec<ConversationItem>) -> Vec<serde_json::Value> {
     let request = codel_sampling_types::ConversationRequest {
-        items: codel_chat_state::compaction_utils::ModelRequestHistory::from_raw(items).into_items(),
+        items: codel_chat_state::compaction_utils::ModelRequestHistory::from_raw(items)
+            .into_items(),
         model: Some("test-model".to_string()),
         ..Default::default()
     };
@@ -75,7 +76,8 @@ fn assert_messages_rides_parent_prefix(
     label: &str,
 ) {
     let request = codel_sampling_types::ConversationRequest {
-        items: codel_chat_state::compaction_utils::ModelRequestHistory::from_raw(parent).into_items(),
+        items: codel_chat_state::compaction_utils::ModelRequestHistory::from_raw(parent)
+            .into_items(),
         model: Some("test".to_string()),
         reasoning_effort: Some(codel_sampling_types::ReasoningEffort::High),
         ..Default::default()

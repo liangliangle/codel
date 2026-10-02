@@ -6,9 +6,9 @@
 mod tests {
     use crate::remote::client::BackendClient;
     use crate::session::storage::{JsonlStorageAdapter, StorageAdapter};
+    use codel_login::CodelAuth;
     use std::collections::BTreeMap;
     use std::sync::Arc;
-    use codel_login::CodelAuth;
 
     fn load_prod_auth() -> Option<CodelAuth> {
         let path = crate::util::codel_home::codel_home().join("auth.json");

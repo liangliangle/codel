@@ -936,11 +936,7 @@ mod tests {
         let ws = std::env::temp_dir().join(format!("codel-{tag}-{}-{nanos}", std::process::id()));
         let codel = ws.join(".codel");
         std::fs::create_dir_all(&codel).unwrap();
-        std::fs::write(
-            codel.join(codel_config::SANDBOX_CONFIG_FILENAME),
-            toml_body,
-        )
-        .unwrap();
+        std::fs::write(codel.join(codel_config::SANDBOX_CONFIG_FILENAME), toml_body).unwrap();
         ws
     }
     /// Create a temp workspace defining a `denytest` profile (extends `workspace`) with the given `deny` list.

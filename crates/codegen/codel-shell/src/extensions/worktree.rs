@@ -472,10 +472,7 @@ pub async fn handle(
         }
         "codel/git/worktree/db/stats" => {
             let result = ops
-                .dispatch(
-                    &codel_workspace::workspace_ops::WorktreeDbStatsReq {},
-                    None,
-                )
+                .dispatch(&codel_workspace::workspace_ops::WorktreeDbStatsReq {}, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
             to_response(Ok(result))
@@ -492,10 +489,7 @@ pub async fn handle(
         }
         "codel/git/worktree/db/path" => {
             let result = ops
-                .dispatch(
-                    &codel_workspace::workspace_ops::WorktreeDbPathReq {},
-                    None,
-                )
+                .dispatch(&codel_workspace::workspace_ops::WorktreeDbPathReq {}, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
             to_response(Ok(result))

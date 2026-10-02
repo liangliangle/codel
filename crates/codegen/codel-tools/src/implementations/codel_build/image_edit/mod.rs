@@ -118,7 +118,9 @@ async fn resolve_to_data_url(value: &str) -> Result<String, codel_tool_runtime::
 
     let raw_bytes = if value.starts_with("data:image/") {
         let comma = value.find(',').ok_or_else(|| {
-            codel_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
+            codel_tool_runtime::ToolError::invalid_arguments(
+                "malformed data URL in image reference",
+            )
         })?;
         let Some(header) = value.get(..comma) else {
             return Err(codel_tool_runtime::ToolError::invalid_arguments(

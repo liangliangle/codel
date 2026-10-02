@@ -306,8 +306,7 @@ fn wire_id_is_trimmed_and_a_blank_or_missing_id_still_renders() {
 #[test]
 fn wire_input_is_preserved_without_admission_revalidation() {
     let oversize = "x".repeat(
-        codel_tools::implementations::codel_build::task::types::MAX_ACTIVE_AGENT_MESSAGE_BYTES
-            + 1,
+        codel_tools::implementations::codel_build::task::types::MAX_ACTIVE_AGENT_MESSAGE_BYTES + 1,
     );
     for (subagent_id, text) in [("null", "hello"), ("sub-123", ""), ("sub-123", &oversize)] {
         let block = block(&call(

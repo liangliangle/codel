@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
+use codel_sqlite_journal::JournalMode;
 use rusqlite::params;
 use tempfile::TempDir;
-use codel_sqlite_journal::JournalMode;
 
 use super::*;
 use crate::v2::{V2ManifestBudget, ensure_scope_initialized, render_scope_manifest};
@@ -238,8 +238,7 @@ fn existing_v2_topic_keeps_its_content_first_and_demotes_appended_headings() {
         .strip_prefix(existing.trim_end())
         .expect("existing content stays first");
     assert!(
-        appended
-            .starts_with("\n\n## From earlier sessions\n\nRun `cargo test -p codel-memory`.")
+        appended.starts_with("\n\n## From earlier sessions\n\nRun `cargo test -p codel-memory`.")
     );
     assert_eq!(
         1,

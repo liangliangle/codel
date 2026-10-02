@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::Serialize;
 use codel_config::mcp_servers::{McpServerOrigin, SessionMcpTier};
 use codel_tools::types::config_source::ConfigSource;
+use serde::Serialize;
 
 use crate::session::mcp_servers;
 

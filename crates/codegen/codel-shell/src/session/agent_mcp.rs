@@ -8,9 +8,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use agent_client_protocol as acp;
-use serde::Deserialize;
 use codel_agent::config::{AgentDefinition, McpServerRef};
 use codel_tools::types::compat::CompatConfig;
+use serde::Deserialize;
 
 use crate::session::mcp_servers::mcp_server_name;
 

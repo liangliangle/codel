@@ -103,8 +103,8 @@ fn migrate_legacy_hook_trust_in(legacy_file: &Path, store: &mut TrustStore) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use codel_permission_rules::trust::canonicalize_or_owned;
+    use std::path::PathBuf;
 
     #[test]
     fn migrate_legacy_hook_trust_seeds_store_and_renames_file() {

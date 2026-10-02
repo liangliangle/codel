@@ -1,6 +1,6 @@
 use super::*;
-use toml::Value as TomlValue;
 use codel_workspace::HookSourceConfig;
+use toml::Value as TomlValue;
 
 use serial_test::serial;
 
@@ -8,16 +8,14 @@ fn source_paths(
     dir: &std::path::Path,
     compat: &codel_tools::types::compat::CompatConfig,
 ) -> codel_hooks::discovery::HookSourcePaths {
-    codel_hooks::discovery::discover_hook_source_paths(
-        codel_hooks::discovery::DiscoveryOptions {
-            git_root: Some(dir),
-            codel_home: None,
-            home: Some(dir),
-            compat: compat.hooks(),
-            claude_import: crate::claude_import::import_marker(),
-            trust: codel_hooks::trust::Trust::Trusted,
-        },
-    )
+    codel_hooks::discovery::discover_hook_source_paths(codel_hooks::discovery::DiscoveryOptions {
+        git_root: Some(dir),
+        codel_home: None,
+        home: Some(dir),
+        compat: compat.hooks(),
+        claude_import: crate::claude_import::import_marker(),
+        trust: codel_hooks::trust::Trust::Trusted,
+    })
 }
 
 fn source_path_strs(sources: &[HookSourceConfig]) -> Vec<String> {
@@ -292,10 +290,7 @@ fn gate_mcp_server_sources_report_imported_when_marker_set() {
 
     let sources = crate::util::config::mcp_server_sources(dir.path(), &compat, "test");
 
-    assert_eq!(
-        codel_config::ClaudeImport::Imported,
-        sources.claude_import
-    );
+    assert_eq!(codel_config::ClaudeImport::Imported, sources.claude_import);
 }
 
 #[tokio::test]

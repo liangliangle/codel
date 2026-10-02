@@ -26,10 +26,9 @@ mod jemalloc_malloc_conf {
     static MALLOC_CONF: MallocConfPtr = MallocConfPtr(CONF.as_ptr());
 }
 use anyhow::Result;
-use std::io::Write;
-use std::net::SocketAddr;
-use std::num::NonZeroUsize;
-use tokio_util::sync::CancellationToken;
+use codel_logging::process_info::{
+    Entrypoint, Interactivity, ProcessIdentity, ReleaseChannel, set_identity, set_release_channel,
+};
 use codel_pager::agent_runtime::AgentRuntime;
 use codel_pager::app::{
     AgentCmd, Command, EARLY_PREFETCH_WAIT, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand,
@@ -46,9 +45,10 @@ use codel_shell::leader::{
 use codel_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
 };
-use codel_logging::process_info::{
-    Entrypoint, Interactivity, ProcessIdentity, ReleaseChannel, set_identity, set_release_channel,
-};
+use std::io::Write;
+use std::net::SocketAddr;
+use std::num::NonZeroUsize;
+use tokio_util::sync::CancellationToken;
 mod agent_command;
 fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<ProcessIdentity> {
     use codel_logging::process_info::LeaderMode::Standalone;
@@ -116,9 +116,9 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
         ) => false,
     }
 }
-use std::env;
 use codel_update::enforce_version_policy_or_exit;
 use codel_update::{UpdateConfig, auto_update};
+use std::env;
 #[cfg(all(feature = "test-seams", debug_assertions))]
 mod test_seam {
     const TEST_TRUSTED_PUBKEY_FILE_ENV: &str = "CODEL_TEST_TRUSTED_PUBKEY_FILE";
@@ -167,10 +167,7 @@ fn apply_headless_args_to_config(args: &HeadlessArgs, config: &mut AgentConfig) 
     }
 }
 /// Apply global endpoint CLI args to an existing config.
-fn apply_agent_endpoint_args(
-    agent_args: &codel_pager::app::AgentArgs,
-    config: &mut AgentConfig,
-) {
+fn apply_agent_endpoint_args(agent_args: &codel_pager::app::AgentArgs, config: &mut AgentConfig) {
     if let Some(v) = &agent_args.cli_chat_proxy_base_url {
         config.endpoints.cli_chat_proxy_base_url = Some(v.clone());
     }
@@ -213,8 +210,8 @@ fn print_serve_startup_info(bind_addr: SocketAddr, secret: &str) {
 const HEADLESS_ENTRYPOINT: &str = "headless";
 /// Initialize simple tracing for non-TUI agent modes.
 fn init_tracing_simple(app_entrypoint: &'static str) {
-    use tracing_subscriber::{EnvFilter, Layer as _, fmt, layer::SubscriberExt as _};
     use codel_logging::debug_log::RMCP_SSE_NOISE_TARGET;
+    use tracing_subscriber::{EnvFilter, Layer as _, fmt, layer::SubscriberExt as _};
     let default_filter = if app_entrypoint == HEADLESS_ENTRYPOINT {
         "off"
     } else {
@@ -1261,11 +1258,7 @@ async fn run_agent_command(
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
-        codel_shell::agent::remote_config::settings_get::consume_wait(
-            wait,
-            None,
-            &codel_com_config,
-        )
+        codel_shell::agent::remote_config::settings_get::consume_wait(wait, None, &codel_com_config)
     } else {
         None
     };
@@ -1380,12 +1373,12 @@ async fn run_agent_command(
         if !agent_args.plugin_dirs.is_empty() {
             eprintln!("{PLUGIN_DIR_LEADER_WARNING}");
         }
-        use std::sync::Arc;
-        use tokio::io::AsyncWriteExt;
-        use tokio::sync::Mutex as TokioMutex;
         use codel_shell::leader::{
             ClientCapabilities, ClientMode, LeaderReconnector, ReconnectPolicy, connect_or_spawn,
         };
+        use std::sync::Arc;
+        use tokio::io::AsyncWriteExt;
+        use tokio::sync::Mutex as TokioMutex;
         let mode = match &agent_args.mode {
             Some(AgentCmd::Stdio) => ClientMode::Stdio,
             Some(AgentCmd::Headless(_)) | None => ClientMode::Headless,
@@ -1957,10 +1950,7 @@ fn install_heap_profile_hooks() {
 fn version_text(channel_label: &str) -> String {
     format!(
         "codel {}\n",
-        codel_version::display_version_with_commit(
-            codel_version::full_version(),
-            channel_label,
-        )
+        codel_version::display_version_with_commit(codel_version::full_version(), channel_label,)
     )
 }
 fn write_version(writer: &mut impl std::io::Write, channel_label: &str) -> std::io::Result<()> {
@@ -1980,10 +1970,8 @@ fn dispatch_version_if_requested(args: &PagerArgs) -> bool {
     if !args.version {
         return false;
     }
-    if let Err(error) = write_version(
-        &mut std::io::stdout().lock(),
-        codel_update::channel_label(),
-    ) {
+    if let Err(error) = write_version(&mut std::io::stdout().lock(), codel_update::channel_label())
+    {
         eprintln!("Error: {error}");
         std::process::exit(1);
     }
@@ -2140,7 +2128,8 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                         agent_cfg.codel_com_config.clone(),
                         agent_cfg.endpoints.proxy_url(),
                     ));
-                codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
+                codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager)
+                    .await;
             }
             Err(e) => {
                 tracing::warn!(
@@ -2150,11 +2139,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             }
         }
     }
-    codel_shell::config::apply_sandbox(
-        None,
-        sandbox_profile_arg.as_deref(),
-        args.cwd.as_deref(),
-    );
+    codel_shell::config::apply_sandbox(None, sandbox_profile_arg.as_deref(), args.cwd.as_deref());
     if let Some(identity) = process_identity(args.command.as_ref(), is_interactive) {
         set_identity(identity);
     }
@@ -2169,10 +2154,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     });
                     println!("{}", serde_json::to_string(&payload)?);
                 } else {
-                    write_version(
-                        &mut std::io::stdout().lock(),
-                        codel_update::channel_label(),
-                    )?;
+                    write_version(&mut std::io::stdout().lock(), codel_update::channel_label())?;
                 }
                 return Ok(());
             }
@@ -2358,8 +2340,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             .as_deref()
             .map(codel_pager::headless::parse_json_schema)
             .transpose()?;
-        if json_schema.is_some()
-            && args.output_format == codel_pager::headless::OutputFormat::Plain
+        if json_schema.is_some() && args.output_format == codel_pager::headless::OutputFormat::Plain
         {
             args.output_format = codel_pager::headless::OutputFormat::Json;
         }
@@ -2620,12 +2601,11 @@ async fn run_update_command(
         .map_err(|e| tracing::warn!("codel update: telemetry init skipped (agent config: {e})"))
         .ok();
     if let Some(agent_cfg) = telemetry_cfg {
-        let auth_manager =
-            std::sync::Arc::new(codel_login::AuthManager::new_with_proxy_base_url(
-                &codel_shell::util::codel_home::codel_home(),
-                agent_cfg.codel_com_config.clone(),
-                agent_cfg.endpoints.proxy_url(),
-            ));
+        let auth_manager = std::sync::Arc::new(codel_login::AuthManager::new_with_proxy_base_url(
+            &codel_shell::util::codel_home::codel_home(),
+            agent_cfg.codel_com_config.clone(),
+            agent_cfg.endpoints.proxy_url(),
+        ));
     }
     let result = auto_update::run_update(
         force_reinstall,
@@ -2974,9 +2954,7 @@ mod tests {
     #[serial_test::serial(jemalloc_heap_profile)]
     fn install_heap_profile_hooks_wires_shell_apis() {
         install_heap_profile_hooks();
-        assert_stats_sane(
-            codel_shell::heap_profile::stats().expect("shell stats after install"),
-        );
+        assert_stats_sane(codel_shell::heap_profile::stats().expect("shell stats after install"));
         if !require_opt_prof() {
             assert!(!codel_shell::heap_profile::prof_available());
             return;
@@ -2999,8 +2977,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn is_managed_install_matches_only_the_bin_codel_target() {
-        let home =
-            std::env::temp_dir().join(format!("codel-pager-managed-install-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!(
+            "codel-pager-managed-install-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join("bin")).unwrap();
         std::fs::create_dir_all(home.join("downloads")).unwrap();

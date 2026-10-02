@@ -3,14 +3,14 @@ use crate::app::worktree_session::{WorktreeSpec, create_worktree, new_worktree_i
 use agent_client_protocol as acp;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use std::io::Write;
-use std::path::Path;
-use tokio_util::sync::CancellationToken;
 use codel_acp_lib::acp_send;
 use codel_fast_worktree::WorktreeRecord;
 /// Reuse the agent's own report types rather than copies, so a field added there cannot go missing here.
 pub use codel_fast_worktree::{DbStats, GcReport, KeptWorktree, RebuildReport};
 use codel_shell::agent::config::Config as AgentConfig;
+use std::io::Write;
+use std::path::Path;
+use tokio_util::sync::CancellationToken;
 #[derive(Debug, clap::Args, Clone)]
 pub struct WorktreeArgs {
     #[command(subcommand)]

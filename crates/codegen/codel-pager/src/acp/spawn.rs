@@ -9,9 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use codel_logging::startup::{self, StartupPhase};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
-use codel_logging::startup::{self, StartupPhase};
 
 use codel_acp_lib::{
     AcpAgentChannel, AcpClientChannel, AcpClientTx, AcpGatewayReceiver, AcpGatewaySender,
@@ -371,9 +371,9 @@ async fn spawn_agent_thread_direct(
 
             cancel.cancelled().await;
             agent_rc.flush_all_sessions(SESSION_FLUSH_GRACE).await;
-            tokio::join!(
-                codel_shell::upload::drain_pending_uploads(UPLOAD_DRAIN_AT_CANCEL),
-            );
+            tokio::join!(codel_shell::upload::drain_pending_uploads(
+                UPLOAD_DRAIN_AT_CANCEL
+            ),);
             anyhow::Result::Ok(())
         });
         // LocalSet before runtime, as an implicit scope-end drop would do; the agent last.
@@ -550,7 +550,6 @@ mod tests {
             start.elapsed()
         );
     }
-
 
     #[test]
     fn join_reports_clean_worker_exit() {

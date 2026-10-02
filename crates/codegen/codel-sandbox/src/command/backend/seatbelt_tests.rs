@@ -10,7 +10,7 @@ use crate::command::git_config::GitConfigEnv;
 use crate::command::grants::{Expiry, Grant, GrantDecision, GrantId, GrantScope, GrantSubject};
 use crate::command::mode::SandboxMode;
 use crate::command::policy::{
-    DenyEntry, EnvPolicy, CODEL_HOME_SECRET_GLOBS, NetworkPolicy, PolicyInputs, ReadPolicy,
+    CODEL_HOME_SECRET_GLOBS, DenyEntry, EnvPolicy, NetworkPolicy, PolicyInputs, ReadPolicy,
     SECRET_READ_DENY_DIRS, SECRET_READ_DENY_FILES, SandboxPolicy,
 };
 use crate::command::protected::{self, Protected, ProtectedInputs};

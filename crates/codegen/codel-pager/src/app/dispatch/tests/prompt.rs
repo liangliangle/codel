@@ -786,7 +786,6 @@ fn focus_prompt_switches_pane() {
     assert_eq!(agent_ref(&app, id).active_pane, ActivePane::Prompt);
 }
 
-
 #[test]
 fn send_prompt_produces_effect_and_clears_input() {
     let mut app = test_app_with_agent();
@@ -1236,7 +1235,6 @@ fn send_while_running_with_pending_local_prompt_preserves_fifo() {
     );
 }
 
-
 /// PromptResponse FIFO handoff must forward `combined_texts` (one bubble each).
 #[test]
 fn prompt_response_fifo_handoff_paints_multi_bubble_combined() {
@@ -1281,9 +1279,6 @@ fn prompt_response_fifo_handoff_paints_multi_bubble_combined() {
     assert!(user_texts.contains(&"beta"));
     assert!(user_texts.iter().all(|t| !t.contains("\n\n")));
 }
-
-
-
 
 /// A turn that ends through its prompt response returns freed pages exactly once, counted on the dispatching thread.
 #[test]
@@ -1785,11 +1780,6 @@ fn prompt_response_formatted_401_suppresses_turn_failed_and_stashes_prompt() {
     );
 }
 
-
-
-
-
-
 /// Regression: cancelling while prompts are queued must hand the queue to the agent untouched.
 /// The FRONT queued prompt runs next (promoted server-side) and the rest stay queued in order.
 /// The authoritative `codel/queue/changed` rebroadcast (not client-side prediction) updates the mirror.
@@ -2045,9 +2035,6 @@ fn prompt_response_disarms_pending_reconcile() {
     );
 }
 
-
-
-
 #[test]
 fn send_prompt_stashes_in_flight_for_restore() {
     let mut app = test_app_with_agent();
@@ -2061,8 +2048,6 @@ fn send_prompt_stashes_in_flight_for_restore() {
     assert_eq!(stash.text, "hello world");
     assert!(stash.images.is_empty());
 }
-
-
 
 /// An IDLE bash submit is UNCHANGED: local enqueue and drain (no optimistic shared-queue echo).
 #[test]
@@ -3041,9 +3026,7 @@ fn submit_question_answers_cancel_clears_local_modal_and_restores_prompt() {
     // (b) restore the stashed prompt text and cursor
     // (c) return InputOutcome::Changed (no Action) and silently drop the directive carried by LocalQuestionKind::Fork.
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
 
     let mut app = fork_test_app();
     let id = AgentId(0);
@@ -3340,8 +3323,6 @@ fn interject_before_paste_probe_keeps_image() {
     assert!(agent_ref(&app, id).prompt.images.is_empty());
 }
 
-
-
 /// Returns true if any system block in agent 0's scrollback contains `needle`.
 /// Avoids `last_system_text`'s "last block must be System" panic for the allowed-command control (which may leave no system block).
 fn scrollback_has_system_text(app: &AppView, id: AgentId, needle: &str) -> bool {
@@ -3457,7 +3438,6 @@ fn show_queue_lists_local_prompts_in_order() {
     // Multi-line prompts collapse to the first line plus a count suffix
     assert!(text.contains("#2  second  (+1 more line)"), "got: {text:?}");
 }
-
 
 /// Count of "Turn cancelled by user …" marker blocks in the agent's scrollback.
 fn count_cancelled_markers(app: &AppView, id: AgentId) -> usize {
@@ -3795,8 +3775,8 @@ fn plain_send_during_pending_subagent_wait_keeps_confirmed_queue_row_reachable()
     use crate::app::agent_view::{ActivePane, test_fixtures::simulate_subagent_wait};
     use crate::app::app_view::InputOutcome;
     use crate::app::prompt_queue::QueueEntryWire;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use codel_acp_lib::AcpClientMessage;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -4787,8 +4767,8 @@ fn suggestion_debounce_routes_by_agent_id_not_active_view() {
 #[test]
 fn casual_commenting_keeps_its_parked_draft_when_a_card_closes() {
     use crate::views::question_view::QuestionViewState;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use codel_tools::implementations::codel_build::ask_user_question::Question;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let id = AgentId(0);
     let mut app = test_app_with_agent();
@@ -5907,7 +5887,6 @@ fn minimal_home_with_images_notes_on_the_new_session() {
         "Images not sent with /home — paste them again"
     );
 }
-
 
 /// The dashboard popup can raise a send-now while the dashboard, not a session, is on screen. The send
 /// bails; the carried notice still reaches the visible surface.

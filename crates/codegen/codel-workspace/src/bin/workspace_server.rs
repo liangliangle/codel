@@ -4,9 +4,6 @@
 //! server, exposes workspace tools, and refreshes tokens automatically.
 #![deny(clippy::indexing_slicing)]
 use clap::Parser;
-use std::path::PathBuf;
-use std::time::Duration;
-use url::Url;
 use codel_diag_server::{self as diag_server, DiagHandle, ErrorClass};
 use codel_workspace::WorkspaceHostKind;
 use codel_workspace::config::{
@@ -17,6 +14,9 @@ use codel_workspace_daemon::daemonize;
 use codel_workspace_daemon::preview_supervisor::{
     self, PreviewActivitySink, PreviewArgs, PreviewVisibility,
 };
+use std::path::PathBuf;
+use std::time::Duration;
+use url::Url;
 const EXIT_SERVER_ID_INVALID: i32 = 3;
 const INVALID_SERVER_ID_MARKER: &str = "workspace-server: invalid --server-id";
 const WORKSPACE_HUB_AUTH_FAILED_MARKER: &str = "workspace hub auth failed";
@@ -573,10 +573,7 @@ async fn run(
     let tracker = ws_handle.activity_tracker().clone();
     let grace_budget = codel_workspace::handle::termination_grace_from_env();
     ws_handle
-        .two_phase_drain(
-            grace_budget,
-            codel_workspace::handle::DrainReason::Sigterm,
-        )
+        .two_phase_drain(grace_budget, codel_workspace::handle::DrainReason::Sigterm)
         .await;
     tracker.set_shutting_down();
     tracing::info!("Shutting down...");
@@ -960,8 +957,9 @@ mod tests {
         unsafe { std::env::remove_var("CODEL_WORKSPACE_PROJECT_LSP_TRUSTED") };
         let args = Args::try_parse_from(["codel-workspace-server"]).unwrap();
         assert!(!args.project_lsp_trusted);
-        let args = Args::try_parse_from(["codel-workspace-server", "--project-lsp-trusted", "true"])
-            .unwrap();
+        let args =
+            Args::try_parse_from(["codel-workspace-server", "--project-lsp-trusted", "true"])
+                .unwrap();
         assert!(args.project_lsp_trusted);
     }
     #[test]
@@ -1019,8 +1017,8 @@ mod tests {
     }
     #[test]
     fn ready_file_is_accepted_as_a_deprecated_no_op() {
-        let args =
-            Args::try_parse_from(["codel-workspace-server", "--ready-file", "/tmp/x.ready"]).unwrap();
+        let args = Args::try_parse_from(["codel-workspace-server", "--ready-file", "/tmp/x.ready"])
+            .unwrap();
         assert_eq!(args.ready_file, Some(PathBuf::from("/tmp/x.ready")));
     }
     #[test]

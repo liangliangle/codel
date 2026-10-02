@@ -1,6 +1,6 @@
 use agent_client_protocol as acp;
-use serial_test::serial;
 use codel_test_support::EnvGuard;
+use serial_test::serial;
 
 use super::{
     ExplicitSessionIdentity, OaiCompatClient, Summary, default_model_id, new_with_explicit_dir,
@@ -102,7 +102,8 @@ async fn new_with_explicit_dir_stores_requested_identity() {
     let _env = EnvGuard::set("CODEL_HOME", home.path());
     let target_dir = home.path().join("child-session");
     let agent_id =
-        codel_message_delivery_core::AgentId::from_uuid_v7(uuid::Uuid::now_v7().to_string()).unwrap();
+        codel_message_delivery_core::AgentId::from_uuid_v7(uuid::Uuid::now_v7().to_string())
+            .unwrap();
     let attempt_id = codel_message_delivery_core::AttemptId::mint(0x11);
     let persistence = new_with_explicit_dir(
         &Info {

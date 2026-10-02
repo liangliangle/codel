@@ -21,7 +21,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-
 struct CountingFs {
     files: MockFs,
     reads: AtomicUsize,
@@ -877,8 +876,6 @@ async fn approval_preview_preserves_arguments_and_obeys_remaining_budget() {
         })
         .await;
 }
-
-
 
 #[tokio::test(flavor = "current_thread")]
 async fn source_and_resolved_approval_are_distinct_and_reject_prevents_send() {

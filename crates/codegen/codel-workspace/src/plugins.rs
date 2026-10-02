@@ -4,13 +4,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde::Deserialize;
-use serde::Serialize;
 use codel_agent::plugins::PluginRegistry;
 use codel_agent::plugins::SharedPluginRegistryHandle;
 use codel_agent::plugins::discovery::DiscoveryConfig;
 use codel_hooks::discovery::ClaudeImport;
 use codel_hooks::trust::Trust;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Plugin system configuration from `[plugins]` section in config.toml.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -7,12 +7,12 @@
 //!
 //! Resolved per request: the agent's refreshing manager in direct-spawn mode.
 //! In leader mode, a non-refreshing one adopts the agent's rotated `auth.json` token under the file lock (see [`crate::acp`]).
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
 use codel_tools::types::SharedApiKeyProvider;
 use codel_tools::types::api_key_provider::SideCallBearerError;
 use codel_voice::{SharedVoiceAuth, SttRoutes, VoiceAuthError, VoiceAuthProvider};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 /// Adapts the shell's `ApiKeyProvider` onto [`VoiceAuthProvider`].
 ///
 /// Resolves a token per request (never a static snapshot), so a long session follows the `AuthManager` instead of pinning a token that 401s.
@@ -39,9 +39,9 @@ impl VoiceAuthProvider for AuthManagerVoiceAuth {
 /// Serves Codel logins and `CODEL_API_KEY` / per-model BYOK keys. A foreign-issuer login resolves to
 /// [`VoiceAuthError::ForeignSession`] instead of a bearer.
 fn build_voice_auth(auth_manager: Arc<codel_login::AuthManager>) -> SharedVoiceAuth {
-    Arc::new(AuthManagerVoiceAuth(
-        codel_login::shared_api_key_provider(auth_manager),
-    ))
+    Arc::new(AuthManagerVoiceAuth(codel_login::shared_api_key_provider(
+        auth_manager,
+    )))
 }
 /// Streaming bearer, plus the clip transcriber on builds that can transcribe for the signed-in login. The pipeline
 /// consults it only after [`VoiceAuthError::ForeignSession`], so an Codel credential always keeps streaming.

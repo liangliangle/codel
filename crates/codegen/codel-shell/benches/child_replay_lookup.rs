@@ -18,14 +18,14 @@ use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use criterion::{
-    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
-};
-use tempfile::TempDir;
 use codel_config::encode_cwd_dirname;
 use codel_shell::session::storage::{
     ReplayEmission, ReplayLookupFallback, ReplayPathHint, stream_replay_updates_at_hinted,
 };
+use criterion::{
+    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+};
+use tempfile::TempDir;
 
 const DEFAULT_CWDS: usize = 180;
 const DEFAULT_PER_CWD: usize = 20;

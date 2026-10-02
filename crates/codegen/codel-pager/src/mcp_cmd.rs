@@ -520,9 +520,7 @@ fn current_dir_or_exit() -> PathBuf {
 fn scope_target(scope: McpScope) -> PathBuf {
     match scope {
         McpScope::User => codel_shell::util::config::user_config_path(),
-        McpScope::Project => {
-            codel_shell::util::config::project_config_path(&current_dir_or_exit())
-        }
+        McpScope::Project => codel_shell::util::config::project_config_path(&current_dir_or_exit()),
     }
 }
 
@@ -639,8 +637,7 @@ async fn run_set_enabled(name: &str, enabled: bool) -> Result<()> {
 
     // Policy check BEFORE the config write, or a blocked server is written under a success
     // message and resurrects when the pin lifts; disabling only tightens, so it stays allowed.
-    if enabled && let Some(refusal) = codel_shell::mcp_doctor::policy_enable_refusal(&cwd, name)
-    {
+    if enabled && let Some(refusal) = codel_shell::mcp_doctor::policy_enable_refusal(&cwd, name) {
         eprintln!("{refusal}");
         std::process::exit(1);
     }

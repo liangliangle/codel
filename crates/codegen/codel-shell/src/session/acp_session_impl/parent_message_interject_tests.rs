@@ -3,10 +3,10 @@ use super::*;
 use crate::session::telemetry::{
     ActiveAgentMessageSafePointTrigger, ActiveAgentMessageSettlementStatus, project_settlement,
 };
+use codel_tools::implementations::codel_build::task::types::ActiveAgentMessageOperation;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use codel_tools::implementations::codel_build::task::types::ActiveAgentMessageOperation;
 
 const STEER_TEXT: &str = "steer text";
 const INTERJECT_TEXT: &str = "interject text";

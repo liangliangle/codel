@@ -2,8 +2,8 @@
 //! that drops the entry whose PID is dead and keeps the live one.
 
 use chrono::Utc;
-use tempfile::TempDir;
 use codel_active_sessions::{ActiveSession, list_in, register_in, try_unregister_in};
+use tempfile::TempDir;
 
 fn session(id: &str, pid: u32) -> ActiveSession {
     ActiveSession {

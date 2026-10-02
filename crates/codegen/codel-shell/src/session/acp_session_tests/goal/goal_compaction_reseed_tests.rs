@@ -1,12 +1,12 @@
 use super::support::*;
 use super::*;
 use crate::session::helpers::compaction_context::{CompactionInputs, CompactionStateContext};
-use std::sync::Arc as StdArc;
-use tempfile::TempDir;
 use codel_chat_state::compaction_utils::{
     CompactedHistoryInput, build_compacted_history, wrap_user_query,
 };
 use codel_sampling_types::{ConversationItem, SyntheticReason};
+use std::sync::Arc as StdArc;
+use tempfile::TempDir;
 
 const DEVICE_TEST_OBJECTIVE: &str = "ssh to root@example.test and test that a genbw meter profile does NOT produce aggregate meter data on dnp3 or modbus";
 const STALE_CODE_REVIEW: &str = "please review the PR for config-json-go";

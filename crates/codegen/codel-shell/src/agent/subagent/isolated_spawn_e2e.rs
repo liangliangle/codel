@@ -4,13 +4,8 @@ use super::{ShellChildRuntime, ShellCompletionData, SubagentSpawnContext, run_sh
 use crate::session::SessionCommand;
 use crate::util::config::RemoteSettings;
 use agent_client_protocol as acp;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use codel_tool_types::SubagentIsolationMode;
 use codel_tools::implementations::codel_build::task::coordinator::{
     ChildCompletion, ChildRunOutput, ChildRunner, LocalBoxFuture, SubagentCoordinator,
 };
@@ -18,7 +13,12 @@ use codel_tools::implementations::codel_build::task::root_control::NoRootControl
 use codel_tools::implementations::codel_build::task::types::{
     SubagentDescribeOutcome, SubagentOwner, SubagentRequest, SubagentValidateTypeOutcome,
 };
-use codel_tool_types::SubagentIsolationMode;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 fn test_gateway() -> GatewaySender {
     let (tx, _rx) = mpsc::unbounded_channel();
     GatewaySender::new(tx)
@@ -59,9 +59,9 @@ fn spawn_ctx(parent_cwd: PathBuf) -> SubagentSpawnContext {
         subagent_event_tx: tx,
         hunk_tracker_handle: codel_hunk_tracker::HunkTrackerHandle::noop(),
         hunk_tracking_enabled: false,
-        fs: Arc::new(codel_workspace::file_system::LocalFs::new(
-            PathBuf::from("/tmp"),
-        )),
+        fs: Arc::new(codel_workspace::file_system::LocalFs::new(PathBuf::from(
+            "/tmp",
+        ))),
         terminal: Arc::new(crate::terminal::TerminalRunner::new(
             Arc::new(test_gateway()),
             acp::SessionId::new("test"),

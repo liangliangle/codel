@@ -12,9 +12,7 @@ use crate::session::persistence::PersistenceMsg;
 use crate::util::config::RemoteSettings;
 use codel_agent::AgentDefinition;
 use codel_agent::prompt::context::{PromptAudience, TemplateOverride};
-use codel_agent::system_reminder::{
-    DEFAULT_TODO_GATE_MAX_FIRES, ReminderPolicy, TodoGateConfig,
-};
+use codel_agent::system_reminder::{DEFAULT_TODO_GATE_MAX_FIRES, ReminderPolicy, TodoGateConfig};
 /// Helper: a `RemoteSettings` whose only non-default fields are the TodoGate knobs we want to vary.
 /// Mirrors `Default::default()` for everything else so the test stays robust to unrelated additions.
 fn remote_with_todo_gate(enabled: Option<bool>, cap: Option<u32>) -> RemoteSettings {

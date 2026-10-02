@@ -1,8 +1,8 @@
 //! Per-turn retry policy for 401s after an auth recovery attempt: recovery succeeded (resubmit), or
 //! failed transiently on a credential-less request — parked on the uncharged path to wait for a token.
 
-use tokio_retry::strategy::ExponentialBackoff;
 use codel_sampling_types::SentCredential;
+use tokio_retry::strategy::ExponentialBackoff;
 
 use super::RecoveredStore;
 use crate::util::dual_clock::DualClock;

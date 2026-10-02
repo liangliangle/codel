@@ -1,7 +1,7 @@
 pub mod changelog;
+pub mod codel_home;
 pub mod dual_clock;
 pub mod event_id;
-pub mod codel_home;
 pub mod secure_file;
 pub mod subprocess;
 pub mod tips;
@@ -406,14 +406,18 @@ mod tests {
     #[test]
     fn test_is_codel_api_url() {
         assert!(is_codel_api_url("https://api.codel.dev/v1"));
-        assert!(is_codel_api_url("https://api.codel.dev/v1/chat/completions"));
+        assert!(is_codel_api_url(
+            "https://api.codel.dev/v1/chat/completions"
+        ));
         assert!(is_codel_api_url("https://codel.dev"));
         assert!(is_codel_api_url(
             "https://cli-chat-proxy.codel.dev/v1/chat/completions"
         ));
         assert!(!is_codel_api_url("https://api.openai.com/v1"));
         assert!(!is_codel_api_url("https://api.anthropic.com/v1"));
-        assert!(!is_codel_api_url("https://generativelanguage.googleapis.com"));
+        assert!(!is_codel_api_url(
+            "https://generativelanguage.googleapis.com"
+        ));
         assert!(!is_codel_api_url("https://api.codel.dev.evil.example/v1"));
         assert!(!is_codel_api_url("https://evil-codel.dev.attacker.com/v1"));
         assert!(!is_codel_api_url("https://prefixcodel/v1"));

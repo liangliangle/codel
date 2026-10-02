@@ -7,7 +7,7 @@ use std::io::{self, BufRead};
 use std::path::Path;
 
 use super::{
-    ContentPeek, PromptExtractEvent, RawLinePeek, RawParamsPeek, CODEL_SESSION_UPDATE_METHOD,
+    CODEL_SESSION_UPDATE_METHOD, ContentPeek, PromptExtractEvent, RawLinePeek, RawParamsPeek,
     collect_prompts_from_events,
 };
 use crate::session::wire_tags::{REWIND_MARKER, USER_MESSAGE_CHUNK};
@@ -127,14 +127,14 @@ pub(super) fn collect_all_indexable_content_single_pass(
             continue;
         }
 
-        let (raw_params, is_codel) = if let Ok(env) = serde_json::from_str::<RawLinePeek<'_>>(trimmed)
-        {
-            let raw = env.params.map(|p| p.get()).unwrap_or(trimmed);
-            let codel = env.method == Some(CODEL_SESSION_UPDATE_METHOD);
-            (raw, codel)
-        } else {
-            (trimmed, false)
-        };
+        let (raw_params, is_codel) =
+            if let Ok(env) = serde_json::from_str::<RawLinePeek<'_>>(trimmed) {
+                let raw = env.params.map(|p| p.get()).unwrap_or(trimmed);
+                let codel = env.method == Some(CODEL_SESSION_UPDATE_METHOD);
+                (raw, codel)
+            } else {
+                (trimmed, false)
+            };
 
         let update_peek = serde_json::from_str::<RawParamsPeek<'_>>(raw_params)
             .ok()

@@ -7,9 +7,12 @@ use crate::rpc_envelope::{RpcEnvelope, envelope_err};
 use crate::workspace_ops::{RpcActivityClass, WorkspaceOp, WorkspaceRpc};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use prometheus::{HistogramVec, IntCounterVec, register_histogram_vec, register_int_counter_vec};
-use serde_json::Value;
 use codel_computer_hub_sdk::ToolServerHandler;
+use codel_tool_protocol::{HookEvent, HookFrame, SessionId, ToolId, ToolServerEvictParams};
+use codel_tool_runtime::{
+    ToolCallContext, ToolError, ToolErrorKind, ToolStream, TypedToolOutput, terminal_only,
+};
+use codel_tool_types::ToolDescription;
 use codel_tools::computer::types::KillOutcome;
 use codel_tools::computer::types::TaskKind;
 use codel_tools::implementations::codel_build::scheduler::interval::interval_to_human;
@@ -21,11 +24,8 @@ use codel_tools::types::resources::Terminal;
 use codel_workspace_types::rpc::workspace::{
     BackgroundTaskSnapshotWire, KillTaskOutcome, ScheduledTaskSnapshotWire, TasksSnapshotResponse,
 };
-use codel_tool_protocol::{HookEvent, HookFrame, SessionId, ToolId, ToolServerEvictParams};
-use codel_tool_runtime::{
-    ToolCallContext, ToolError, ToolErrorKind, ToolStream, TypedToolOutput, terminal_only,
-};
-use codel_tool_types::ToolDescription;
+use prometheus::{HistogramVec, IntCounterVec, register_histogram_vec, register_int_counter_vec};
+use serde_json::Value;
 /// Deprecation monitor for self-attested `caller_session_id`. `param_mismatch` trusted the envelope; `envelope_absent` used the param as fallback.
 /// Envelope-only identity waits for this to be flat zero.
 static WORKSPACE_RPC_CALLER_MISMATCH_TOTAL: std::sync::LazyLock<IntCounterVec> =

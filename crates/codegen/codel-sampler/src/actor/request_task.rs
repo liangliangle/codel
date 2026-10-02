@@ -1002,9 +1002,9 @@ fn send_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codel_sampling_types::ApiErrorCode;
     use futures_util::stream;
     use reqwest::StatusCode;
-    use codel_sampling_types::ApiErrorCode;
 
     #[test]
     fn strip_reason_invalid_image_is_server_rejected_on_api_and_stream() {
@@ -1061,9 +1061,7 @@ mod tests {
         content: &str,
     ) -> ConversationResponse {
         ConversationResponse {
-            items: vec![codel_sampling_types::ConversationItem::assistant(
-                content,
-            )],
+            items: vec![codel_sampling_types::ConversationItem::assistant(content)],
             stop_reason,
             usage: None,
             cost_usd_ticks: None,
@@ -1079,8 +1077,7 @@ mod tests {
     }
 
     fn length_completed_event(text: &str) -> SamplingEvent {
-        let mut response =
-            completed_response(Some(codel_sampling_types::StopReason::Length), text);
+        let mut response = completed_response(Some(codel_sampling_types::StopReason::Length), text);
         response.doom_loop_signals.clear();
         SamplingEvent::Completed {
             request_id: RequestId::random(),
@@ -1157,10 +1154,8 @@ mod tests {
     async fn terminal_detector_signals_are_bounded_before_forwarding() {
         use crate::doom_loop::{MAX_COLLECTED_DOOM_LOOP_SIGNALS, MAX_DOOM_LOOP_SIGNAL_BYTES};
 
-        let mut response = completed_response(
-            Some(codel_sampling_types::StopReason::Length),
-            "truncated",
-        );
+        let mut response =
+            completed_response(Some(codel_sampling_types::StopReason::Length), "truncated");
         response.doom_loop_signals =
             std::iter::once(codel_sampling_types::doom_loop::DoomLoopSignal::parse(
                 &"x".repeat(MAX_DOOM_LOOP_SIGNAL_BYTES + 1),
@@ -1247,8 +1242,7 @@ mod tests {
         let SamplingEvent::Completed { response, .. } = &mut event else {
             unreachable!("helper builds Completed");
         };
-        let Some(codel_sampling_types::ConversationItem::Assistant(a)) =
-            response.items.last_mut()
+        let Some(codel_sampling_types::ConversationItem::Assistant(a)) = response.items.last_mut()
         else {
             unreachable!("helper builds a trailing Assistant item");
         };

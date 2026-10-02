@@ -76,9 +76,7 @@ impl WebSearchClient {
         let _ = alpha_test_key;
         let key = crate::util::shared_http::cache_key("web_search", &headers);
         let http = crate::util::shared_http::cached_client(key, || {
-            codel_extra_ca::build_reqwest_client(|builder| {
-                builder.default_headers(headers.clone())
-            })
+            codel_extra_ca::build_reqwest_client(|builder| builder.default_headers(headers.clone()))
         })
         .map_err(|e| {
             codel_tool_runtime::ToolError::execution(

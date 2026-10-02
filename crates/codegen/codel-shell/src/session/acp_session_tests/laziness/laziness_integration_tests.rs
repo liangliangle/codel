@@ -12,28 +12,12 @@ use super::support::*;
 use super::*;
 use crate::agent::config::{LazinessDetectorPerModelConfig, ModelInfo};
 
-
-
 fn events_log(tmp: &tempfile::TempDir) -> String {
     std::fs::read_to_string(tmp.path().join("events.jsonl")).unwrap_or_default()
 }
-
-
-
-
-
-
-
-
-
-
 
 /// Attach a `laziness_debug_log` to an existing actor, bypassing `SessionActor::new` (production threads a `PathBuf` through it).
 /// Any invariant `SessionActor::new` adds around `laziness_debug_log` MUST be mirrored here or these tests silently diverge from prod.
 fn arm_debug_log(actor: &mut SessionActor, path: std::path::PathBuf) {
     actor.laziness_debug_log = Some(std::sync::Arc::from(path.as_path()));
 }
-
-
-
-

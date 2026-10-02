@@ -8,13 +8,13 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use agent_client_protocol as acp;
+use codel_shell::session::info::Info;
+use codel_shell::session::storage::{CopySessionOptions, JsonlStorageAdapter, StorageAdapter};
+use codel_shell::session::testkit::synth::make_session_with_size_blocking;
 use criterion::{
     BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
 };
 use tempfile::TempDir;
-use codel_shell::session::info::Info;
-use codel_shell::session::storage::{CopySessionOptions, JsonlStorageAdapter, StorageAdapter};
-use codel_shell::session::testkit::synth::make_session_with_size_blocking;
 
 fn bench_fork_copy(c: &mut Criterion) {
     let target_mb: u64 = std::env::var("FORK_BENCH_MB")

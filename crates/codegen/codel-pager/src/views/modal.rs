@@ -1520,7 +1520,8 @@ mod doc_picker_tip_tests {
     #[test]
     fn fit_docs_tip_prefers_path_and_never_overflows() {
         let path = crate::util::display_user_codel_path(DOCS_USER_GUIDE_REL);
-        let long = format!("Tip · Ask Codel about the docs ({path}), e.g. \"how do I set up MCP?\"");
+        let long =
+            format!("Tip · Ask Codel about the docs ({path}), e.g. \"how do I set up MCP?\"");
         let short = format!("Tip · Ask Codel about the docs · {path}");
         let path_only = format!("Tip · {path}");
         assert_eq!(fit_docs_ask_codel_tip(&path, long.width()), long);

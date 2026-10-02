@@ -17,14 +17,14 @@
 
 use std::path::Path;
 
+use codel_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState, TextElement};
+use codel_tools::types::SessionMode;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidgetRef;
-use codel_tools::types::SessionMode;
-use codel_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState, TextElement};
 
 use crate::app::actions::PermissionLabel;
 use crate::clipboard::{SystemClipboard, system_clipboard_get};
@@ -347,9 +347,7 @@ pub struct PromptInfo<'a> {
 
 impl PromptInfo<'_> {
     pub fn is_blank(&self) -> bool {
-        self.model_name.is_empty()
-            && self.flags.is_empty()
-            && !self.multiline
+        self.model_name.is_empty() && self.flags.is_empty() && !self.multiline
     }
 }
 
@@ -1836,13 +1834,11 @@ impl PromptWidget {
         // Ghostty passes Cmd+V (SUPER) through as a key event when the clipboard has no text content
         if crate::input::key::is_paste_key(key) {
             if let Some(text) = system_clipboard_get() {
-                if !crate::clipboard::clipboard_text_is_pasteable(Some(&text)) {
-                    
-                }
+                if !crate::clipboard::clipboard_text_is_pasteable(Some(&text)) {}
                 // handle_paste calls update_file_search_context internally.
                 return self.handle_paste(&text);
             }
-            
+
             return PromptEvent::Ignored;
         }
 
@@ -1851,13 +1847,12 @@ impl PromptWidget {
             if let Some(text) = system_clipboard_get() {
                 let text = normalize_line_breaks(&text);
                 if text.is_empty() {
-                    
                     return PromptEvent::Ignored;
                 }
                 self.insert_replacing_selection(&text);
                 return PromptEvent::Edited;
             }
-            
+
             return PromptEvent::Ignored;
         }
 

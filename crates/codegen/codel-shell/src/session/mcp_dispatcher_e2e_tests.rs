@@ -29,8 +29,8 @@ fn at<T>(xs: &[T], i: usize) -> &T {
     x
 }
 
-use tokio::sync::Mutex as TokioMutex;
 use codel_mcp::servers::{McpClient, McpClientEvent, McpState};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::session::mcp_dispatcher::{
     McpServerStatus, McpServerStatusPayload, McpServerStatusReason, SharedShutdownState,

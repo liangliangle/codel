@@ -3004,7 +3004,10 @@ fn fork_secondary_model_picker_opens_on_persisted_model() {
     assert_ne!(slug, codel_shell::models::default_model());
     let snapshot = PagerLocalSnapshot {
         available_models: vec![
-            ("Codel 3".to_string(), acp::ModelId::new(Arc::from("codel-3"))),
+            (
+                "Codel 3".to_string(),
+                acp::ModelId::new(Arc::from("codel-3")),
+            ),
             (
                 "Codel 4.5 Fast".to_string(),
                 acp::ModelId::new(Arc::from(slug)),

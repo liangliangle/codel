@@ -11,18 +11,18 @@ use crate::config::{MemoryConfig, SessionContextFactory};
 use crate::file_system::{AsyncFsWrapper, LocalFs};
 use crate::hub::{HubConfig, HubHandle};
 use crate::session::file_state::FileStateTracker;
+use codel_computer_hub_mcp_adapter::McpBridgeHandle;
+use codel_hunk_tracker::HunkTrackerHandle;
+use codel_mcp::servers::McpState;
+use codel_tool_protocol::ToolId;
+use codel_tool_runtime::WorkspaceViewerContext;
+use codel_tools::notification::AcknowledgedToolNotification;
+use codel_tools::notification::types::ToolNotificationHandle;
+use codel_tools::registry::types::{FinalizedToolset, ToolConfig, ToolServerConfig};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use codel_computer_hub_mcp_adapter::McpBridgeHandle;
-use codel_mcp::servers::McpState;
-use codel_tools::notification::AcknowledgedToolNotification;
-use codel_tools::notification::types::ToolNotificationHandle;
-use codel_tools::registry::types::{FinalizedToolset, ToolConfig, ToolServerConfig};
-use codel_hunk_tracker::HunkTrackerHandle;
-use codel_tool_protocol::ToolId;
-use codel_tool_runtime::WorkspaceViewerContext;
 /// Minimal result types for git error reporting (duplicated from shell session/result).
 pub mod result {
     use serde::Serialize;
@@ -961,11 +961,11 @@ impl WorkspaceShared {
                         &sid,
                         SwapAction::Applied,
                     );
-                    let _ =
-                        self.events
-                            .send(codel_workspace_types::WorkspaceEvent::ToolsChanged {
-                                session_id: sid,
-                            });
+                    let _ = self
+                        .events
+                        .send(codel_workspace_types::WorkspaceEvent::ToolsChanged {
+                            session_id: sid,
+                        });
                     rebuilt += 1;
                 }
                 Err(e) => {
@@ -1026,8 +1026,8 @@ pub(crate) fn get_or_open_session_writer(
 #[cfg(test)]
 mod tests {
     use super::get_or_open_session_writer;
-    use dashmap::DashMap;
     use codel_session_events::{Event, EventWriter};
+    use dashmap::DashMap;
     fn count_lines(path: &std::path::Path) -> usize {
         std::fs::read_to_string(path)
             .unwrap()

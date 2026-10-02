@@ -3,9 +3,9 @@ use super::{
     build_todo_gate_reminder, evaluate_todo_gate,
 };
 use crate::tools::todo::TodoStatus;
-use std::collections::HashMap;
 use codel_tools::types::template_renderer::TemplateRenderer;
 use codel_tools::types::tool::ToolKind;
+use std::collections::HashMap;
 
 // ── TodoGate pure-function tests ──────────────────────────────────.
 // Integration coverage lands via the replay harness.

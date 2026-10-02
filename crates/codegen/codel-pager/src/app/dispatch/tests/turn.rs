@@ -1083,12 +1083,6 @@ fn cancel_turn_keeps_a_post_turn_plan_review() {
     );
 }
 
-
-
-
-
-
-
 /// Dangling active_subagent is not an overlay; parent ask-panel still opens.
 #[test]
 fn cancel_turn_with_stale_active_subagent_still_shows_ask_panel() {
@@ -1110,9 +1104,6 @@ fn cancel_turn_with_stale_active_subagent_still_shows_ask_panel() {
     assert!(parent.cancel_turn_view.is_some());
     assert!(parent.session.state.is_turn_running());
 }
-
-
-
 
 #[test]
 fn cancel_turn_when_already_cancelling_resends_cancel() {
@@ -2094,7 +2085,6 @@ fn kill_bg_task_action_emits_client_ui_source() {
     );
 }
 
-
 fn child_task_pending_kill(
     app: &AppView,
     root_id: AgentId,
@@ -2130,7 +2120,6 @@ fn bg_task_kill_failed_clears_pending_kill_on_inactive_agent() {
     assert!(task.kill_requested_at.is_none());
 }
 
-
 #[test]
 fn fork_failure_force_idle_drops_a_live_cancel_anchor() {
     let mut app = test_app_with_agent();
@@ -2157,8 +2146,8 @@ fn fork_failure_force_idle_drops_a_live_cancel_anchor() {
 #[test]
 fn settled_cancel_emits_latency_from_arm_anchor_once() {
     use crate::app::cancel_latency::{CancelLatency, CancelOrigin, TurnEnd};
-    use std::time::{Duration, Instant};
     use codel_logging::events::CancellationScope;
+    use std::time::{Duration, Instant};
 
     let mut app = test_app_with_agent();
     let id = AgentId(0);

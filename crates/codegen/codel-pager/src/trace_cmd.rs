@@ -5,9 +5,7 @@ use codel_login::CodelAuth;
 use codel_shell::agent::config::Config as AgentConfig;
 use codel_shell::agent::config::TraceUploadEndpoints;
 use codel_shell::session::repo_changes::UploadMethod;
-use codel_shell::upload::trace_turns::{
-    TraceTurnsReport, TraceTurnsRequest, upload_trace_turns,
-};
+use codel_shell::upload::trace_turns::{TraceTurnsReport, TraceTurnsRequest, upload_trace_turns};
 use codel_shell::util::codel_home::codel_home;
 
 /// The whole-session bundle; also the canary the per-turn upload expects its existence probe to see.

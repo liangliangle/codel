@@ -193,12 +193,9 @@ async fn answer_lists_drafts_and_refuses_an_unknown_method() {
         .append_predraft("Todo list", "todos are chopped")
         .expect("predraft appended");
 
-    let listed = answer(
-        &drafts_request("codel/feedback/drafts/list"),
-        store.clone(),
-    )
-    .await
-    .expect("list answers");
+    let listed = answer(&drafts_request("codel/feedback/drafts/list"), store.clone())
+        .await
+        .expect("list answers");
     let listed: serde_json::Value =
         serde_json::from_str(listed.0.get()).expect("list response is JSON");
     assert_eq!(

@@ -1,9 +1,9 @@
-pub mod codex;
-pub mod cursor_rules_on_read;
-pub mod editor_infra;
 pub mod codel_build;
 pub mod codel_build_concise;
 pub mod codel_build_hashline;
+pub mod codex;
+pub mod cursor_rules_on_read;
+pub mod editor_infra;
 pub mod lsp;
 pub mod memory;
 pub mod opencode;

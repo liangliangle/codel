@@ -187,8 +187,8 @@ mod tests {
         assert!(!is_grove_strategy(STRATEGY_COPY));
         assert!(!is_grove_strategy("linked"));
     }
-    use tempfile::TempDir;
     use codel_test_utils::git::{git_commit_all, init_git_repo};
+    use tempfile::TempDir;
     #[test]
     fn test_create_worktree_simple() {
         codel_test_utils::require_git!();
@@ -1050,7 +1050,10 @@ mod tests {
             format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")
         );
         assert_eq!(
-            codel_test_utils::git::run_git(&worktree_path, &["config", "--get", "remote.origin.url"]),
+            codel_test_utils::git::run_git(
+                &worktree_path,
+                &["config", "--get", "remote.origin.url"]
+            ),
             "https://github.com/codel-org/codel.git"
         );
     }
@@ -1080,7 +1083,10 @@ mod tests {
             .unwrap();
         assert!(!worktree_path.join(".git/shallow").exists());
         assert_eq!(
-            codel_test_utils::git::run_git(&worktree_path, &["rev-parse", "--is-shallow-repository"]),
+            codel_test_utils::git::run_git(
+                &worktree_path,
+                &["rev-parse", "--is-shallow-repository"]
+            ),
             "false"
         );
         assert_eq!(
@@ -1133,7 +1139,10 @@ mod tests {
             &repo_path,
             &["update-ref", "refs/remotes/origin/feature", &a],
         );
-        codel_test_utils::git::run_git(&repo_path, &["update-ref", "refs/remotes/origin/noise", &b]);
+        codel_test_utils::git::run_git(
+            &repo_path,
+            &["update-ref", "refs/remotes/origin/noise", &b],
+        );
         std::fs::write(repo_path.join(".git/shallow"), format!("{b}\n")).unwrap();
         let worktree_path = temp.path().join("standalone");
         WorktreeBuilder::new(repo_path, worktree_path.clone())
@@ -1174,7 +1183,10 @@ mod tests {
             "after checkout, graft B is unused and its parent is in the ODB"
         );
         assert_eq!(
-            codel_test_utils::git::run_git(&worktree_path, &["rev-parse", "--is-shallow-repository"]),
+            codel_test_utils::git::run_git(
+                &worktree_path,
+                &["rev-parse", "--is-shallow-repository"]
+            ),
             "false"
         );
         assert_eq!(
@@ -1209,7 +1221,10 @@ mod tests {
             &repo_path,
             &["update-ref", "refs/remotes/origin/feature", &a],
         );
-        codel_test_utils::git::run_git(&repo_path, &["update-ref", "refs/remotes/origin/noise", &b]);
+        codel_test_utils::git::run_git(
+            &repo_path,
+            &["update-ref", "refs/remotes/origin/noise", &b],
+        );
         let worktree_path = temp.path().join("standalone");
         WorktreeBuilder::new(repo_path, worktree_path.clone())
             .standalone(true)

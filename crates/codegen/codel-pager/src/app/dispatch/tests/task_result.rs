@@ -14,10 +14,10 @@ fn expect_agent(app: &AppView, id: AgentId) -> &AgentView {
 }
 
 use crate::app::subagent::{SubagentLifecycleReduction, SubagentLifecycleTransition};
-use std::num::NonZeroU64;
 use codel_shell::agent::config::ModelSwitchIncompatibleAgentError;
 use codel_shell::session::helpers::session_compact::COMPACT_CANCELLED_MSG;
 use codel_shell::session::unified_list::ListScope;
+use std::num::NonZeroU64;
 
 #[test]
 fn live_session_kind_distinguishes_missing_conversation_and_build_matches() {
@@ -345,7 +345,6 @@ fn doctor_apply_success_only_renders_resolution_instructions() {
     assert!(!output.contains("Findings\n"), "{output}");
 }
 
-
 #[test]
 fn stale_workflows_result_does_not_repaint_replaced_session_modal() {
     let mut app = test_app_with_agent();
@@ -380,8 +379,6 @@ fn foreign_resume_hint(
         age: std::time::Duration::from_secs(30),
     }
 }
-
-
 
 #[test]
 fn x11_primary_hint_requires_canonical_full_miss_outcome() {
@@ -446,7 +443,6 @@ fn wrap_host_image_request_eligible_covers_full_miss_and_attachment_error_only()
     }
 }
 
-
 #[test]
 fn x11_primary_hint_routes_to_originating_dashboard() {
     let mut app = test_app_with_agent();
@@ -471,7 +467,6 @@ fn x11_primary_hint_routes_to_originating_dashboard() {
         "an unrelated active agent must not receive dashboard guidance"
     );
 }
-
 
 #[test]
 fn clipboard_failure_routes_to_originating_dashboard() {
@@ -1598,8 +1593,6 @@ fn session_success_arms_finish_startup_obligation() {
     }
 }
 
-
-
 #[test]
 fn available_commands_refreshed_updates_generation() {
     let mut app = test_app_with_agent();
@@ -1951,9 +1944,11 @@ fn delete_remote_session_clears_modal_and_welcome_content_hits() {
         1,
         "optimism must not mutate committed state"
     );
-    assert!(app.workspace_membership.removal_pending_for_test(
-        &codel_dashboard_store::SessionId::new("remote-only").unwrap()
-    ));
+    assert!(
+        app.workspace_membership.removal_pending_for_test(
+            &codel_dashboard_store::SessionId::new("remote-only").unwrap()
+        )
+    );
     assert!(
         !app.workspace_membership.removal_suppressed_for_test(
             &codel_dashboard_store::SessionId::new("remote-only").unwrap()
@@ -2285,23 +2280,6 @@ fn reset_session_title_complete_pushes_system_block() {
     );
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /// `apply_setting_rollback` on a known key reverts the in-memory cache without emitting any new effects.
 #[test]
 fn rollback_known_key_reverts_cache_and_no_effect() {
@@ -2509,7 +2487,6 @@ fn session_list_relax_surfaces_notice_once() {
         "a scope change back to relaxed must notify again"
     );
 }
-
 
 /// The notice is keyed by browse cwd: a different directory re-notifies even though the prior latch is set.
 #[test]

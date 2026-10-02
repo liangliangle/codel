@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
-use tokio_util::task::AbortOnDropHandle;
 use codel_pager::agent_runtime::AgentRuntime;
 use codel_pager::signal_streams::SignalStreams;
 use codel_shell::agent::config::Config;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::shutdown_and_flush_telemetry;
 

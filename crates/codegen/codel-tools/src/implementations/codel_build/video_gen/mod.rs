@@ -201,9 +201,7 @@ impl VideoGenClient {
             headers.contains_key(super::image_gen::SESSION_ID_HEADER);
         let key = crate::util::shared_http::cache_key("video_gen", &headers);
         let http = crate::util::shared_http::cached_client(key, || {
-            codel_extra_ca::build_reqwest_client(|builder| {
-                builder.default_headers(headers.clone())
-            })
+            codel_extra_ca::build_reqwest_client(|builder| builder.default_headers(headers.clone()))
         })
         .map_err(|e| {
             codel_tool_runtime::ToolError::invalid_arguments(format!(
@@ -272,7 +270,6 @@ impl VideoGenClient {
         }
         self
     }
-
 
     /// See [`VideoGenConfig::Enabled`]'s `zdr_restricted`.
     pub(crate) fn is_zdr_restricted(&self) -> bool {
@@ -506,7 +503,9 @@ impl VideoGenClient {
     /// Download video bytes from a pre-signed temporary URL (no auth headers).
     async fn download_video(&self, url: &str) -> Result<Vec<u8>, codel_tool_runtime::ToolError> {
         let response = self.download_http.get(url).send().await.map_err(|e| {
-            codel_tool_runtime::ToolError::invalid_arguments(format!("Failed to download video: {e}"))
+            codel_tool_runtime::ToolError::invalid_arguments(format!(
+                "Failed to download video: {e}"
+            ))
         })?;
 
         if !response.status().is_success() {
@@ -866,7 +865,9 @@ async fn resolve_image_reference(value: &str) -> Result<String, codel_tool_runti
 
     if value.starts_with("data:image/") {
         let comma = value.find(',').ok_or_else(|| {
-            codel_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
+            codel_tool_runtime::ToolError::invalid_arguments(
+                "malformed data URL in image reference",
+            )
         })?;
         let Some(header) = value.get(..comma) else {
             return Err(codel_tool_runtime::ToolError::invalid_arguments(
@@ -898,7 +899,9 @@ async fn resolve_image_reference(value: &str) -> Result<String, codel_tool_runti
 
     let (_w, _h, mime) =
         crate::util::image_validate::validate_image_bytes(&raw_bytes).map_err(|e| {
-            codel_tool_runtime::ToolError::invalid_arguments(format!("invalid image reference: {e}"))
+            codel_tool_runtime::ToolError::invalid_arguments(format!(
+                "invalid image reference: {e}"
+            ))
         })?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&raw_bytes);
     Ok(format!("data:{mime};base64,{b64}"))
@@ -1426,7 +1429,11 @@ mod tests {
             .unwrap()
             .with_session_id("sess-7");
         let req = client
-            .request(reqwest::Method::POST, "https://api.codel.dev/v1/videos", "tok")
+            .request(
+                reqwest::Method::POST,
+                "https://api.codel.dev/v1/videos",
+                "tok",
+            )
             .build()
             .unwrap();
         assert_eq!(

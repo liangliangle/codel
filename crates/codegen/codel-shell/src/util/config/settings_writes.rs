@@ -1,10 +1,10 @@
 use super::persist::update_config;
 use crate::agent::config::Feature;
 use anyhow::{Context, Result};
+use codel_config::fs_atomic::BoundDest;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
-use codel_config::fs_atomic::BoundDest;
 
 // --------------------------------------------------------------------------- Settings helpers: typed disk-write wrappers for each setting
 // All route through `update_config`, then `merge_section`, then `save_config` ---------------------------------------------------------------------------

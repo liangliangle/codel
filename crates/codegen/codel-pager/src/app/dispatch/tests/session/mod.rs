@@ -22,7 +22,6 @@ fn content_hit(id: &str) -> codel_shell::extensions::session_search::SearchSessi
     }
 }
 
-
 fn count_extension_fetches(effects: &[Effect]) -> usize {
     effects
         .iter()

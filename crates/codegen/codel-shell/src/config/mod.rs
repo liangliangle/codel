@@ -1,8 +1,6 @@
 pub mod reloader;
 pub mod watcher;
 use crate::bundle;
-use serde::Deserialize;
-use std::sync::atomic::{AtomicU8, Ordering};
 pub use codel_config_types::{
     DEFAULT_RECENCY_DECAY, MemoryConfig, MemoryDreamConfig, MemoryDreamSettings,
     MemoryEmbeddingConfig, MemoryEmbeddingSettings, MemoryFlushConfig, MemoryFlushSettings,
@@ -13,6 +11,8 @@ pub use codel_config_types::{
     MmrConfig, MmrSettings, PruningConfig, PruningSettings, TemporalDecayConfig,
     TemporalDecaySettings,
 };
+use serde::Deserialize;
+use std::sync::atomic::{AtomicU8, Ordering};
 /// Read the memory mode selected by the current effective config.
 ///
 /// Session actors use their already-resolved [`MemoryConfig`] instead. This
@@ -1352,11 +1352,10 @@ pub fn apply_sandbox(
         .and_then(|v| v.get("sandbox")?.get("auto_allow_bash")?.as_bool());
     let resolved = config.resolve_profile(cli_profile, profile_req);
     codel_sandbox::set_auto_allow_bash(config.resolve_auto_allow_bash(auto_allow_req).value);
-    let sandbox_profile: codel_sandbox::ProfileName =
-        resolved.value.parse().unwrap_or_else(|e| {
-            eprintln!("warning: {e}, defaulting to no sandbox");
-            codel_sandbox::ProfileName::Off
-        });
+    let sandbox_profile: codel_sandbox::ProfileName = resolved.value.parse().unwrap_or_else(|e| {
+        eprintln!("warning: {e}, defaulting to no sandbox");
+        codel_sandbox::ProfileName::Off
+    });
     codel_sandbox::set_configured_profile(&resolved.value);
     let workspace = cwd
         .and_then(|p| dunce::canonicalize(p).ok())
@@ -1424,10 +1423,8 @@ pub fn apply_sandbox(
                     std::process::exit(1);
                 }
                 if requires_data_write_deny
-                    && let Err(e) = codel_sandbox::verify_data_write_deny_enforced(
-                        &sandbox_profile,
-                        &workspace,
-                    )
+                    && let Err(e) =
+                        codel_sandbox::verify_data_write_deny_enforced(&sandbox_profile, &workspace)
                 {
                     eprintln!(
                         "error: sandbox reports bwrap but the required /data write-deny \
@@ -1451,8 +1448,7 @@ pub fn apply_sandbox(
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let requires_protection = {
             let is_custom = matches!(sandbox_profile, codel_sandbox::ProfileName::Custom(_));
-            let needs_hooks =
-                codel_sandbox::requires_hook_write_deny(&sandbox_profile, &workspace);
+            let needs_hooks = codel_sandbox::requires_hook_write_deny(&sandbox_profile, &workspace);
             is_custom || needs_hooks
         };
         let mut sandbox = codel_sandbox::SandboxManager::new(sandbox_profile, &workspace);

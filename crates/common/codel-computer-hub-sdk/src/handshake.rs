@@ -5,9 +5,9 @@
 //! machine readable: send the frame, parse the ack, surface a typed
 //! [`crate::ClientError`].
 
+use codel_tool_protocol::{ConnectionKind, HelloAckMsg, HelloMsg};
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
-use codel_tool_protocol::{ConnectionKind, HelloAckMsg, HelloMsg};
 
 use crate::error::ClientError;
 

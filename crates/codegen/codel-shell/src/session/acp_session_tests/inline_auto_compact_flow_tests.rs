@@ -3,10 +3,10 @@ use super::*;
 use crate::agent::config::{EndpointsConfig, ModelEntry};
 use crate::terminal::AsyncTerminalRunner;
 use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};
-use tokio::sync::mpsc;
 use codel_paths::AbsPathBuf;
 use codel_workspace::file_system::MockFs;
 use codel_workspace::permission::PermissionHandle;
+use tokio::sync::mpsc;
 #[derive(Debug)]
 struct DummyTerminal;
 #[async_trait::async_trait]

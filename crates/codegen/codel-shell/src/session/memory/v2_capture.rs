@@ -4,12 +4,12 @@
 //! transcript snapshot and a strict JSON schema; the only write is the
 //! validated `V2CaptureStore::commit` performed by the host.
 
-use serde::Deserialize;
 use codel_memory::{
     CaptureOutcomeDraft, CaptureRange, MAX_ALIASES, MAX_BODY_BYTES, MAX_KEYWORDS, MAX_OBSERVATIONS,
     MAX_STATEMENT_BYTES, MAX_TERM_BYTES, MAX_TOPIC_BYTES, ObservationDraft, ObservationType,
     V2CaptureError,
 };
+use serde::Deserialize;
 
 pub(crate) const PROMPT_VERSION: &str = "memory-v2-capture-1";
 pub(crate) const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4 * 60);

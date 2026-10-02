@@ -6,9 +6,9 @@ use crate::{
     ImportPatternMode, ImportPermission, ImportPlan, ImportRuleAction, ImportScope, ImportTool,
     ImportableItem, PathKind,
 };
+use codel_config::{is_claude_import_marked, user_config_file};
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
-use codel_config::{is_claude_import_marked, user_config_file};
 
 #[test]
 fn merge_permissions_dedup() {

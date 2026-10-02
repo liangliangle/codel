@@ -4,7 +4,6 @@
 //! clients will later replay. They are not produced by serializing the Rust
 //! types. Harness locations: `fixtures/bot_relay/README.md`.
 
-use serde_json::{Value, json};
 use codel_tool_protocol::{
     BotBindConversationParams, BotCommandParams, BotEmptyResult, BotEventChannel, BotEventEnvelope,
     BotRelayError, BotRelayErrorCode, BotRelaySiblingAccount, BotRelaySignIn, BotRosterResult,
@@ -18,6 +17,7 @@ use codel_tool_protocol::{
     COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED, COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE, HubChannel,
     HubResyncRequiredEvent, HubTurnFinishedEvent,
 };
+use serde_json::{Value, json};
 
 const ERROR_IDENTITY_UNAVAILABLE: &str =
     include_str!("../fixtures/bot_relay/error_identity_unavailable.json");
@@ -814,7 +814,10 @@ fn method_roster_status_subscribe_bind() {
     assert_eq!(Some(1_700_000_200_000), roster.remembered_at_ms);
 
     let status: BotStatusResult = serde_json::from_str(METHOD_STATUS_RESULT).expect("status");
-    assert_eq!(status.run_state, codel_tool_protocol::BotRunState::Hibernated);
+    assert_eq!(
+        status.run_state,
+        codel_tool_protocol::BotRunState::Hibernated
+    );
 
     let sub: BotSubscribeParams = serde_json::from_str(METHOD_SUBSCRIBE_PARAMS).expect("subscribe");
     assert_eq!(sub.agent_ids, ["agt_a", "agt_b"]);

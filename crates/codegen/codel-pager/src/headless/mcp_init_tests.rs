@@ -60,7 +60,9 @@ enum McpListReply {
     Hang,
 }
 
-fn spawn_mcp_list_agent(replies: Vec<McpListReply>) -> (codel_acp_lib::AcpAgentTx, Arc<AtomicUsize>) {
+fn spawn_mcp_list_agent(
+    replies: Vec<McpListReply>,
+) -> (codel_acp_lib::AcpAgentTx, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_task = Arc::clone(&calls);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

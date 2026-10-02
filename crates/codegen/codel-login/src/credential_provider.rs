@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use reqwest::RequestBuilder;
 use codel_auth::{AuthCredentialProvider, CredentialSnapshot, HttpAuth};
+use reqwest::RequestBuilder;
 
 use crate::AuthManager;
 use crate::backend::{ActiveAuthBackend, AuthBackend};
@@ -245,7 +245,9 @@ impl StorageClientAttributionBridge {
     }
 }
 
-impl codel_file_utils::storage_client::Auth401AttributionCallback for StorageClientAttributionBridge {
+impl codel_file_utils::storage_client::Auth401AttributionCallback
+    for StorageClientAttributionBridge
+{
     fn record_401(&self, operation: &str, sent_bearer_prefix: Option<&str>) {
         crate::attribution::record_consumer_401(
             self.auth_manager.as_ref(),
@@ -264,8 +266,8 @@ mod tests {
     use crate::CodelComConfig;
     use crate::manager::AuthManager;
     use chrono::{Duration as ChronoDuration, Utc};
-    use std::sync::Mutex;
     use codel_auth::AuthCredentialProvider;
+    use std::sync::Mutex;
 
     /// Serializes tests that pin `CODEL_AUTH_EARLY_INVALIDATION_SECS`, since env vars are process-global and parallel tests would race.
     static EARLY_INVALIDATION_LOCK: Mutex<()> = Mutex::new(());
@@ -360,8 +362,6 @@ mod tests {
         );
     }
 
-
-
     /// The wait is bounded by the cached bearer's remaining life, so a slow mint cannot outlive the token it was protecting.
     #[test]
     fn pre_send_budget_never_outlives_the_cached_bearer() {
@@ -382,7 +382,6 @@ mod tests {
             "less than the margin: do not wait at all"
         );
     }
-
 
     /// During the 5-minute pre-refresh buffer window, `auth_manager.current()` returns `None`, but the token is still valid at the proxy. The manager treats such a token as expiring soon for refresh scheduling.
     /// The provider must fall back to `expired_auth()` so the in-memory token gets sent instead of nothing. Sending nothing here caused the bulk of the `POST /v1/storage` 401s observed in production.
@@ -408,18 +407,6 @@ mod tests {
         );
         assert_eq!(snap.user_id.as_deref(), Some("test-user"));
     }
-
-
-
-
-
-
-
-
-
-
-
-
 
     #[test]
     fn embedding_session_credentials_scopes_to_first_party() {
@@ -529,5 +516,4 @@ mod tests {
             ShellAuthCredentialProvider::new(mgr, Some("deployment-key".to_string()), None);
         assert!(!provider.refresh_after_unauthorized().await);
     }
-
 }

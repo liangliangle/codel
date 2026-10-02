@@ -2,7 +2,6 @@
 //! `set_session_model` enforces the `allowed_models` gate before delegating here.
 //! Internal callers (`new_session`, `load_session`) call `apply` directly.
 use crate::agent::config;
-use std::num::NonZeroU64;
 use crate::agent::mvp_agent::{
     MvpAgent, agent_name_after_model_switch, harnesses_are_compatible, resolve_required_agent_type,
 };
@@ -11,6 +10,7 @@ pub(crate) use crate::session::SwitchContextWindow;
 use crate::session::{SessionCommand, SessionModelSwitch};
 use agent_client_protocol::{self as acp};
 use codel_sampling_types::ReasoningEffort;
+use std::num::NonZeroU64;
 use tokio::sync::oneshot;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigNotice {

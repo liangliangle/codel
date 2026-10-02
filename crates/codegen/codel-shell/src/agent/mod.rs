@@ -1,6 +1,4 @@
 pub mod activity;
-pub(crate) mod session_metrics;
-pub mod feedback_client;
 pub mod app;
 pub mod auth_method;
 pub mod chat_modes;
@@ -8,6 +6,7 @@ pub mod config;
 pub(crate) mod config_model_override_parse;
 pub(crate) mod cursor_worker_config;
 mod ext_parsers;
+pub mod feedback_client;
 pub mod folder_trust;
 pub(crate) mod handlers;
 pub mod init;
@@ -22,6 +21,7 @@ pub(crate) mod restore_code;
 pub mod roster;
 pub mod server;
 pub mod session_config;
+pub(crate) mod session_metrics;
 pub mod session_registry_client;
 pub(crate) mod subagent;
 #[cfg(feature = "test-support")]

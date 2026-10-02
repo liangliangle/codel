@@ -6239,7 +6239,6 @@ fn peek_viewport_lease_page_flip_re_pins_entry_on_restore() {
     assert_eq!(snap.last_width, 80);
 }
 
-
 #[test]
 fn search_mode_owns_keys_while_a_hidden_peek_keeps_its_lease() {
     use crate::app::actions::Action;

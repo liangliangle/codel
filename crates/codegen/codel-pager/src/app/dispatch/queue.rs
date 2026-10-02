@@ -1454,8 +1454,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn drain_blocked_when_editing_front_prompt() {
         let mut app = test_app_with_agent();
@@ -3397,7 +3395,6 @@ mod tests {
             "queue must be empty after drain"
         );
     }
-
 
     #[test]
     fn drain_queue_blocked_during_reconnect() {

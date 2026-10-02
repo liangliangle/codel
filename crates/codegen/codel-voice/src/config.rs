@@ -124,7 +124,11 @@ mod tests {
 
     #[test]
     fn scheme_less_and_wss_bases() {
-        for base in ["api.codel.dev", "wss://api.codel.dev", "HTTPS://api.codel.dev"] {
+        for base in [
+            "api.codel.dev",
+            "wss://api.codel.dev",
+            "HTTPS://api.codel.dev",
+        ] {
             let cfg = VoiceConfig {
                 api_base: base.into(),
                 ..VoiceConfig::default()

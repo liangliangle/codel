@@ -3088,8 +3088,7 @@ async fn unsupported_backend_search_sends_no_hosted_tool_on_either_channel() {
                 "the backend-search gate must drop the hosted tool"
             );
             assert!(
-                codel_sampling_types::extra_tool_entries(&actor.hosted_tools_for_turn())
-                    .is_empty(),
+                codel_sampling_types::extra_tool_entries(&actor.hosted_tools_for_turn()).is_empty(),
                 "and so no raw-JSON entry is produced to splice"
             );
         })

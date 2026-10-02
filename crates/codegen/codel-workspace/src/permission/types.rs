@@ -1,8 +1,8 @@
 use agent_client_protocol as acp;
 use chrono::{DateTime, Utc};
+pub use codel_permission_rules::types::*;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-pub use codel_permission_rules::types::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionEvent {

@@ -59,10 +59,10 @@ pub(super) fn scan_error_rows(errors: &[SkillScanError], query: &str) -> Vec<Str
 mod tests {
     use super::*;
 
+    use codel_tools::implementations::skills::types::SkillInfo;
     use pretty_assertions::assert_eq;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use codel_tools::implementations::skills::types::SkillInfo;
 
     use crate::views::extensions_modal::{ExtensionsTab, render_extensions_modal};
 

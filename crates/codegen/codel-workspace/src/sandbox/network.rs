@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
-use tokio::sync::broadcast;
 #[cfg(test)]
 use codel_egress_proxy::Decider;
 use codel_egress_proxy::{
@@ -27,6 +26,7 @@ use codel_sandbox::command::{
     Blocked, CallId, Grant, Replay, SandboxMode, Violation, WouldVerdict,
 };
 use codel_sandbox::{WebsiteAction, WebsitePolicy};
+use tokio::sync::broadcast;
 
 use super::calls::Released;
 use super::{OwnedTasks, ProxyEndpointOwned, WorkspaceSandbox, WorkspaceSandboxError};

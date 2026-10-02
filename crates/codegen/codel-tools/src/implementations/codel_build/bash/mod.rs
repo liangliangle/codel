@@ -25,8 +25,8 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use regex::Regex;
 use codel_config::shell::AmpersandSemantics;
+use regex::Regex;
 
 use crate::DEFAULT_TOOL_OUTPUT_CHARS;
 use crate::computer::types::{ComputerError, TerminalRunRequest};
@@ -3553,9 +3553,12 @@ mod tests {
         // No Terminal inserted
         let tool = BashTool;
 
-        let result =
-            codel_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), make_input("ls"))
-                .await;
+        let result = codel_tool_runtime::Tool::run(
+            &tool,
+            test_ctx(resources.into_shared()),
+            make_input("ls"),
+        )
+        .await;
         assert!(result.is_err());
         assert!(
             result

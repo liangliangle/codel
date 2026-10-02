@@ -5,8 +5,8 @@ use parking_lot::Mutex;
 
 use agent_client_protocol as acp;
 use chrono::Utc;
-use tokio::sync::{mpsc, oneshot};
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::permission::auto_mode::{
     BashSecurityAssessment, ClassifierSecurityFinding, ClassifierVerdict,
@@ -1513,7 +1513,6 @@ mod tests {
     use crate::permission::types::RequestPathContext;
     use std::collections::HashSet;
 
-        
     async fn decide(
         handle: &PermissionHandle,
         access: AccessKind,
@@ -7647,8 +7646,12 @@ mod tests {
 
                 let reload_client = RecordingClient::default();
                 let reload_prompts = reload_client.prompts.clone();
-                let (reloaded, _e2) =
-                    manager_with_recording_client(&cwd, None, reload_client, ClientType::CodelPager);
+                let (reloaded, _e2) = manager_with_recording_client(
+                    &cwd,
+                    None,
+                    reload_client,
+                    ClientType::CodelPager,
+                );
                 for url in [
                     "https://example.com/x",
                     "https://www.example.com/x",

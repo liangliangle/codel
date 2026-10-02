@@ -8,11 +8,11 @@ use crate::mcp::tests::RecordingGate;
 use crate::session::tool_config::resolve_session_toolset;
 use crate::session::tool_config::test_support::{TestSessionContextFactory, baseline_config, tc};
 use axum::response::IntoResponse;
-use std::sync::Arc;
+use codel_tool_runtime::ToolCallContext;
 use codel_tools::registry::types::ToolServerConfig;
 use codel_tools::types::tool::ToolKind;
 use codel_workspace_types::WorkspaceEvent;
-use codel_tool_runtime::ToolCallContext;
+use std::sync::Arc;
 /// Create a test workspace handle with a "main" session pre-created.
 pub(crate) fn make_handle() -> WorkspaceHandle {
     make_handle_with_rewind_all_outcomes(false)
@@ -171,10 +171,9 @@ impl codel_tool_runtime::Tool for BashCcoStub {
         Ok(codel_tools::types::output::ToolOutput::Bash(
             codel_tools::types::output::BashOutput {
                 output: output.to_vec(),
-                output_for_prompt:
-                    codel_tools::types::output::BashOutput::make_output_for_prompt(
-                        BASH_CCO_STUB_STDOUT,
-                    ),
+                output_for_prompt: codel_tools::types::output::BashOutput::make_output_for_prompt(
+                    BASH_CCO_STUB_STDOUT,
+                ),
                 exit_code: 0,
                 command: format!("echo {BASH_CCO_STUB_STDOUT}"),
                 truncated: false,
@@ -223,8 +222,8 @@ pub(crate) async fn drain_terminal_ok(
         Item = codel_tool_runtime::ToolStreamItem<codel_tool_runtime::TypedToolOutput>,
     > + Unpin,
 ) -> codel_tool_runtime::TypedToolOutput {
-    use futures::StreamExt;
     use codel_tool_runtime::ToolStreamItem;
+    use futures::StreamExt;
     while let Some(item) = stream.next().await {
         match item {
             ToolStreamItem::Terminal(Ok(t)) => return t,
@@ -4675,8 +4674,7 @@ async fn end_mcp_service_loop(handle: &WorkspaceHandle, session_id: &str, server
         .expect("the client is ready");
     service.cancellation_token().cancel();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while client.liveness_check().await != codel_mcp::servers::LivenessCheck::TransportClosed
-        {
+        while client.liveness_check().await != codel_mcp::servers::LivenessCheck::TransportClosed {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
@@ -4688,8 +4686,8 @@ async fn drain_terminal_err(
         Item = codel_tool_runtime::ToolStreamItem<codel_tool_runtime::TypedToolOutput>,
     > + Unpin,
 ) -> codel_tool_runtime::ToolError {
-    use futures::StreamExt;
     use codel_tool_runtime::ToolStreamItem;
+    use futures::StreamExt;
     while let Some(item) = stream.next().await {
         match item {
             ToolStreamItem::Terminal(Err(e)) => return e,
@@ -4910,9 +4908,12 @@ async fn the_stop_ends_the_client_while_the_push_waits_on_the_hub() {
     handle.create_session("main").unwrap();
     let resolver = bind_resolver_fixture(&handle);
     let session_id = "conversation";
-    resolver(codel_tool_protocol::SessionId::new(session_id).unwrap(), None)
-        .await
-        .expect("bind must succeed");
+    resolver(
+        codel_tool_protocol::SessionId::new(session_id).unwrap(),
+        None,
+    )
+    .await
+    .expect("bind must succeed");
     let hub = Arc::new(HubThatNeverAcksUnregisters {
         inner: FakeHubRegistry::default(),
     });
@@ -5089,9 +5090,12 @@ async fn a_shadowed_mcp_tool_is_not_attributed_to_its_server() {
     let handle = WorkspaceHandle::new(config).unwrap();
     handle.create_session("main").unwrap();
     let resolver = bind_resolver_fixture(&handle);
-    resolver(codel_tool_protocol::SessionId::new("shadowed").unwrap(), None)
-        .await
-        .expect("bind must succeed");
+    resolver(
+        codel_tool_protocol::SessionId::new("shadowed").unwrap(),
+        None,
+    )
+    .await
+    .expect("bind must succeed");
     let hub = FakeHubRegistry::default();
     converge_with(&handle, "shadowed", &hub, crate::mcp::McpReclaim::Always).await;
     assert_eq!(

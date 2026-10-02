@@ -7,12 +7,8 @@ use crate::sandbox::{
     BackendSource, CallOwner, WorkspaceSandbox, WorkspaceSandboxConfig, WorkspaceSandboxError,
 };
 use async_trait::async_trait;
-use serde_json::{Value, json};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 use codel_egress_proxy::EgressProxyOptions;
+use codel_logging::events::{SandboxBlockedKind, SandboxCommandOutcome, SandboxSettlement};
 use codel_sandbox::command::grants::{
     Expiry, FixedClock, Grant, GrantDecision, GrantScope, GrantSubject, HostPattern,
 };
@@ -20,9 +16,13 @@ use codel_sandbox::command::violation::{
     Blocked, Capability, Disposition, InformationalReason, Replay, Violation,
 };
 use codel_sandbox::command::{BackendName, CallId, GitConfigEnv, SandboxMode, canonical_path};
-use codel_logging::events::{SandboxBlockedKind, SandboxCommandOutcome, SandboxSettlement};
-use codel_tools::types::tool::{ToolKind, ToolNamespace};
 use codel_tool_runtime::ToolApprovalPolicy;
+use codel_tools::types::tool::{ToolKind, ToolNamespace};
+use serde_json::{Value, json};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 const NOW: i64 = 1_800_000_000;
 struct StubTransport {
     reply: Result<Value, String>,

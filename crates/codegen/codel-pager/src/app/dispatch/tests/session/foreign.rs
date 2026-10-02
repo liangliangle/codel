@@ -39,8 +39,6 @@ fn modal_entries(app: &AppView) -> &[crate::app::app_view::SessionPickerEntry] {
     entries
 }
 
-
-
 #[test]
 fn modal_refetch_clears_orphaned_welcome_foreign_loading() {
     let mut app = test_app_with_agent();
@@ -123,8 +121,6 @@ fn modal_without_foreign_lane_does_not_consume_welcome_result() {
     );
     assert!(!app.session_picker_lanes.foreign_loading);
 }
-
-
 
 #[test]
 fn modal_native_failure_waits_for_foreign_rows_before_toast() {
@@ -212,7 +208,6 @@ fn modal_empty_notice_waits_until_both_lanes_are_empty() {
     );
     assert!(read_toast(&app).contains("No sessions found"));
 }
-
 
 #[test]
 fn modal_selection_survives_native_and_foreign_completion_races() {
@@ -320,7 +315,6 @@ fn modal_selection_survives_native_and_foreign_completion_races() {
     assert_eq!(entry.id, "b");
 }
 
-
 #[test]
 fn modal_external_filter_clears_native_content_and_blocks_forced_search() {
     let mut app = test_app_with_agent();
@@ -371,11 +365,6 @@ fn modal_external_filter_clears_native_content_and_blocks_forced_search() {
     assert!(dispatch(Action::ForceDeepSearch, &mut app).is_empty());
 }
 
-
-
-
-
-
 #[test]
 fn modal_cycle_refetches_when_entering_headless() {
     use codel_shell::session::unified_list::HeadlessPolicy;
@@ -406,7 +395,6 @@ fn modal_cycle_refetches_when_entering_headless() {
     assert_eq!(*source_filter, SourceFilter::Headless);
     assert!(*loading);
 }
-
 
 #[test]
 fn active_modal_owns_stale_and_external_deep_search_results() {
@@ -720,7 +708,6 @@ fn gated_foreign_pick_replaces_all_prior_startup_intents() {
     );
 }
 
-
 #[test]
 fn foreign_selection_and_mutation_guards_remain_central() {
     let mut app = test_app_with_agent();
@@ -756,5 +743,3 @@ fn foreign_selection_and_mutation_guards_remain_central() {
             .is_some_and(|a| a.active_modal.is_some())
     );
 }
-
-

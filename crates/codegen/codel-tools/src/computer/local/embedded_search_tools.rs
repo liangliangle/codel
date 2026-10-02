@@ -310,7 +310,10 @@ mod tests {
         assert_eq!(bash_safe_quote("/usr/bin/bfs"), "/usr/bin/bfs");
         assert_eq!(bash_safe_quote("/tmp/my bfs"), "'/tmp/my bfs'");
         let body = shell_function("find", "bfs", Some(Path::new("/tmp/evil$(id)")), &[]);
-        assert!(body.contains("local __codel_bin='/tmp/evil$(id)'"), "{body}");
+        assert!(
+            body.contains("local __codel_bin='/tmp/evil$(id)'"),
+            "{body}"
+        );
         assert!(!body.contains("=/tmp/evil$(id)"));
     }
 
@@ -428,13 +431,14 @@ mod tests {
     #[test]
     fn resolve_tool_precedence() {
         // Real temp files so the is_file() checks pass.
-        let dir = std::env::temp_dir().join(format!("codel-resolve-{}-{:?}", std::process::id(), {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        }));
+        let dir =
+            std::env::temp_dir().join(format!("codel-resolve-{}-{:?}", std::process::id(), {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            }));
         std::fs::create_dir_all(&dir).unwrap();
         let envp = dir.join("env");
         let bundled = dir.join("bundled");

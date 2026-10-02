@@ -2,13 +2,13 @@
 use crate::capability::CapabilityMode;
 use crate::hub::HubConfig;
 use crate::permission::ToolApprovalGate;
+pub use codel_hooks::discovery::HookSourceConfig;
+use codel_tool_runtime::ToolApprovalPolicy;
+use codel_tools::registry::types::{SessionContext, ToolRegistryBuilder, ToolServerConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-pub use codel_hooks::discovery::HookSourceConfig;
-use codel_tools::registry::types::{SessionContext, ToolRegistryBuilder, ToolServerConfig};
-use codel_tool_runtime::ToolApprovalPolicy;
 /// Default capacity for the workspace event broadcast channel.
 pub const DEFAULT_EVENT_BUFFER_CAPACITY: usize = 64;
 /// A session-lifetime terminal backend (background-task registry and persistent shell) paired with its explicit shutdown hook.
@@ -1195,8 +1195,11 @@ mod tests {
         );
         let scalar = serde_json::json!("opaque");
         assert_eq!(
-            merge_host_identity_metadata(Some(scalar.clone()), codel_tool_protocol::HOST_KIND_DAEMON)
-                .unwrap(),
+            merge_host_identity_metadata(
+                Some(scalar.clone()),
+                codel_tool_protocol::HOST_KIND_DAEMON
+            )
+            .unwrap(),
             scalar
         );
     }

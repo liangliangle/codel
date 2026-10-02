@@ -45,7 +45,10 @@ fn first_turn_writes_session_and_one_turn() {
 #[test]
 fn session_primary_model_is_the_most_used_not_the_last_turn() {
     let mut file = SessionUsageFile::new("sess-1");
-    let first = live(&[("codel-4", 100, 20, Some(50)), ("codel-4", 80, 10, Some(40))]);
+    let first = live(&[
+        ("codel-4", 100, 20, Some(50)),
+        ("codel-4", 80, 10, Some(40)),
+    ]);
     file.apply_turn(1, "t1", &first, None);
     file.apply_turn(
         2,
@@ -75,7 +78,10 @@ fn second_turn_appends_and_session_becomes_latest_ledger() {
     file.apply_turn(
         2,
         "t2",
-        &live(&[("codel-4", 100, 20, Some(50)), ("codel-4", 40, 10, Some(20))]),
+        &live(&[
+            ("codel-4", 100, 20, Some(50)),
+            ("codel-4", 40, 10, Some(20)),
+        ]),
         Some(&first),
     );
 
@@ -132,7 +138,10 @@ fn duplicate_turn_number_folds_extra_live_usage() {
     let mut file = SessionUsageFile::new("sess-1");
     let first = live(&[("codel-4", 100, 20, Some(50))]);
     file.apply_turn(1, "t1", &first, None);
-    let continued = live(&[("codel-4", 100, 20, Some(50)), ("codel-4", 40, 10, Some(20))]);
+    let continued = live(&[
+        ("codel-4", 100, 20, Some(50)),
+        ("codel-4", 40, 10, Some(20)),
+    ]);
     file.apply_turn(1, "t1-late", &continued, Some(&first));
 
     let [t0] = file.turns.as_slice() else {
@@ -156,7 +165,10 @@ fn resume_folds_new_process_ledger_onto_persisted_session() {
     file.apply_turn(
         2,
         "t2",
-        &live(&[("codel-4", 100, 20, Some(50)), ("codel-4", 40, 10, Some(20))]),
+        &live(&[
+            ("codel-4", 100, 20, Some(50)),
+            ("codel-4", 40, 10, Some(20)),
+        ]),
         Some(&first),
     );
 
@@ -183,7 +195,10 @@ fn resume_later_turns_use_process_local_delta() {
     file.apply_turn(
         2,
         "t2",
-        &live(&[("codel-4", 100, 20, Some(50)), ("codel-4", 40, 10, Some(20))]),
+        &live(&[
+            ("codel-4", 100, 20, Some(50)),
+            ("codel-4", 40, 10, Some(20)),
+        ]),
         Some(&first),
     );
 
@@ -215,7 +230,10 @@ fn retain_turns_through_drops_later_turns_and_rebuilds_session() {
     file.apply_turn(
         2,
         "t2",
-        &live(&[("codel-4", 100, 20, Some(50)), ("codel-4", 40, 10, Some(20))]),
+        &live(&[
+            ("codel-4", 100, 20, Some(50)),
+            ("codel-4", 40, 10, Some(20)),
+        ]),
         Some(&first),
     );
     file.retain_turns_through(1);
@@ -237,7 +255,10 @@ fn turn_lookup_returns_matching_row() {
     file.apply_turn(
         2,
         "t2",
-        &live(&[("codel-4", 100, 20, Some(50)), ("codel-4", 40, 10, Some(20))]),
+        &live(&[
+            ("codel-4", 100, 20, Some(50)),
+            ("codel-4", 40, 10, Some(20)),
+        ]),
         Some(&first),
     );
 

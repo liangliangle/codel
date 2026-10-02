@@ -20,11 +20,8 @@ use crate::headless::reducer::{
 };
 use agent_client_protocol as acp;
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
 use codel_acp_lib::{AcpAgentTx, AcpClientMessageBox, AcpClientRx, acp_send};
+use codel_logging::startup::PendingStartup;
 use codel_shell::agent::auth_method::AuthMethodKind;
 use codel_shell::agent::config::Config as AgentConfig;
 use codel_shell::extensions::memory::MemoryFlushResponse;
@@ -36,7 +33,10 @@ use codel_shell::sampling::types::{
     REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
 };
 use codel_shell::util::config as cli_config;
-use codel_logging::startup::PendingStartup;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 mod ext_protocol;
 mod mcp_init;
 mod prompt_ack;

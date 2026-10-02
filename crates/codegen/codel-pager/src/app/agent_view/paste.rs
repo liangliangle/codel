@@ -226,9 +226,7 @@ impl AgentView {
             file,
             text,
         );
-        if completion == ClipboardPasteCompletion::FullMiss && ctx.source.is_clipboard_key() {
-            
-        }
+        if completion == ClipboardPasteCompletion::FullMiss && ctx.source.is_clipboard_key() {}
         completion
     }
     /// Attach a deferred clipboard probe's result to the feedback modal that started it.

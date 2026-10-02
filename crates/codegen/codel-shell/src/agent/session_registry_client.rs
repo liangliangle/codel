@@ -210,10 +210,7 @@ impl SessionRegistryClient {
         &self,
         builder: RequestBuilder,
         op: &'static str,
-    ) -> Result<(
-        reqwest::Response,
-        Option<codel_auth::StampedBearerSuffix>,
-    )> {
+    ) -> Result<(reqwest::Response, Option<codel_auth::StampedBearerSuffix>)> {
         let builder = codel_trace_context::inject_trace_context_into_request(builder);
         let request = builder.build().context(op)?;
         codel_auth::execute_with_stamp(&self.client, request)
@@ -592,10 +589,10 @@ mod tests {
     async fn session_registry_client_uses_active_auth_for_each_request() {
         use axum::{Router, response::IntoResponse, routing::post};
         use chrono::{Duration, Utc};
+        use codel_login::{AuthManager, AuthMode, CodelAuth, CodelComConfig};
         use std::net::SocketAddr;
         use std::sync::Arc;
         use tokio::net::TcpListener;
-        use codel_login::{AuthManager, AuthMode, CodelAuth, CodelComConfig};
 
         let captured = Arc::new(parking_lot::Mutex::new(None::<String>));
         let captured_for_handler = captured.clone();

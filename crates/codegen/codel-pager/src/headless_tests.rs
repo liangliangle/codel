@@ -269,8 +269,8 @@ fn spawn_fake_agent(
     codel_acp_lib::AcpAgentTx,
     std::sync::Arc<std::sync::Mutex<FakeAgentLog>>,
 ) {
-    use std::sync::{Arc, Mutex};
     use codel_acp_lib::AcpAgentMessage;
+    use std::sync::{Arc, Mutex};
     let log = Arc::new(Mutex::new(FakeAgentLog::default()));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AcpAgentMessage>();
     let log_for_task = log.clone();

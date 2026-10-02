@@ -2,9 +2,7 @@
 
 use agent_client_protocol as acp;
 use codel_shell::session::info::Info;
-use codel_shell::session::storage::search::{
-    IndexDecision, SessionSearchRequest, execute_search,
-};
+use codel_shell::session::storage::search::{IndexDecision, SessionSearchRequest, execute_search};
 use codel_shell::session::storage::{JsonlStorageAdapter, StorageAdapter};
 use codel_test_support::EnvGuard;
 

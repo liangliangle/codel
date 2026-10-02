@@ -5,10 +5,10 @@
 use crate::extensions::agent_runtime::AgentRuntime;
 use crate::session::ExtMethodResult;
 use agent_client_protocol as acp;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use codel_workspace::file_system::ContentSearchRequest as ContentSearchRequestParams;
 use codel_workspace::workspace_ops::{FuzzyChangeReq, FuzzyCloseReq, FuzzyOpenReq};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 type ExtResult = Result<acp::ExtResponse, acp::Error>;
 

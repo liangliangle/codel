@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, Row};
 use codel_sqlite_journal::JournalMode;
+use rusqlite::{Connection, OptionalExtension, Row};
 
 const WORKTREES_DB_FILE: &str = "worktrees.db";
 // The lookups and decoding below match this writer schema version only

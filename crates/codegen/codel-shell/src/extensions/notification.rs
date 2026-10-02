@@ -2655,7 +2655,8 @@ mod tests {
     /// The `#[serde(other)]` catch-all would swallow that on the pager side and break multi-client model sync without any test failing.
     #[test]
     fn model_changed_roundtrips_through_json() {
-        let original = SessionUpdate::model_changed("codel-4", Some("medium".into()), Some(256_000));
+        let original =
+            SessionUpdate::model_changed("codel-4", Some("medium".into()), Some(256_000));
         let json_str = serde_json::to_string(&original).unwrap();
         let parsed: SessionUpdate = serde_json::from_str(&json_str).unwrap();
         assert_eq!(original, parsed);

@@ -827,7 +827,6 @@ fn hydration_answer_for_another_account_is_dropped() {
     }
 }
 
-
 /// `[Opt in]` success: ACP confirmation acks the banner.
 #[test]
 fn privacy_banner_opt_in_success_acks() {
@@ -932,7 +931,6 @@ fn privacy_banner_opt_out_noop_while_opt_in_inflight() {
         "a failed [Opt in] must keep the banner even after a raced [Opt out]"
     );
 }
-
 
 /// Already-out opt-out, from the banner or Settings, still writes: the local "out" may be the unconfirmed fail-safe default.
 #[test]
@@ -1793,10 +1791,6 @@ fn stale_context_info_results_do_not_update_replaced_session() {
     assert_eq!(agent_scrollback_len(&app), before);
 }
 
-
-
-
-
 #[test]
 fn minimal_update_notice_commits_a_system_block() {
     let mut app = test_app_with_agent();
@@ -1808,8 +1802,6 @@ fn minimal_update_notice_commits_a_system_block() {
     assert!(text.contains("Restart to apply."), "got: {text:?}");
 }
 
-
-
 fn usage_modal_state(app: &AppView) -> &crate::views::usage_modal::UsageInfoModalState {
     match app
         .agents
@@ -1820,9 +1812,6 @@ fn usage_modal_state(app: &AppView) -> &crate::views::usage_modal::UsageInfoModa
         _ => panic!("expected the usage modal to be open"),
     }
 }
-
-
-
 
 #[test]
 fn usage_results_populate_open_modal_not_scrollback() {

@@ -405,7 +405,7 @@ pub fn copy_text(text: &str) -> CopyResult {
         );
     }
     let result = feedback.to_result();
-    
+
     result
 }
 
@@ -915,15 +915,13 @@ pub fn guarded_pasteboard_read(
 /// On non-macOS this composes separate arboard reads.
 fn system_clipboard_get_attachments() -> Result<AttachmentsProbeResult, ClipboardProbeDropReason> {
     match codel_shared::clipboard::get_attachments() {
-        Ok(att) => {
-            Ok(AttachmentsProbeResult {
-                file_urls: att.file_urls,
-                image: att.image,
-            })
-        }
+        Ok(att) => Ok(AttachmentsProbeResult {
+            file_urls: att.file_urls,
+            image: att.image,
+        }),
         Err(e) => {
             tracing::debug!("clipboard attachments read failed: {e}");
-            
+
             Err(read_drop_reason(&e))
         }
     }
@@ -986,13 +984,10 @@ pub fn prewarm_image_probe() {
 /// Read an image while preserving an empty-versus-error distinction.
 fn system_clipboard_get_image_result() -> Result<Option<ImageData>, ClipboardProbeDropReason> {
     match codel_shared::clipboard::get_image() {
-        Ok(read) => {
-            
-            Ok(read.image)
-        }
+        Ok(read) => Ok(read.image),
         Err(e) => {
             tracing::debug!("clipboard image read failed: {e}");
-            
+
             Err(read_drop_reason(&e))
         }
     }

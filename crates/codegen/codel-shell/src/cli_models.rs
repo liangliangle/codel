@@ -95,11 +95,11 @@ fn parse_models_list_response(raw: &str) -> Result<acp::SessionModelState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::auth_method::{LEGACY_CODEL_API_KEY_ENV_VAR, CODEL_API_KEY_ENV_VAR};
+    use crate::agent::auth_method::{CODEL_API_KEY_ENV_VAR, LEGACY_CODEL_API_KEY_ENV_VAR};
     use crate::agent::config::Config;
-    use serial_test::serial;
     use codel_login::{AuthMode, CodelAuth};
     use codel_test_support::EnvGuard;
+    use serial_test::serial;
     const EXPECTED_LOGIN_HOST: &str = "codel.dev";
     /// Isolate process-global auth sources that `AuthStatus::resolve` consults.
     /// Uses `CODEL_AUTH_PATH` (not `CODEL_HOME`) so a OnceLock-cached real home with `auth.json` cannot leak into these tests.

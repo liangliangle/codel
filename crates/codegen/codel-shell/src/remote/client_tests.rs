@@ -139,8 +139,7 @@ fn test_auth() -> CodelAuth {
 }
 fn test_auth_manager() -> Arc<codel_login::AuthManager> {
     let dir = tempfile::tempdir().unwrap();
-    let mgr =
-        codel_login::AuthManager::new(dir.path(), codel_login::CodelComConfig::default());
+    let mgr = codel_login::AuthManager::new(dir.path(), codel_login::CodelComConfig::default());
     mgr.hot_swap(test_auth());
     std::mem::forget(dir);
     Arc::new(mgr)

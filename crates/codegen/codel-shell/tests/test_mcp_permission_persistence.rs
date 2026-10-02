@@ -2,8 +2,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use agent_client_protocol as acp;
-use serial_test::serial;
-use tokio::sync::{mpsc, oneshot};
 use codel_acp_lib::{AcpAgentGatewaySender, AcpClientMessage};
 use codel_paths::AbsPathBuf;
 use codel_workspace::permission::types::{
@@ -13,6 +11,8 @@ use codel_workspace::permission::{
     AccessKind, ClientType, Decision, PermissionCommand, PermissionHandle, PermissionRequest,
     PermissionState, spawn_permission_manager, spawn_permission_manager_with_hub,
 };
+use serial_test::serial;
+use tokio::sync::{mpsc, oneshot};
 
 fn test_home() -> &'static PathBuf {
     static HOME: OnceLock<PathBuf> = OnceLock::new();

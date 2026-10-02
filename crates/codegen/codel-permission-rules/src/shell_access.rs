@@ -598,7 +598,9 @@ fn path_is_under_user_codel_hook_root(path: &Path, codel_home: &Path) -> bool {
 }
 
 fn protected_codel_hook_root(path: &Path, components: &[&str]) -> bool {
-    components.windows(2).any(|pair| pair == [".codel", "hooks"])
+    components
+        .windows(2)
+        .any(|pair| pair == [".codel", "hooks"])
         || components.ends_with(&[".codel", "hooks-paths"])
         || codel_home_matches(codel_config::user_codel_home().as_deref(), |home| {
             path_is_under_user_codel_hook_root(path, home)
@@ -1525,7 +1527,10 @@ mod tests {
                 "/home/user/.codel/requirements.toml",
                 ProtectedEditReason::CodelConfig,
             ),
-            ("/home/user/.codel/mcp.json", ProtectedEditReason::CodelConfig),
+            (
+                "/home/user/.codel/mcp.json",
+                ProtectedEditReason::CodelConfig,
+            ),
             (
                 "/work/project/.codel/lsp.json",
                 ProtectedEditReason::CodelConfig,

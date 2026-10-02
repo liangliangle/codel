@@ -1,11 +1,11 @@
 //! `codel/subagent/message` — queue or steer literal text to an owned child.
 
 use agent_client_protocol as acp;
-use serde::{Deserialize, Serialize};
 use codel_tools::implementations::codel_build::send_subagent_message::resolve_delivery;
 use codel_tools::implementations::codel_build::task::types::{
     ActiveAgentMessageOutcome, MAX_ACTIVE_AGENT_MESSAGE_BYTES,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::agent::MvpAgent;
 use crate::session::ExtMethodResult;

@@ -781,7 +781,7 @@ mod tests {
         Arc<
             crate::implementations::codel_build_hashline::memory_v2_test_support::FakeMemoryV2Access,
         >,
-    ) {
+    ){
         use crate::implementations::codel_build_hashline::memory_v2_test_support::FakeMemoryV2Access;
         let access = Arc::new(FakeMemoryV2Access::new(&cwd.join("memory")));
         let mut resources = test_resources(cwd);

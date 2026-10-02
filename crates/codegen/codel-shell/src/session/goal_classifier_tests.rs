@@ -2924,8 +2924,8 @@ async fn verification_stage_resume_spawn_failure_falls_back_to_cold() {
 /// A raw coordinator FAILS every resume spawn (`resume_from = Some`) and succeeds the cold spawns (`resume_from = None`).
 #[tokio::test]
 async fn cold_fallback_after_resume_failure_carries_pool0_model_on_request() {
-    use std::sync::Mutex as StdMutex;
     use codel_tools::implementations::codel_build::task::types::{SubagentEvent, SubagentResult};
+    use std::sync::Mutex as StdMutex;
 
     // (model, resume_from) per spawn, in spawn order.
     type SpawnCapture = Arc<StdMutex<Vec<(Option<String>, Option<String>)>>>;

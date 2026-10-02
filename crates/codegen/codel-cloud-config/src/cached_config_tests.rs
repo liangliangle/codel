@@ -131,7 +131,11 @@ fn reader_uses_only_the_entry_fetched_from_the_endpoint_its_campaigns_name() {
     ];
     for case in cases {
         let codel_home = tempfile::tempdir().unwrap();
-        let scope = sign_in(codel_home.path(), &case.writer_config, case.token_expires_at);
+        let scope = sign_in(
+            codel_home.path(),
+            &case.writer_config,
+            case.token_expires_at,
+        );
         SettingsCacheManager::new(codel_home.path(), SettingsCacheMode::Enabled)
             .write_through(&scope, &settings, Utc::now())
             .unwrap();

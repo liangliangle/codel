@@ -640,18 +640,16 @@ impl SessionActor {
                     "draining between-turn bash task completions"
                 );
                 let task_output_name =
-                    codel_tools::reminders::task_completion::resolve_task_output_tool_name(
-                        &bridge,
-                    )
-                    .await;
-                let read_tool_name =
-                    codel_tools::reminders::task_completion::resolve_read_tool_name(&bridge)
+                    codel_tools::reminders::task_completion::resolve_task_output_tool_name(&bridge)
                         .await;
-                let reminder = codel_tools::reminders::task_completion::format_between_turn_bash_completions(
-                    &bash_completions,
-                    task_output_name.as_deref(),
-                    read_tool_name.as_deref(),
-                );
+                let read_tool_name =
+                    codel_tools::reminders::task_completion::resolve_read_tool_name(&bridge).await;
+                let reminder =
+                    codel_tools::reminders::task_completion::format_between_turn_bash_completions(
+                        &bash_completions,
+                        task_output_name.as_deref(),
+                        read_tool_name.as_deref(),
+                    );
                 self.push_system_reminder(&reminder);
             }
         }
@@ -978,9 +976,7 @@ impl SessionActor {
             ));
     }
     /// Turn-end TodoGate config, or `None` when [`todo_gate_active`] is false.
-    pub(super) fn todo_gate_policy(
-        &self,
-    ) -> Option<codel_agent::system_reminder::TodoGateConfig> {
+    pub(super) fn todo_gate_policy(&self) -> Option<codel_agent::system_reminder::TodoGateConfig> {
         let goal_status = self.goal_tracker.lock().status();
         let agent = self.agent.borrow();
         let policy = agent.reminder_policy();

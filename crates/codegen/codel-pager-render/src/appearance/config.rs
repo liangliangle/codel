@@ -1,11 +1,11 @@
 //! `RawAppearanceConfig` is the serde-friendly shape of pager.toml.
 //! `AppearanceConfig` is the resolved runtime form (ratatui::Color, BlockBackground, etc.).
 
+use codel_shared::ui_config::UiConfig;
 use documented::{Documented, DocumentedFields};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, RawString};
-use codel_shared::ui_config::UiConfig;
 
 /// Background style for block content area.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

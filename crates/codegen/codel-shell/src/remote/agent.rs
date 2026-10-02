@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use serde::de::DeserializeOwned;
 use codel_login::{AuthManager, CodelComConfig};
+use serde::de::DeserializeOwned;
 
 // Re-export sandbox API types from cli-chat-proxy-types for convenience.
 // Sorted alphabetically; see sandbox_types.rs for logical grouping.
@@ -74,7 +74,9 @@ impl SandboxClient {
                 crate::http::process_client_mode(),
             );
 
-        Ok(codel_trace_context::inject_trace_context_into_request(builder))
+        Ok(codel_trace_context::inject_trace_context_into_request(
+            builder,
+        ))
     }
 
     /// Check an HTTP response for errors, then deserialize the JSON body.

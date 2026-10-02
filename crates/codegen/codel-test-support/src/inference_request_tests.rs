@@ -22,7 +22,10 @@ fn explicit_request_headers_override_the_tool_count_heuristic() {
             InferenceRequestKind::Auxiliary,
         ),
         (
-            &[("x-codel-req-id", "title-request"), ("x-codel-turn-idx", "1")],
+            &[
+                ("x-codel-req-id", "title-request"),
+                ("x-codel-turn-idx", "1"),
+            ],
             InferenceRequestKind::Foreground,
         ),
         (

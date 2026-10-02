@@ -84,7 +84,6 @@ pub use yolo::*;
 
 pub trait TelemetryEvent: Serialize + Send + 'static {
     const NAME: &'static str;
-
 }
 
 macro_rules! telemetry_event {
@@ -126,41 +125,20 @@ telemetry_event!(LoginCompleted, "login_completed");
 telemetry_event!(LoginFailed, "login_failed");
 telemetry_event!(LoginAbandoned, "login_abandoned");
 telemetry_event!(ApiKeySaveResult, "api_key_save_result");
-telemetry_event!(
-    PlanModeToggled,
-    "plan_mode_toggled"
-);
-telemetry_event!(
-    ContextualTip,
-    "contextual_tip"
-);
+telemetry_event!(PlanModeToggled, "plan_mode_toggled");
+telemetry_event!(ContextualTip, "contextual_tip");
 telemetry_event!(PromptSuggestion, "prompt_suggestion");
-telemetry_event!(
-    YoloToggled,
-    "yolo_toggled"
-);
+telemetry_event!(YoloToggled, "yolo_toggled");
 telemetry_event!(SlashCommandUsed, "slash_command_used");
 telemetry_event!(PermissionPrompted, "permission_prompted");
-telemetry_event!(
-    PermissionDecisionRecord,
-    "permission_decision"
-);
+telemetry_event!(PermissionDecisionRecord, "permission_decision");
 telemetry_event!(AutoCompactFired, "auto_compact_fired");
 telemetry_event!(CompactionTriggered, "compaction_triggered");
-telemetry_event!(
-    CompactionCompleted,
-    "compaction_completed"
-);
+telemetry_event!(CompactionCompleted, "compaction_completed");
 telemetry_event!(AutoCompactSuppressed, "auto_compact_suppressed");
 telemetry_event!(CompactionRetryDegraded, "compaction_retry_degraded");
-telemetry_event!(
-    SubagentLaunched,
-    "subagent_launched"
-);
-telemetry_event!(
-    SubagentCompleted,
-    "subagent_completed"
-);
+telemetry_event!(SubagentLaunched, "subagent_launched");
+telemetry_event!(SubagentCompleted, "subagent_completed");
 telemetry_event!(SubagentLimitHit, "subagent_limit_hit");
 telemetry_event!(SubagentRateLimitWaited, "subagent_rate_limit_waited");
 telemetry_event!(
@@ -192,22 +170,13 @@ telemetry_event!(
 );
 telemetry_event!(WorkflowRunStarted, "workflow_run_started");
 telemetry_event!(WorkflowRunEnded, "workflow_run_ended");
-telemetry_event!(
-    ModelSwitched,
-    "model_switched"
-);
+telemetry_event!(ModelSwitched, "model_switched");
 telemetry_event!(PluginAdded, "plugin_added");
 telemetry_event!(PluginRemoved, "plugin_removed");
-telemetry_event!(
-    PluginInstalled,
-    "plugin_installed"
-);
+telemetry_event!(PluginInstalled, "plugin_installed");
 telemetry_event!(PluginUninstalled, "plugin_uninstalled");
 telemetry_event!(PluginReloaded, "plugin_reloaded");
-telemetry_event!(
-    PluginUsed,
-    "plugin_used"
-);
+telemetry_event!(PluginUsed, "plugin_used");
 telemetry_event!(PluginCtaImpression, "plugin_cta_impression");
 telemetry_event!(PluginCtaConnectClicked, "plugin_cta_connect_clicked");
 telemetry_event!(PluginCtaDismissed, "plugin_cta_dismissed");
@@ -223,40 +192,19 @@ telemetry_event!(ClientHookGate, "client_hook_gate");
 telemetry_event!(SkillAdded, "skill_added");
 telemetry_event!(SkillRemoved, "skill_removed");
 telemetry_event!(HarnessChanged, "harness_changed");
-telemetry_event!(
-    SkillDispatched,
-    "skill_dispatched"
-);
-telemetry_event!(
-    McpServerConnected,
-    "mcp_server_connected"
-);
-telemetry_event!(
-    McpServerFailed,
-    "mcp_server_failed"
-);
+telemetry_event!(SkillDispatched, "skill_dispatched");
+telemetry_event!(McpServerConnected, "mcp_server_connected");
+telemetry_event!(McpServerFailed, "mcp_server_failed");
 telemetry_event!(McpInitCompleted, "mcp_init_completed");
 telemetry_event!(McpToolCalled, "mcp_tool_called");
 telemetry_event!(McpFileInputUsed, "mcp_file_input_used");
 telemetry_event!(McpFileInputCompleted, "mcp_file_input_completed");
 telemetry_event!(McpFileInputLimitHit, "mcp_file_input_limit_hit");
-telemetry_event!(
-    SessionHarness,
-    "session_harness"
-);
+telemetry_event!(SessionHarness, "session_harness");
 telemetry_event!(SessionLoad, "session_load");
-telemetry_event!(
-    SessionNew,
-    "session_new"
-);
-telemetry_event!(
-    SessionCreateFailed,
-    "session_create_failed"
-);
-telemetry_event!(
-    PromptSubmitted,
-    "prompt_submitted"
-);
+telemetry_event!(SessionNew, "session_new");
+telemetry_event!(SessionCreateFailed, "session_create_failed");
+telemetry_event!(PromptSubmitted, "prompt_submitted");
 telemetry_event!(UserFeedback, "user_feedback");
 telemetry_event!(FeedbackModalOpened, "feedback_modal_opened");
 telemetry_event!(FeedbackDraftOp, "feedback_draft_op");
@@ -268,56 +216,26 @@ telemetry_event!(MultiAgentApply, "multi_agent_apply");
 telemetry_event!(MultiAgentDiscard, "multi_agent_discard");
 telemetry_event!(RepoChanges, "repo_changes");
 telemetry_event!(NonGitDecisionEvent, "non_git_decision");
-telemetry_event!(
-    PromptLatency,
-    "prompt_latency"
-);
+telemetry_event!(PromptLatency, "prompt_latency");
 telemetry_event!(CancellationCompleted, "cancellation_completed");
 telemetry_event!(HeapThresholdCrossed, "heap_threshold_crossed");
 telemetry_event!(ProcessResourceUsage, "process_resource_usage");
 telemetry_event!(ProcessResourceLimits, "process_resource_limits");
-telemetry_event!(
-    TurnCompleted,
-    "turn_completed"
-);
+telemetry_event!(TurnCompleted, "turn_completed");
 telemetry_event!(ShellTrueNoop, "shell_true_noop");
 telemetry_event!(ActionStationarityNudge, "action_stationarity_nudge");
 telemetry_event!(ActionStationarityStop, "action_stationarity_stop");
-telemetry_event!(
-    ToolCallCompleted,
-    "tool_call_completed"
-);
-telemetry_event!(
-    ModelResponseReceived,
-    "model_response_received"
-);
-telemetry_event!(
-    AssistantResponse,
-    "assistant_response"
-);
+telemetry_event!(ToolCallCompleted, "tool_call_completed");
+telemetry_event!(ModelResponseReceived, "model_response_received");
+telemetry_event!(AssistantResponse, "assistant_response");
 telemetry_event!(MemoryFlushed, "memory_flushed");
 telemetry_event!(MediaGenerated, "media_generated");
-telemetry_event!(
-    SessionEnded,
-    "session_ended"
-);
+telemetry_event!(SessionEnded, "session_ended");
 telemetry_event!(SessionEndTimings, "session_end_timings");
-telemetry_event!(
-    AgentConnect,
-    "agent_connect"
-);
-telemetry_event!(
-    StartupCompleted,
-    "startup_completed"
-);
-telemetry_event!(
-    StartupInteractive,
-    "startup_interactive"
-);
-telemetry_event!(
-    StartupSubTimers,
-    "startup_subtimers"
-);
+telemetry_event!(AgentConnect, "agent_connect");
+telemetry_event!(StartupCompleted, "startup_completed");
+telemetry_event!(StartupInteractive, "startup_interactive");
+telemetry_event!(StartupSubTimers, "startup_subtimers");
 telemetry_event!(PagerSlashCommand, "pager_slash_command");
 telemetry_event!(PlanSubmit, "plan_submit");
 telemetry_event!(EventLoopStall, "event_loop_stall");
@@ -346,20 +264,11 @@ telemetry_event!(DashboardAgentLaunched, "dashboard_agent_launched");
 telemetry_event!(BlockViewerOpened, "block_viewer_opened");
 telemetry_event!(BlockViewerQuoted, "block_viewer_quoted");
 telemetry_event!(ShortcutUsed, "shortcut_used");
-telemetry_event!(
-    RateLimitHit,
-    "rate_limit_hit"
-);
+telemetry_event!(RateLimitHit, "rate_limit_hit");
 telemetry_event!(StatusLineConfigured, "status_line_configured");
 telemetry_event!(StatusLineHealth, "status_line_health");
-telemetry_event!(
-    ApiError,
-    "api_error"
-);
-telemetry_event!(
-    InternalError,
-    "internal_error"
-);
+telemetry_event!(ApiError, "api_error");
+telemetry_event!(InternalError, "internal_error");
 
 // Session lifecycle (structs in session_metrics)
 telemetry_event!(crate::session_metrics::SessionStarted, "session_started");

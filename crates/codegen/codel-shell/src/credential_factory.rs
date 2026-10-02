@@ -9,10 +9,10 @@ use std::sync::Arc;
 use codel_auth::{AuthCredentialProvider, StaticAuthCredentialProvider};
 
 use codel_login::AuthManager;
+use codel_login::codel_auth_credentials::CodelAuthCredentials;
 use codel_login::credential_provider::{
     ShellAuthCredentialProvider, StorageClientAttributionBridge,
 };
-use codel_login::codel_auth_credentials::CodelAuthCredentials;
 
 /// Build a `StorageClient` for proxy uploads. Pass the correct `client_identifier` so requests can be attributed.
 /// When `auth_manager` is `Some`, use the live provider (refresh and 401 recovery); otherwise fall back to a static token.
@@ -65,4 +65,3 @@ pub fn build_storage_client_for_proxy(
         .with_client_mode(codel_http::process_client_mode())
     }
 }
-

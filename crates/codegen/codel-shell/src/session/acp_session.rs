@@ -54,15 +54,6 @@ use crate::terminal::TerminalRunRequest;
 use crate::tools::ToolContext;
 use agent_client_protocol as acp;
 use agent_client_protocol::ContentBlock;
-use parking_lot::Mutex;
-use serde_json::json;
-use std::collections::{HashMap, VecDeque};
-use std::path::Path;
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::OnceLock;
-use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
-use tokio::time::{Duration, sleep};
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use codel_agent::AgentDefinition;
 use codel_agent::prompt::agents_md::LEGACY_AGENTS_MD_REMINDER_PREFIX;
@@ -82,6 +73,15 @@ use codel_workspace::permission::{
     AccessKind, ClientType, Decision, HookAsk, PermissionEvent, PermissionHandle, PermissionRequest,
 };
 use codel_workspace::session::file_state::{FileStateHandle, FileStateTracker};
+use parking_lot::Mutex;
+use serde_json::json;
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::OnceLock;
+use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
+use tokio::time::{Duration, sleep};
 const SESSION_LOG: &str = "codel_session";
 #[path = "compaction.rs"]
 mod compaction;
@@ -486,7 +486,9 @@ impl codel_tools::types::resources::ManagedGatewayToolCaller for ShellManagedGat
             .await
             .ok()
             .or_else(|| self.auth_manager.current_or_expired().map(|a| a.key))
-            .ok_or_else(|| codel_tool_runtime::ToolError::unauthorized("no auth token available"))?;
+            .ok_or_else(|| {
+                codel_tool_runtime::ToolError::unauthorized("no auth token available")
+            })?;
         let response = crate::session::managed_mcp::call_gateway_tool(
             &self.proxy_base_url,
             &auth_key,
@@ -515,8 +517,9 @@ fn managed_gateway_error_to_tool_error(
             } else if status == reqwest::StatusCode::FORBIDDEN {
                 codel_tool_runtime::ToolError::permission_denied(detail)
             } else {
-                let tool_id = codel_tool_protocol::ToolId::new(caller)
-                    .unwrap_or_else(|_| codel_tool_protocol::ToolId::new("use_tool").expect("valid"));
+                let tool_id = codel_tool_protocol::ToolId::new(caller).unwrap_or_else(|_| {
+                    codel_tool_protocol::ToolId::new("use_tool").expect("valid")
+                });
                 codel_tool_runtime::ToolError::execution(tool_id, detail)
             };
             match err.details.as_mut() {
@@ -569,7 +572,10 @@ mod managed_gateway_error_tests {
     #[test]
     fn forbidden_status_maps_to_permission_denied_and_carries_status() {
         let err = managed_gateway_error_to_tool_error(status_error(403, "denied"), "use_tool");
-        assert_eq!(err.kind, codel_tool_runtime::ToolErrorKind::PermissionDenied);
+        assert_eq!(
+            err.kind,
+            codel_tool_runtime::ToolErrorKind::PermissionDenied
+        );
         let details = err.details.as_ref().unwrap();
         assert_eq!(
             details.get(HTTP_STATUS_DETAILS_KEY),
@@ -1049,8 +1055,7 @@ pub(crate) struct SessionActor {
     /// Loaded at session startup; can be updated mid-session via `/plugins reload`.
     /// `None` when no plugin registry was supplied at spawn time.
     /// Wrapped in `RefCell` for mid-session reload from `&self` methods.
-    pub(crate) hook_registry:
-        std::cell::RefCell<Option<Arc<codel_hooks::discovery::HookRegistry>>>,
+    pub(crate) hook_registry: std::cell::RefCell<Option<Arc<codel_hooks::discovery::HookRegistry>>>,
     /// Disabled-hooks snapshot every dispatch filters on, so the actor never reads the file mid-turn.
     /// Loaded at spawn and refreshed by hook reload and enable/disable; another session's toggle lands here at the next reload.
     pub(crate) hook_disabled: std::cell::RefCell<Arc<codel_hooks::trust::DisabledHooks>>,
@@ -1132,9 +1137,8 @@ pub(crate) struct SessionActor {
     /// A server-confirmed image strip awaiting proof that the stripped retry helped.
     /// URLs are buffered by request id on `ImagesStripped`.
     /// They persist to stored history only when that request's `Completed` arrives, and drop on `Failed`.
-    pub(crate) pending_image_strip: parking_lot::Mutex<
-        std::collections::HashMap<codel_sampler::RequestId, PendingImageStrip>,
-    >,
+    pub(crate) pending_image_strip:
+        parking_lot::Mutex<std::collections::HashMap<codel_sampler::RequestId, PendingImageStrip>>,
     /// Serializes durable image-strip writes with conversation rewinds.
     pub(crate) image_strip_rewrite_barrier: ImageStripRewriteBarrier,
     /// Handle to the per-session `codel-sampler` actor.
@@ -1225,7 +1229,10 @@ impl SessionActor {
         skip_all,
         fields(session_id = %self.session_info.id.0, turn_number = payload.turn_number)
     )]
-    async fn send_after_turn_event(&self, payload: codel_tool_protocol::turn_hook::AfterTurnPayload) {
+    async fn send_after_turn_event(
+        &self,
+        payload: codel_tool_protocol::turn_hook::AfterTurnPayload,
+    ) {
         self.workspace_ops
             .on_after_turn(&self.session_id_string(), &payload)
             .await;
@@ -1275,9 +1282,7 @@ impl SessionActor {
         &self,
         tool_names: &[String],
     ) -> slash_commands::CommandAvailability {
-        use codel_tools::implementations::memory::{
-            MEMORY_GET_TOOL_NAME, MEMORY_SEARCH_TOOL_NAME,
-        };
+        use codel_tools::implementations::memory::{MEMORY_GET_TOOL_NAME, MEMORY_SEARCH_TOOL_NAME};
         let can_read_memory = self
             .memory
             .mode()
@@ -1773,10 +1778,10 @@ mod tool_meta_stamp_tests {
     use super::replay_buffer_send_update_tests::make_replay_send_update_fixture;
     use super::support::test_agent_with_tools;
     use super::*;
-    use tokio::sync::mpsc;
     use codel_tools::registry::types::ToolConfig;
     use codel_tools::tool_taxonomy::TOOL_META_KEY;
     use codel_workspace::permission::PermissionCommand;
+    use tokio::sync::mpsc;
     fn read_file_call() -> crate::sampling::types::ToolCallResponse {
         crate::sampling::types::ToolCallResponse {
             id: "call-stamp-1".to_string(),

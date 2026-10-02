@@ -15,13 +15,13 @@ use crate::acp::tracker::{TurnActivity, WaitingReason};
 use crate::app::agent::{AgentCommand, AgentState};
 use crate::render::line_utils::truncate_str;
 use crate::theme::Theme;
+use codel_workspace::permission::mcp_pretty_name_if_qualified;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
-use codel_workspace::permission::mcp_pretty_name_if_qualified;
 /// Show each spinner frame for this many animation ticks.
 /// At ~30fps, 4 ticks is ~133ms per frame, about 7.5 spinner fps.
 pub(crate) const SPINNER_DIVISOR: u64 = 4;

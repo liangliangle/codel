@@ -1,8 +1,8 @@
 use super::error::MigrationError;
 
+use codel_config::McpServerConfig;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
-use codel_config::McpServerConfig;
 
 pub(super) fn merge_mcp_servers(
     table: &mut TomlMap<String, TomlValue>,

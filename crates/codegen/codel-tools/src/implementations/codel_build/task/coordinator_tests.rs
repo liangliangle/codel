@@ -447,7 +447,8 @@ pub(in crate::implementations::codel_build::task::coordinator) struct Harness {
         mpsc::UnboundedReceiver<WakeRun>,
     pub(in crate::implementations::codel_build::task::coordinator) admitted_messages:
         mpsc::UnboundedReceiver<(ActiveAgentMessageOperation, String)>,
-    pub(in crate::implementations::codel_build::task::coordinator) actor: tokio::task::JoinHandle<()>,
+    pub(in crate::implementations::codel_build::task::coordinator) actor:
+        tokio::task::JoinHandle<()>,
 }
 
 pub(in crate::implementations::codel_build::task::coordinator) fn harness(

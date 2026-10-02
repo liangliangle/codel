@@ -1,7 +1,7 @@
 use crate::{
     computer::types::{AsyncFileSystem, TerminalBackend},
     implementations::{
-        codex, codel_build, codel_build_concise, codel_build_hashline, opencode,
+        codel_build, codel_build_concise, codel_build_hashline, codex, opencode,
         skills::types::SkillInfo,
     },
     notification::ToolNotificationHandle,
@@ -1920,7 +1920,8 @@ impl FinalizedToolset {
         ctx.extensions.insert(
             crate::types::resources::InvokingToolParamNames::from_reverse_params(&reverse_params),
         );
-        ctx.extensions.remove::<codel_tool_runtime::BehaviorVersion>();
+        ctx.extensions
+            .remove::<codel_tool_runtime::BehaviorVersion>();
         if let Some(version) = contract_version {
             ctx.extensions
                 .insert(codel_tool_runtime::BehaviorVersion(version));
@@ -2411,7 +2412,8 @@ mod tests {
             video_gen_config:
                 crate::implementations::codel_build::video_gen::VideoGenConfig::default(),
             app_builder_deployer_config:
-                crate::implementations::codel_build::app_builder::AppBuilderDeployerConfig::default(),
+                crate::implementations::codel_build::app_builder::AppBuilderDeployerConfig::default(
+                ),
             api_key_provider: None,
             auth_provider: None,
             attribution_callback: None,
@@ -2491,7 +2493,9 @@ mod tests {
                     apply_params: Box::new(|_, _| {}),
                     register_params: Box::new(|_| {}),
                     parse_input: Box::new(|_| {
-                        Err(codel_tool_runtime::ToolError::invalid_arguments("audit only"))
+                        Err(codel_tool_runtime::ToolError::invalid_arguments(
+                            "audit only",
+                        ))
                     }),
                     register_in_local: Box::new(|_| {}),
                 },
@@ -3734,9 +3738,11 @@ mod tests {
             _input: serde_json::Value,
         ) -> codel_tool_runtime::ToolStream<String> {
             Box::pin(futures::stream::iter(vec![
-                codel_tool_runtime::ToolStreamItem::Progress(codel_tool_runtime::ToolProgress::Text {
-                    text: "progress-1".into(),
-                }),
+                codel_tool_runtime::ToolStreamItem::Progress(
+                    codel_tool_runtime::ToolProgress::Text {
+                        text: "progress-1".into(),
+                    },
+                ),
                 codel_tool_runtime::ToolStreamItem::Terminal(Ok("terminal-value".to_string())),
             ]))
         }

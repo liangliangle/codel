@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt};
 use codel_sandbox::WebsiteOrigin;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::ProxyError;
 

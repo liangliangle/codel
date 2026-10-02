@@ -3,12 +3,12 @@ use super::turn::{PromptTraceContext, UploadWait};
 use crate::sampling::types::ToolDefinition;
 use crate::session::repo_changes::{TraceExportConfig, UploadMethod};
 use base64::Engine as _;
+use codel_file_utils::queue::{EnqueueOutcome, TraceExportSource, UploadQueue, UploadRetryPolicy};
+use codel_workspace::permission::PermissionEvent;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use url::Url;
-use codel_file_utils::queue::{EnqueueOutcome, TraceExportSource, UploadQueue, UploadRetryPolicy};
-use codel_workspace::permission::PermissionEvent;
 /// Upload the canonical tool definitions trace and wait for completion.
 /// `ToolDefinition` serializes in Chat Completions format: `{ "type": "function", "function": { ... } }`.
 /// That is the shape downstream ingest/enrichment expects to read from `tool_definitions.json`.
@@ -1704,8 +1704,8 @@ pub(crate) mod tests {
     fn dynamic_resolver_refreshes_proxy_token() {
         use crate::session::repo_changes::UploadMethod;
         use chrono::{Duration, Utc};
-        use std::collections::BTreeMap;
         use codel_login::{CodelAuth, CodelComConfig};
+        use std::collections::BTreeMap;
         let dir = tempfile::tempdir().unwrap();
         let codel_com_config = CodelComConfig::default();
         let scope = codel_com_config.auth_scope();
@@ -1773,8 +1773,8 @@ pub(crate) mod tests {
     fn dynamic_resolver_rereads_disk_on_expired_token() {
         use crate::session::repo_changes::UploadMethod;
         use chrono::{Duration, Utc};
-        use std::collections::BTreeMap;
         use codel_login::{CodelAuth, CodelComConfig};
+        use std::collections::BTreeMap;
         let dir = tempfile::tempdir().unwrap();
         let codel_com_config = CodelComConfig::default();
         let scope = codel_com_config.auth_scope();
@@ -1834,8 +1834,8 @@ pub(crate) mod tests {
     async fn resolve_async_falls_back_when_no_refresher() {
         use crate::session::repo_changes::UploadMethod;
         use chrono::{Duration, Utc};
-        use std::collections::BTreeMap;
         use codel_login::{CodelAuth, CodelComConfig};
+        use std::collections::BTreeMap;
         let dir = tempfile::tempdir().unwrap();
         let codel_com_config = CodelComConfig::default();
         let scope = codel_com_config.auth_scope();
@@ -1848,10 +1848,7 @@ pub(crate) mod tests {
         store.insert(scope, expired_auth);
         let auth_json = serde_json::to_string_pretty(&store).unwrap();
         std::fs::write(dir.path().join("auth.json"), &auth_json).unwrap();
-        let auth_manager = Arc::new(codel_login::AuthManager::new(
-            dir.path(),
-            codel_com_config,
-        ));
+        let auth_manager = Arc::new(codel_login::AuthManager::new(dir.path(), codel_com_config));
         let resolver = DynamicResolver {
             auth_manager,
             base_config: TraceExportConfig {
@@ -1882,8 +1879,8 @@ pub(crate) mod tests {
     async fn resolve_async_picks_up_disk_refreshed_token() {
         use crate::session::repo_changes::UploadMethod;
         use chrono::{Duration, Utc};
-        use std::collections::BTreeMap;
         use codel_login::{CodelAuth, CodelComConfig};
+        use std::collections::BTreeMap;
         let dir = tempfile::tempdir().unwrap();
         let codel_com_config = CodelComConfig::default();
         let scope = codel_com_config.auth_scope();
@@ -1896,10 +1893,7 @@ pub(crate) mod tests {
         store.insert(scope, valid_auth);
         let auth_json = serde_json::to_string_pretty(&store).unwrap();
         std::fs::write(dir.path().join("auth.json"), &auth_json).unwrap();
-        let auth_manager = Arc::new(codel_login::AuthManager::new(
-            dir.path(),
-            codel_com_config,
-        ));
+        let auth_manager = Arc::new(codel_login::AuthManager::new(dir.path(), codel_com_config));
         let resolver = DynamicResolver {
             auth_manager,
             base_config: TraceExportConfig {
@@ -1933,10 +1927,7 @@ pub(crate) mod tests {
         use crate::session::repo_changes::UploadMethod;
         let dir = tempfile::tempdir().unwrap();
         let codel_com_config = codel_login::CodelComConfig::default();
-        let auth_manager = Arc::new(codel_login::AuthManager::new(
-            dir.path(),
-            codel_com_config,
-        ));
+        let auth_manager = Arc::new(codel_login::AuthManager::new(dir.path(), codel_com_config));
         let base_config = TraceExportConfig {
             bucket_url: None,
             service_account_key: None,
@@ -1966,8 +1957,8 @@ pub(crate) mod tests {
     #[test]
     fn dynamic_resolver_noop_for_direct_mode() {
         use crate::session::repo_changes::UploadMethod;
-        use std::collections::BTreeMap;
         use codel_login::CodelAuth;
+        use std::collections::BTreeMap;
         let dir = tempfile::tempdir().unwrap();
         let codel_com_config = codel_login::CodelComConfig::default();
         let scope = codel_com_config.auth_scope();
@@ -1979,10 +1970,7 @@ pub(crate) mod tests {
         store.insert(scope, auth);
         let auth_json = serde_json::to_string_pretty(&store).unwrap();
         std::fs::write(dir.path().join("auth.json"), &auth_json).unwrap();
-        let auth_manager = Arc::new(codel_login::AuthManager::new(
-            dir.path(),
-            codel_com_config,
-        ));
+        let auth_manager = Arc::new(codel_login::AuthManager::new(dir.path(), codel_com_config));
         let base_config = TraceExportConfig {
             bucket_url: Some("gs://bucket".into()),
             service_account_key: Some("sa-key".into()),
@@ -2138,10 +2126,7 @@ pub(crate) mod tests {
         use crate::session::repo_changes::UploadMethod;
         let dir = tempfile::tempdir().unwrap();
         let codel_com_config = codel_login::CodelComConfig::default();
-        let auth_manager = Arc::new(codel_login::AuthManager::new(
-            dir.path(),
-            codel_com_config,
-        ));
+        let auth_manager = Arc::new(codel_login::AuthManager::new(dir.path(), codel_com_config));
         let gcs_config = TraceExportConfig {
             bucket_url: None,
             service_account_key: None,

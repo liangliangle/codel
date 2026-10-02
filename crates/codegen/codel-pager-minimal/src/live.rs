@@ -5,11 +5,6 @@
 //! The tail shows the bottom of the uncommitted run (streaming message / running tool) so output is visible as it generates.
 //! Finished blocks scroll up into native scrollback via [`super::commit`].
 //! When idle the tail is empty and only the status row, the prompt, and any optional panels show.
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Widget};
 use codel_pager::app::PagerTerminal;
 use codel_pager::app::app_view::{ActiveView, AppView};
 use codel_pager::minimal_api;
@@ -20,6 +15,11 @@ use codel_pager::terminal::TerminalContext;
 use codel_pager::theme::Theme;
 use codel_pager::views::prompt_widget::{PromptBg, PromptStyle};
 use codel_pager::views::turn_status;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Clear, Widget};
 /// Left inset (columns) for every auxiliary live-region row and the prompt's `chrome_pad_left`. Minimal is
 /// flush-left. Content glyphs (`◆` / `$` / message text) thus start at column 0, matching the welcome card's outer
 /// edge.
@@ -81,11 +81,8 @@ pub(super) fn prompt_style(
 /// Draw the pinned live region (tail + status + prompt) into the inline viewport.
 pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &TerminalContext) {
     let force_todos = minimal_api::minimal_show_todos(app);
-    let auth_hint = crate::auth::minimal_auth_hint(
-        &app.auth_state,
-        &app.trust_state,
-        app.is_zdr_blocked(),
-    );
+    let auth_hint =
+        crate::auth::minimal_auth_hint(&app.auth_state, &app.trust_state, app.is_zdr_blocked());
     let pending_hint = minimal_pending_hint(&app.pending_action);
     let transcript_hint = if minimal_api::minimal_ctrl_o_opens_transcript(app) {
         "ctrl+o transcript"
@@ -616,9 +613,8 @@ fn render_config_status_line(
         });
     }
     if let Some(display) = frame.display() {
-        let _ = codel_pager::views::status_line::render_status_line(
-            buf, area, display, padding, theme,
-        );
+        let _ =
+            codel_pager::views::status_line::render_status_line(buf, area, display, padding, theme);
     }
 }
 /// Idle status: `minimal · [/fullscreen to go back ·] /help`, plus the auto-set note.
@@ -791,10 +787,10 @@ mod tests {
     }
     #[test]
     fn config_status_line_paints_and_records_the_script_size() {
-        use std::sync::Arc;
         use codel_pager::views::status_line::{
             RowSize, SanitizedText, StatusLineDisplay, StatusLineFrame,
         };
+        use std::sync::Arc;
         let theme = Theme::current();
         let area = Rect::new(0, 0, 40, 1);
         let row_text = |buf: &Buffer| -> String {
@@ -1131,10 +1127,10 @@ mod tests {
     }
     #[test]
     fn pending_hint_formats_press_again() {
-        use crossterm::event::{KeyCode, KeyModifiers};
         use codel_pager::app::actions::Action;
         use codel_pager::app::app_view::PendingAction;
         use codel_pager::input::key::KeyShortcut;
+        use crossterm::event::{KeyCode, KeyModifiers};
         assert!(minimal_pending_hint(&None).is_none());
         let shortcut = KeyShortcut::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
         let pending = Some(PendingAction::new(Action::Quit, shortcut, "quit"));

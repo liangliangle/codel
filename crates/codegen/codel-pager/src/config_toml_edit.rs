@@ -29,8 +29,7 @@ pub(crate) fn read_config_document_for_edit(path: &Path) -> Option<toml_edit::Do
 /// Set `[hints].<key>` to `value` in `~/.codel/config.toml`, preserving every other key and table. No-ops when the
 /// existing file is non-blank but unparseable, so a malformed config is never clobbered.
 pub(crate) fn set_hint(key: &str, value: impl Into<toml_edit::Value>) -> std::io::Result<()> {
-    let path =
-        codel_tools::util::codel_home::codel_home().join(codel_config::USER_CONFIG_FILENAME);
+    let path = codel_tools::util::codel_home::codel_home().join(codel_config::USER_CONFIG_FILENAME);
     set_hint_at(&path, key, value)
 }
 

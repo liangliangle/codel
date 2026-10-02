@@ -4,14 +4,14 @@
 //! Tool execution goes through the ToolBridge, which has its own SessionContext from codel-tools.
 use crate::terminal::AsyncTerminalRunner;
 use agent_client_protocol as acp;
-use std::collections::HashMap;
-use std::sync::Arc;
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use codel_hunk_tracker::HunkTrackerHandle;
 use codel_paths::AbsPathBuf;
+use codel_tty_utils::ProcessScope;
 use codel_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
 use codel_workspace::session::file_state::FileStateHandle;
-use codel_hunk_tracker::HunkTrackerHandle;
-use codel_tty_utils::ProcessScope;
+use std::collections::HashMap;
+use std::sync::Arc;
 #[derive(Debug, Clone, Default)]
 pub struct TaskOutputTokenBudget {
     inner: Arc<parking_lot::Mutex<TaskOutputTokenBudgetState>>,
@@ -178,9 +178,9 @@ impl Drop for BlockingWaitGuard {
 pub(crate) fn subagent_foreground_wait(
     state: Arc<BlockingWaitState>,
 ) -> codel_tools::implementations::codel_build::task::types::SubagentForegroundWait {
-    codel_tools::implementations::codel_build::task::types::SubagentForegroundWait::new(
-        move || Box::new(BlockingWaitGuard::enter(Arc::clone(&state))),
-    )
+    codel_tools::implementations::codel_build::task::types::SubagentForegroundWait::new(move || {
+        Box::new(BlockingWaitGuard::enter(Arc::clone(&state)))
+    })
 }
 /// Session-level context. NOT used for tool execution (bridge handles that).
 #[derive(Clone)]
@@ -208,9 +208,8 @@ pub struct ToolContext {
             codel_tools::implementations::codel_build::task::types::SubagentEvent,
         >,
     >,
-    pub subagent_coordinator_sender: Option<
-        codel_tools::implementations::codel_build::task::backend::SubagentCoordinatorSender,
-    >,
+    pub subagent_coordinator_sender:
+        Option<codel_tools::implementations::codel_build::task::backend::SubagentCoordinatorSender>,
     /// Shared LSP runtime, cloned cheaply (Arc) from parent to child.
     pub lsp: Option<Arc<dyn codel_tools::implementations::lsp::LspBackend>>,
     /// LSP server names captured at session creation (not updated mid-session).
@@ -225,8 +224,7 @@ pub struct ToolContext {
         Option<codel_tools::implementations::codel_build::monitor::types::MonitorEventBuffer>,
     pub task_completion_reservations:
         Option<codel_tools::reminders::task_completion::TaskCompletionReservations>,
-    pub task_wake_suppressed:
-        Option<codel_tools::reminders::task_completion::TaskWakeSuppressed>,
+    pub task_wake_suppressed: Option<codel_tools::reminders::task_completion::TaskWakeSuppressed>,
     /// Channel for requesting trace uploads for synthetic auto-wake turns.
     pub(crate) synthetic_trace_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>>,
@@ -401,11 +399,11 @@ mod output_budget_tests {
 mod tests {
     use super::BlockingWaitState;
     use crate::{terminal::AsyncTerminalRunner, tools::ToolContext};
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use codel_hunk_tracker::HunkTrackerHandle;
     use codel_paths::AbsPathBuf;
     use codel_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
-    use codel_hunk_tracker::HunkTrackerHandle;
+    use std::collections::HashMap;
+    use std::sync::Arc;
     impl ToolContext {
         pub(crate) fn new_local_context(
             cwd: AbsPathBuf,

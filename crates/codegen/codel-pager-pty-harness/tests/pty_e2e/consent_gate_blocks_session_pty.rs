@@ -83,11 +83,7 @@ async fn consent_gate_renders_and_blocks_new_session() {
 async fn absent_consent_gate_shows_no_notice() {
     let content = ContentController::start().await.expect("start content");
     content.set_response(format!("{MOCK_RESPONSE_SENTINEL} no notice."));
-    let mut harness = spawn_serving(
-        &content,
-        "pty-consent-absent",
-        serde_json::json!({}),
-    );
+    let mut harness = spawn_serving(&content, "pty-consent-absent", serde_json::json!({}));
 
     harness
         .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)

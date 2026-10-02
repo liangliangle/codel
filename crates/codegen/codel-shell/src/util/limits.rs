@@ -21,11 +21,7 @@ impl ProcessLimits {
     }
 
     pub(crate) fn log(&self) {
-        codel_logging::unified_log::info(
-            "process resource limits",
-            None,
-            Some(self.to_json()),
-        );
+        codel_logging::unified_log::info("process resource limits", None, Some(self.to_json()));
     }
 
     fn to_json(&self) -> serde_json::Value {

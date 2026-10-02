@@ -1,11 +1,11 @@
 use agent_client_protocol as acp;
 use anyhow::Result;
+use codel_agent::prompt::skills::SkillsConfig;
+use codel_tools::types::compat::{CompatConfig, CompatConfigToml};
 use indexmap::IndexMap;
 use std::path::PathBuf;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
-use codel_agent::prompt::skills::SkillsConfig;
-use codel_tools::types::compat::{CompatConfig, CompatConfigToml};
 
 use codel_config::ClaudeImport;
 pub(crate) use codel_config::mcp_servers::{
@@ -124,9 +124,7 @@ pub(crate) fn mcp_server_sources(
 }
 
 pub(crate) fn load_mcp_servers_toml_only(cwd: &std::path::Path) -> Vec<acp::McpServer> {
-    codel_config::mcp_servers::load_mcp_servers_toml_only(&crate::config::find_project_configs(
-        cwd,
-    ))
+    codel_config::mcp_servers::load_mcp_servers_toml_only(&crate::config::find_project_configs(cwd))
 }
 
 pub(crate) fn load_mcp_json_servers(cwd: &std::path::Path) -> Vec<acp::McpServer> {
@@ -261,9 +259,8 @@ pub(crate) fn collect_mcp_setup_configs(
     if let Some(registry) = plugin_registry {
         let toml_claimed_names = all_toml_mcp_server_names(cwd);
         for plugin in registry.active_plugins() {
-            let plugin_configs = codel_config::mcp_servers::plugin_setup_server_configs(
-                &plugin_mcp_servers(plugin),
-            );
+            let plugin_configs =
+                codel_config::mcp_servers::plugin_setup_server_configs(&plugin_mcp_servers(plugin));
             for (name, config) in plugin_configs {
                 if toml_claimed_names.contains(&name) || !config.enabled || config.setup.is_none() {
                     continue;
@@ -784,8 +781,7 @@ pub async fn delete_mcp_server_config_at(
     })
     .await?;
 
-    if wrote
-        && let Ok(mut cred_store) = codel_mcp::credentials::McpCredentialStore::load_default()
+    if wrote && let Ok(mut cred_store) = codel_mcp::credentials::McpCredentialStore::load_default()
     {
         let removed = cred_store.remove_by_server_name(server_name);
         if removed > 0 {
@@ -842,17 +838,13 @@ pub fn cli_known_mcp_server_names(cwd: &std::path::Path) -> std::collections::Ha
 }
 
 pub fn disabled_mcp_server_names(cwd: &std::path::Path) -> std::collections::HashSet<String> {
-    codel_config::mcp_servers::disabled_mcp_server_names(&crate::config::find_project_configs(
-        cwd,
-    ))
+    codel_config::mcp_servers::disabled_mcp_server_names(&crate::config::find_project_configs(cwd))
 }
 
 pub(crate) fn all_toml_mcp_server_names(
     cwd: &std::path::Path,
 ) -> std::collections::HashSet<String> {
-    codel_config::mcp_servers::all_toml_mcp_server_names(&crate::config::find_project_configs(
-        cwd,
-    ))
+    codel_config::mcp_servers::all_toml_mcp_server_names(&crate::config::find_project_configs(cwd))
 }
 
 /// Resolves the same cwd-effective `[plugins]` table as session startup, so trusted project plugins are included.

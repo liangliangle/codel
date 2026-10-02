@@ -11,9 +11,9 @@ use std::io::Write as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use portable_pty::PtySize;
 use codel_pager_pty_harness::{EnvOp, PtyController};
 use codel_test_support::TestSandbox;
+use portable_pty::PtySize;
 
 fn main() -> anyhow::Result<()> {
     let sandbox = TestSandbox::new();

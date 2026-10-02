@@ -179,11 +179,8 @@ fn compute_target(app: &mut AppView, term_h: u16, width: u16) -> u16 {
 
     let ActiveView::Agent(id) = &app.active_view else {
         // No agent yet: size for the in-region sign-in / folder-trust UI so the trust question isn't clipped to the idle prompt height
-        let hint = super::auth::minimal_auth_hint(
-            &app.auth_state,
-            &app.trust_state,
-            app.is_zdr_blocked(),
-        );
+        let hint =
+            super::auth::minimal_auth_hint(&app.auth_state, &app.trust_state, app.is_zdr_blocked());
         let needed = super::auth::auth_hint_rows(&hint, width);
         return needed.max(base).min(ceiling);
     };
@@ -397,9 +394,7 @@ pub fn modal_height(modal: Modal, agent: &mut AgentView, screen_h: u16, content_
             .permission_queue
             .front()
             .map(|p| {
-                codel_pager::views::permission_view::permission_view_height(
-                    p, screen_h, content_w,
-                )
+                codel_pager::views::permission_view::permission_view_height(p, screen_h, content_w)
             })
             .unwrap_or(0),
         Modal::Question => {
@@ -419,10 +414,8 @@ pub fn modal_height(modal: Modal, agent: &mut AgentView, screen_h: u16, content_
             };
             minimal_api::question_view_mut(agent)
                 .map(|qv| {
-                    codel_pager::views::question_view::question_view_height(
-                        qv, screen_h, content_w,
-                    )
-                    .saturating_add(editor_extra)
+                    codel_pager::views::question_view::question_view_height(qv, screen_h, content_w)
+                        .saturating_add(editor_extra)
                 })
                 .unwrap_or(0)
         }

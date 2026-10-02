@@ -1,11 +1,11 @@
 use super::support::*;
 use super::*;
-use codel_tools::reminders::task_completion::consumed_completion_ids;
-use codel_tools::types::output::{BashOutput, TextOutput, ToolOutput};
 use codel_tool_types::{
     KillTaskOutput, KillTaskResult, MultiTaskOutputResult, SubagentCompletedOutput,
     TaskOutputOutput, TaskOutputResult,
 };
+use codel_tools::reminders::task_completion::consumed_completion_ids;
+use codel_tools::types::output::{BashOutput, TextOutput, ToolOutput};
 fn input_with_origin(prompt_id: &str, origin: crate::session::PromptOrigin) -> InputItem {
     input_with_origin_rx(prompt_id, origin).0
 }
@@ -2139,47 +2139,35 @@ async fn monitor_event_during_own_turn_is_buffered_for_the_turn_loop() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = tokio::sync::mpsc::unbounded_channel::<
-                codel_acp_lib::AcpClientMessage,
-            >();
-            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<
-                PersistenceMsg,
-            >();
-            let (mut actor, event_rx) = create_test_actor_ex(
-                    0,
-                    256_000,
-                    85,
-                    gateway_tx,
-                    persistence_tx,
-                )
-                .await;
-            let shared_buffer = codel_tools::implementations::codel_build::monitor::types::MonitorEventBuffer::new();
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<codel_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let (mut actor, event_rx) =
+                create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let shared_buffer =
+                codel_tools::implementations::codel_build::monitor::types::MonitorEventBuffer::new(
+                );
             actor.tool_context.monitor_event_buffer = Some(shared_buffer.clone());
-            actor.session_turn_active.store(true, std::sync::atomic::Ordering::SeqCst);
+            actor
+                .session_turn_active
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let actor = std::sync::Arc::new(actor);
-            let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<
-                SessionCommand,
-            >();
-            let (_chat_tx, chat_rx) = tokio::sync::mpsc::unbounded_channel::<
-                codel_chat_state::ChatStateEvent,
-            >();
-            let codebase_indexes = std::sync::Arc::new(
-                parking_lot::Mutex::new(
-                    codel_workspace::file_system::CodebaseIndexManager::new(),
-                ),
-            );
-            tokio::task::spawn_local(
-                super::run_session(
-                    actor.clone(),
-                    cmd_rx,
-                    chat_rx,
-                    event_rx,
-                    None,
-                    codebase_indexes,
-                    std::path::PathBuf::from("/tmp"),
-                    crate::session::fs_watch::FsWatchCapabilities::none(),
-                ),
-            );
+            let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SessionCommand>();
+            let (_chat_tx, chat_rx) =
+                tokio::sync::mpsc::unbounded_channel::<codel_chat_state::ChatStateEvent>();
+            let codebase_indexes = std::sync::Arc::new(parking_lot::Mutex::new(
+                codel_workspace::file_system::CodebaseIndexManager::new(),
+            ));
+            tokio::task::spawn_local(super::run_session(
+                actor.clone(),
+                cmd_rx,
+                chat_rx,
+                event_rx,
+                None,
+                codebase_indexes,
+                std::path::PathBuf::from("/tmp"),
+                crate::session::fs_watch::FsWatchCapabilities::none(),
+            ));
             cmd_tx
                 .send(SessionCommand::InjectNotification {
                     prompt_id: "monitor-busy".to_string(),
@@ -2198,7 +2186,11 @@ async fn monitor_event_during_own_turn_is_buffered_for_the_turn_loop() {
                 }
                 tokio::task::yield_now().await;
             }
-            assert_eq!(shared_buffer.len(), 1, "own-turn monitor events go to the turn loop's buffer");
+            assert_eq!(
+                shared_buffer.len(),
+                1,
+                "own-turn monitor events go to the turn loop's buffer"
+            );
             assert!(
                 actor.state.lock().await.pending_notifications.is_empty(),
                 "own-turn monitor events must not also queue a wake"

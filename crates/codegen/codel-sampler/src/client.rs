@@ -2250,11 +2250,11 @@ mod tests {
         x
     }
     use axum::{Router, body::Bytes, routing::post};
+    use codel_sampling_types::ApiErrorCode;
+    use codel_sampling_types::types::ChatRequestMessage;
     use indexmap::IndexMap;
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
-    use codel_sampling_types::ApiErrorCode;
-    use codel_sampling_types::types::ChatRequestMessage;
 
     #[test]
     fn splice_extra_tool_entries_extends_existing_tools_array() {
@@ -3530,8 +3530,7 @@ mod tests {
 
     #[test]
     fn reasoning_summary_adds_a_reasoning_block_only_when_there_is_something_to_send() {
-        let with_summary =
-            client_with_summary(Some(codel_sampling_types::ReasoningSummary::Auto));
+        let with_summary = client_with_summary(Some(codel_sampling_types::ReasoningSummary::Auto));
         let mut request = CreateResponseWrapper::new(rs::CreateResponse::default());
         with_summary.apply_response_defaults(&mut request).unwrap();
         assert_eq!(

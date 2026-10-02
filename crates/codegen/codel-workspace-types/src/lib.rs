@@ -184,7 +184,8 @@ pub use crate::types::{
 #[cfg(test)]
 mod codel_files_mount_dest_tests {
     use super::{
-        codel_files_conversation_jwt_path, rewrite_codel_files_mount_dest, with_codel_files_jwt_file,
+        codel_files_conversation_jwt_path, rewrite_codel_files_mount_dest,
+        with_codel_files_jwt_file,
     };
 
     #[test]
@@ -209,7 +210,10 @@ mod codel_files_mount_dest_tests {
     #[test]
     fn inserts_dest_after_source_when_missing() {
         assert_eq!(
-            rewrite_codel_files_mount_dest("codel-files mount / --n-threads 4", "/workspace/conv-a"),
+            rewrite_codel_files_mount_dest(
+                "codel-files mount / --n-threads 4",
+                "/workspace/conv-a"
+            ),
             "codel-files mount / /workspace/conv-a --n-threads 4"
         );
     }

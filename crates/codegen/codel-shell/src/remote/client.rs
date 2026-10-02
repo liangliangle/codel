@@ -1,11 +1,11 @@
 use crate::session::export::{ExportedMessage, ExportedMetadata, ExportedSession};
+use codel_login::backend::{ActiveAuthBackend, AuthBackend};
+use codel_login::{CodelAuth, CodelComConfig};
+use codel_sampling_types::{MODEL_NOTICE_META_KEY, ModelNotice};
 use indexmap::IndexMap;
 use prod_mc_cli_chat_proxy_types::SubagentBundle;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use codel_login::backend::{ActiveAuthBackend, AuthBackend};
-use codel_login::{CodelAuth, CodelComConfig};
-use codel_sampling_types::{MODEL_NOTICE_META_KEY, ModelNotice};
 
 const CODEL_CODE_BACKEND_URL: &str = "https://code.codel.dev";
 
@@ -421,7 +421,10 @@ impl BackendClient {
 
         headers.insert(
             "X-CODEL-Token-Auth",
-            required(&CodelComConfig::default().token_header, "X-CODEL-Token-Auth")?,
+            required(
+                &CodelComConfig::default().token_header,
+                "X-CODEL-Token-Auth",
+            )?,
         );
         headers.insert("x-userid", required(&auth.user_id, "x-userid")?);
         if let Some(email) = &auth.email
@@ -833,10 +836,8 @@ fn parse_capabilities_reasoning_efforts(
     caps: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<(Vec<codel_sampling_types::ReasoningEffortOption>, bool)> {
     let arr = caps.get("reasoning_effort")?.as_array()?;
-    let mut options = codel_sampling_types::parse_reasoning_effort_options(
-        arr,
-        "capabilities.reasoning_effort",
-    );
+    let mut options =
+        codel_sampling_types::parse_reasoning_effort_options(arr, "capabilities.reasoning_effort");
     let mut marked = false;
     if let Some(default) = caps
         .get("default_reasoning_effort")

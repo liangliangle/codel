@@ -9,9 +9,9 @@ mod schema;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use codel_sqlite_journal::{BUSY_RETRY_BUDGET, JournalMode};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use codel_sqlite_journal::{BUSY_RETRY_BUDGET, JournalMode};
 
 #[derive(
     Clone,
@@ -477,7 +477,9 @@ pub(crate) struct CodelHomeFixture {
 #[cfg(test)]
 impl CodelHomeFixture {
     pub(crate) fn new() -> Self {
-        let lock = CODEL_HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let lock = CODEL_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("codel-home");
         std::fs::create_dir_all(&home).unwrap();

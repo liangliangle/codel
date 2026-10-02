@@ -20,12 +20,8 @@ impl AgentRuntime {
     pub async fn run_stdio(&self, config: &Config) -> Result<()> {
         match self.backend {
             Backend::Shell => {
-                codel_shell::agent::app::run_stdio_agent(
-                    config,
-                    None,
-                    config.memory_config.clone(),
-                )
-                .await
+                codel_shell::agent::app::run_stdio_agent(config, None, config.memory_config.clone())
+                    .await
             }
         }
     }

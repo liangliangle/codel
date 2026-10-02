@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use tokio::time::Instant;
 use codel_tty_utils::ProcessScope;
+use tokio::time::Instant;
 
 use crate::error::{LifecycleError, Result};
 use crate::event::{PreStopEvent, PreStopHandler};

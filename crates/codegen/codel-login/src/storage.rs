@@ -76,8 +76,7 @@ fn read_auth_json_as(distribution: Distribution, auth_file: &Path) -> std::io::R
 
     // Tighten world-readable copies (hand-restored, umask edge cases, etc.).
     // Best-effort: a chmod failure must not block login/read paths.
-    if let Err(e) = codel_shell_base::util::secure_file::ensure_owner_only_permissions(auth_file)
-    {
+    if let Err(e) = codel_shell_base::util::secure_file::ensure_owner_only_permissions(auth_file) {
         tracing::warn!(
             path = %auth_file.display(),
             error = %e,
@@ -294,8 +293,7 @@ fn write_auth_json_atomic(auth_file: &Path, auth_store: &AuthStore) -> std::io::
     codel_config::fs_atomic::write_user_file_atomically(auth_file, &json, Some(0o600))?;
     // Re-assert on the final path (covers rename edge cases and FS quirks)
     // Best-effort: rename already published the new tokens.
-    if let Err(e) = codel_shell_base::util::secure_file::ensure_owner_only_permissions(auth_file)
-    {
+    if let Err(e) = codel_shell_base::util::secure_file::ensure_owner_only_permissions(auth_file) {
         tracing::warn!(
             error = %e,
             path = %auth_file.display(),

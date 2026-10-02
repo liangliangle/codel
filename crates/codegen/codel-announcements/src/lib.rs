@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 pub use codel_config::{AnnouncementCta, RemoteAnnouncement};
+use serde::{Deserialize, Serialize};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types

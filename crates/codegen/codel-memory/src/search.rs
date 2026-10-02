@@ -373,8 +373,8 @@ mod tests {
     use crate::embedding::MockEmbeddingProvider;
     use crate::index::{MemoryIndex, init_sqlite_vec};
     use crate::storage::MemoryStorage;
-    use tempfile::TempDir;
     use codel_config_types::{MemoryIndexConfig, MemorySearchConfig};
+    use tempfile::TempDir;
 
     struct FailingEmbeddingProvider;
 

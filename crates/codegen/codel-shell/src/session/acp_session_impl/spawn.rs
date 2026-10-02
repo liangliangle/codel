@@ -1527,9 +1527,7 @@ pub(crate) async fn spawn_session_actor(
     let plugin_hook_source = if is_subagent_spawn {
         codel_agent::plugins::hooks_adapter::PluginHookSource::Parent
     } else {
-        codel_agent::plugins::hooks_adapter::PluginHookSource::Registry(
-            plugin_registry.as_deref(),
-        )
+        codel_agent::plugins::hooks_adapter::PluginHookSource::Registry(plugin_registry.as_deref())
     };
     let built_hook_registry = codel_agent::plugins::hooks_adapter::with_plugin_hooks(
         built_hook_registry,

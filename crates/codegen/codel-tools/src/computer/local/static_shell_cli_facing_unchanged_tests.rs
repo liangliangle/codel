@@ -5,8 +5,8 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use tokio::io::AsyncReadExt;
 use codel_config::shell::UnixShellKind;
+use tokio::io::AsyncReadExt;
 
 use super::{StaticShellSnapshot, rc_file_name, shell_binary};
 

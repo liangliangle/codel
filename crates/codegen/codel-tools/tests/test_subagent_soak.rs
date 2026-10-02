@@ -311,8 +311,7 @@ struct SoakRunner {
 
 impl ChildRunner for SoakRunner {
     type Control = SoakControl;
-    type RootControl =
-        codel_tools::implementations::codel_build::task::root_control::NoRootControl;
+    type RootControl = codel_tools::implementations::codel_build::task::root_control::NoRootControl;
     type CompletionData = ();
     type RunFuture = LocalBoxFuture<ChildRunOutput<()>>;
     type ValidateFuture = LocalBoxFuture<SubagentValidateTypeOutcome>;

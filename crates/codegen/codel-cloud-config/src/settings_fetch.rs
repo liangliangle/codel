@@ -1,7 +1,7 @@
 //! The `/settings` request to the cli-chat-proxy and what its outcome means.
-use std::ops::ControlFlow;
 use codel_config::RemoteSettings;
 use codel_login::{CodelAuth, CodelComConfig};
+use std::ops::ControlFlow;
 /// The outcome of a `/settings` fetch, as one of the three cases `OtelGate` handles.
 #[derive(Debug, Clone)]
 #[must_use]

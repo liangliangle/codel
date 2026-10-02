@@ -27,7 +27,9 @@ where
         return Box::new(NoOpLayer::new());
     }
 
-    let path = codel_home().join(crate::unified_log::LOG_DIR).join(LOG_FILE);
+    let path = codel_home()
+        .join(crate::unified_log::LOG_DIR)
+        .join(LOG_FILE);
 
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)

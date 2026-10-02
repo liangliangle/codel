@@ -16,8 +16,8 @@ pub fn parse_reply(raw: &str) -> serde_json::Result<SkillsListResponse> {
 mod tests {
     use super::*;
 
-    use pretty_assertions::assert_eq;
     use codel_shell::extensions::skills::SkillScanError;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn a_reply_parses_bare_or_wrapped_in_result() {

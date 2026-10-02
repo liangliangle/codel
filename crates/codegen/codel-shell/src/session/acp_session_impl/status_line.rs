@@ -265,7 +265,9 @@ impl SessionActor {
             return;
         }
         let context = self.build_status_context().await;
-        self.send_codel_notification_transient(CodelSessionUpdate::SessionStatus(Box::new(context)));
+        self.send_codel_notification_transient(CodelSessionUpdate::SessionStatus(Box::new(
+            context,
+        )));
     }
 }
 

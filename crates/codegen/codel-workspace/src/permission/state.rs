@@ -1,11 +1,11 @@
 #![allow(dead_code)] // Phase 1 internal helpers
 
 use crate::permission::types::EditPolicy;
-use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use codel_paths::AbsPathBuf;
 use codel_sandbox::command::protected::{FileOwner, HeldDir};
 use codel_tools::util::codel_home::codel_home;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 const VALIDATED_MCP_SERVER_GRANTS_VERSION: i64 = 1;
 
@@ -1523,12 +1523,8 @@ allowed_mcp_servers = ["a"]
         {
             assert_eq!(permission_scope_root(&cwd), dir);
             assert!(
-                legacy_state_dir_in(
-                    &codel_config::codel_home(),
-                    &cwd,
-                    &state_dir_for_cwd(&cwd)
-                )
-                .is_none()
+                legacy_state_dir_in(&codel_config::codel_home(), &cwd, &state_dir_for_cwd(&cwd))
+                    .is_none()
             );
         }
     }

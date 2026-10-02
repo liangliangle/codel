@@ -1,6 +1,6 @@
-use tokio::io::{AsyncWriteExt, copy_bidirectional};
 use codel_sandbox::WebsiteOrigin;
 use codel_sandbox::command::CommandTag;
+use tokio::io::{AsyncWriteExt, copy_bidirectional};
 
 use crate::error::{ConnectionError, ProxyError, write_committed};
 use crate::metrics::ProxyOutcome;

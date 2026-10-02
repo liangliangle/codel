@@ -2,8 +2,8 @@
 //!
 //! Resolves the local env/config/default stack into a diagnostic report.
 
-use serde::Serialize;
 use codel_tools::types::compat::{COMPAT_CELLS, CompatCell, CompatConfig};
+use serde::Serialize;
 
 /// Derive the vendor origin from a file path.
 /// Returns `Some("cursor")` or `Some("claude")` when the path passes through a vendor config directory; `None` for native `.codel`/`.agents` paths.
@@ -152,8 +152,7 @@ fn resolve_compat_entry(
         Ok(value) => (value, false),
         Err(_) => (Some(false), true),
     };
-    let resolved =
-        codel_config::compat::resolve_compat_cell_with_env(env, config, None, default);
+    let resolved = codel_config::compat::resolve_compat_cell_with_env(env, config, None, default);
     let source = if env.is_some() {
         CompatSource::Env
     } else if config.is_some() {

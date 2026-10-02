@@ -1,11 +1,11 @@
 pub mod base64_images;
 pub mod binary;
+pub mod codel_home;
 pub mod command_display;
 pub mod env;
 pub mod file_reader;
 pub mod fs;
 pub mod git_detect;
-pub mod codel_home;
 pub mod hash;
 pub mod image_compress;
 pub use codel_image as image_validate;
@@ -25,13 +25,14 @@ pub mod unicode_confusables;
 pub(crate) mod vendor;
 
 pub use crate::implementations::codel_build::grep::ripgrep::rg_path;
+pub use codel_home::{codel_application, codel_home};
+pub use codel_tty_utils::detach_std_command;
 pub use command_display::strip_redundant_session_cd;
 #[cfg(unix)]
 pub use env::detach_from_tty;
 pub use env::substitute_plugin_tokens;
 pub use env::{CODEL_AGENT_ENV, CODEL_AGENT_ENV_VALUE, apply_codel_agent_marker, pager_env};
 pub use fs::{UnicodePathMatch, canonicalize_with_timeout, try_resolve_unicode_filename};
-pub use codel_home::{codel_application, codel_home};
 pub use path_suggestions::format_not_found_error;
 pub use remap::{remap_json_keys, remap_schema_properties, reverse_map};
 pub use shell_env_policy::{
@@ -47,4 +48,3 @@ pub use truncate::{
     format_bytes, soft_wrap_line, soft_wrap_lines, truncate_line, truncate_str,
     truncate_str_with_marker,
 };
-pub use codel_tty_utils::detach_std_command;

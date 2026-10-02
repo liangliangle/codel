@@ -213,7 +213,11 @@ fn bundled_git_prepend_respects_the_policy_base_env() {
     };
     let mut cmd = tokio::process::Command::new("true");
     install_policy_base_env(&mut cmd, Some(&inherit_none));
-    codel_tty_utils::prepend_child_path(cmd.as_std_mut(), dir, codel_tty_utils::PathBase::ExplicitOnly);
+    codel_tty_utils::prepend_child_path(
+        cmd.as_std_mut(),
+        dir,
+        codel_tty_utils::PathBase::ExplicitOnly,
+    );
     assert_eq!(
         child_path(&cmd).flatten(),
         None,
@@ -229,7 +233,11 @@ fn bundled_git_prepend_respects_the_policy_base_env() {
     };
     let mut cmd = tokio::process::Command::new("true");
     install_policy_base_env(&mut cmd, Some(&with_path));
-    codel_tty_utils::prepend_child_path(cmd.as_std_mut(), dir, codel_tty_utils::PathBase::ExplicitOnly);
+    codel_tty_utils::prepend_child_path(
+        cmd.as_std_mut(),
+        dir,
+        codel_tty_utils::PathBase::ExplicitOnly,
+    );
     assert_eq!(
         child_path(&cmd).flatten().unwrap(),
         OsStr::new(&format!("/mingit/cmd{sep}/policy/bin"))

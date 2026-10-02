@@ -25,11 +25,8 @@ pub fn tool_config_from_entry(
         behavior_version,
         description_override,
     } = entry;
-    let params = codel_tools_api::config_validation::parse_params_json(
-        index,
-        &id,
-        params_json.as_deref(),
-    )?;
+    let params =
+        codel_tools_api::config_validation::parse_params_json(index, &id, params_json.as_deref())?;
     codel_tools_api::config_validation::validate_name_override(
         index,
         &id,

@@ -5,11 +5,11 @@ use agent_client_protocol as acp;
 use axum::body::Body;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use serde_json::{Value, json};
-use serial_test::serial;
 use codel_mcp::credentials::McpCredentialStore;
 use codel_mcp::rmcp;
 use codel_mcp::servers::{McpOauthDiscovery, McpSpawnCtx, OauthInteractivity, start_mcp_server};
+use serde_json::{Value, json};
+use serial_test::serial;
 
 const TOKEN: &str = "at-123";
 
