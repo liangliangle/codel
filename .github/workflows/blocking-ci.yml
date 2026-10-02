@@ -2,9 +2,8 @@ name: blocking-ci
 
 # PR 与 push main 的合并门禁聚合入口（快、必过集）。
 # 分支 ruleset 只需要 require 末尾的 `required` 这一个 job。
-# 目前包含：check（交付物 codel-pager-bin 编译门禁）。
-# fmt 全仓检查暂缓：仓库当前约 1159 处 rustfmt 差异（沿袭自上游导出），
-# 计划在单独的格式化 PR 里清零后再加入门禁。
+# 目前包含：fmt（cargo fmt --all --check）+ check（交付物 codel-pager-bin 编译门禁）。
+# 依赖 chore/rustfmt 先合入 main（该 PR 已把全仓 rustfmt 差异清零）。
 # 重的全量验证在 postmerge-ci.yml，不进 PR 路径。
 
 on:
@@ -21,6 +20,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format check
+        run: cargo fmt --all --check
+
   check:
     name: cargo check (codel-pager-bin)
     runs-on: ubuntu-24.04
@@ -38,13 +45,13 @@ jobs:
 
   required:
     name: required
-    needs: [check]
+    needs: [fmt, check]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
       - name: Verify all blocking checks succeeded
         run: |
-          echo "check=${{ needs.check.result }}"
+          echo "fmt=${{ needs.fmt.result }} check=${{ needs.check.result }}"
           failed="${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}"
           if [[ "$failed" == "true" ]]; then
             echo "::error::a blocking check did not succeed"

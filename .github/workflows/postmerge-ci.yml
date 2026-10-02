@@ -1,7 +1,8 @@
 name: postmerge-ci
 
 # main 合并后的全量验证聚合入口（不进 PR 路径）。
-# 目前包含：workspace 全量 cargo check。每条子检查后续可按需拆分/增加，
+# 目前包含：workspace 全量 cargo check --all-targets（含测试目标——
+# 只查 lib 目标曾让测试目标的破损长期不被发现）。每条子检查后续可按需拆分/增加，
 # 末尾 results job 是本 workflow 的唯一汇总出口。
 
 on:
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   workspace-check:
-    name: cargo check (workspace)
+    name: cargo check (workspace, all targets)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +31,7 @@ jobs:
         with:
           key: postmerge-ci-linux-x86_64
       - name: Check workspace
-        run: cargo check --workspace
+        run: cargo check --workspace --all-targets
 
   results:
     name: Postmerge CI results
