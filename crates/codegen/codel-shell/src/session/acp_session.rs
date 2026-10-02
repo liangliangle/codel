@@ -793,8 +793,6 @@ pub(crate) struct SessionActor {
     /// Mutated by `PendingInteractionGuard` at each reverse-request site. Never persisted.
     pub(crate) pending_interactions: crate::session::pending_interaction::PendingInteractions,
     /// Gates product analytics, not trace uploads.
-    /// Resolved at spawn as `is_telemetry_enabled() && !is_zdr()`; ZDR teams always have this false.
-    pub(crate) telemetry_enabled: bool,
     pub(crate) supports_backend_search: std::cell::Cell<bool>,
     /// Per-turn override, set at promotion. Not persisted; a reload reverts to the definition seed.
     pub(crate) tool_overrides: std::cell::RefCell<Option<codel_sampling_types::ToolOverrides>>,
@@ -2031,8 +2029,6 @@ mod session_thread_tests;
 #[path = "acp_session_tests/status_line_payload_tests.rs"]
 mod status_line_payload_tests;
 #[cfg(test)]
-#[path = "acp_session_tests/tool_call_telemetry_tests.rs"]
-mod tool_call_telemetry_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/tool_definitions_artifact_tests.rs"]
 mod tool_definitions_artifact_tests;

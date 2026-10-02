@@ -202,7 +202,6 @@ pub(crate) struct EnforcedPolicy {
 #[serde(rename_all = "camelCase")]
 pub(crate) enum EnforcedSetting {
     AlwaysApprove,
-    Telemetry,
     Feedback,
     /// `enableAllProjectMcpServers = false` pin: project MCP sources ignored.
     ProjectMcpServers,
@@ -758,18 +757,12 @@ fn permission_policy_report(
     }
     if let Some(src) = &ms.features.source_path {
         // Full path, matching the alwaysApprove row's granularity.
-        let source = src.display().to_string();
-        for (flag, setting) in [
-            (ms.features.disable_telemetry, EnforcedSetting::Telemetry),
-            (ms.features.disable_feedback, EnforcedSetting::Feedback),
-        ] {
-            if flag == Some(true) {
-                enforced.push(EnforcedPolicy {
-                    setting,
-                    enabled: false,
-                    source: source.clone(),
-                });
-            }
+        if ms.features.disable_feedback == Some(true) {
+            enforced.push(EnforcedPolicy {
+                setting: EnforcedSetting::Feedback,
+                enabled: false,
+                source: src.display().to_string(),
+            });
         }
     }
     for (pin, setting) in [
@@ -1396,7 +1389,6 @@ fn print_columns<T>(
 fn enforced_label(p: &EnforcedPolicy) -> String {
     let name = match p.setting {
         EnforcedSetting::AlwaysApprove => "Permissions mode: always-approve",
-        EnforcedSetting::Telemetry => "Telemetry",
         EnforcedSetting::Feedback => "Feedback",
         EnforcedSetting::ProjectMcpServers => "Project MCP servers",
         EnforcedSetting::PluginAutoUpdate => "Plugin auto-update",
@@ -2299,19 +2291,17 @@ mod tests {
             "Claude bypass lock must not be reported as enforced: {enforced:?}"
         );
 
-        // Managed telemetry/feedback clamps ARE enforced and keep their rows.
+        // The managed feedback clamp IS enforced and keeps its row.
         let PermissionPolicyReport {
             enforced,
             claude_bypass_lock_advisory: advisory,
         } = permission_policy_report(&managed_features(Some(true), Some(true), Some(true)), None);
         assert!(advisory);
-        let [tel, fb] = enforced.as_slice() else {
-            panic!("expected telemetry and feedback rows: {enforced:?}");
+        let [fb] = enforced.as_slice() else {
+            panic!("expected a feedback row: {enforced:?}");
         };
-        assert_eq!(tel.setting, EnforcedSetting::Telemetry);
         assert_eq!(fb.setting, EnforcedSetting::Feedback);
         // Same granularity as the alwaysApprove row: the full file path.
-        assert_eq!(tel.source, "/etc/claude-code/managed-settings.json");
         assert_eq!(fb.source, "/etc/claude-code/managed-settings.json");
     }
 

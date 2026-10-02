@@ -311,11 +311,6 @@ impl ContentController {
     pub fn feedback_posts(&self) -> Vec<FeedbackPost> {
         self.server.feedback_posts()
     }
-
-    /// Snapshot of every product-telemetry event posted to `/v1/events` (point `CODEL_TELEMETRY_EVENTS_URL` at `{url()}/events`).
-    pub fn telemetry_events(&self) -> Vec<serde_json::Value> {
-        self.server.telemetry_events()
-    }
 }
 
 fn default_response_text() -> String {

@@ -1,4 +1,4 @@
-//! Non-unix pin; the unix behavior lives in the `process_snapshot` binary.
+//! Non-unix pin: without getrusage the snapshot reports no CPU readings.
 
 #[cfg(not(unix))]
 #[test]

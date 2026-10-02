@@ -549,18 +549,11 @@ pub struct RemoteSettings {
     #[serde(default)]
     pub managed_config_signature_verification: Option<bool>,
     #[serde(default)]
-    pub telemetry_enabled: Option<bool>,
-    /// Telemetry mode override (string): `"session-metrics"`, `"full"`, `"off"`.
-    /// It takes precedence over `telemetry_enabled` (bool) when present.
-    #[serde(default)]
-    pub telemetry_mode: Option<String>,
-    #[serde(default)]
     pub trace_upload_enabled: Option<bool>,
     /// Request body encodings the server accepts on the chat routes. Empty or absent means plain JSON only.
     #[serde(default)]
     pub accept_request_encodings: Vec<RemoteRequestEncoding>,
     /// Enable user-facing feedback (heuristic popups, `/feedback` command).
-    /// Session analytics (signal sync, turn deltas) are gated separately by `telemetry_enabled`.
     #[serde(default)]
     pub feedback_enabled: Option<bool>,
     /// Gradual rollout of the `/feedback` trace-consent card.

@@ -343,7 +343,6 @@ fn set_test_env(codel_home: &std::path::Path, server_url: &str) {
         std::env::set_var("CODEL_CLI_CHAT_PROXY_BASE_URL", server_url);
         std::env::set_var("CODEL_CODEL_API_BASE_URL", server_url);
         std::env::set_var("CODEL_API_KEY", "test-key-for-ci");
-        std::env::set_var("CODEL_TELEMETRY_ENABLED", "false");
         std::env::set_var("CODEL_FEEDBACK_ENABLED", "false");
         std::env::set_var("CODEL_TRACE_UPLOAD", "false");
         // Turn summaries fire one more request to the same mock endpoint after the turn, on a spawned task

@@ -131,7 +131,7 @@ fn validate_script_with_agent_budget_and_cancel(
                 R::GitDiffSince { reply, .. } => {
                     let _ = reply.send(Ok("".into()));
                 }
-                R::Phase { .. } | R::Log { .. } | R::Telemetry { .. } => {}
+                R::Phase { .. } | R::Log { .. } => {}
             }
         }
     });

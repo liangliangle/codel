@@ -1123,7 +1123,6 @@ fn turn_delta_feedback_manager(addr: std::net::SocketAddr) -> Arc<FeedbackManage
             None,
         )),
         FeedbackManagerConfig {
-            telemetry_enabled: true,
             ..Default::default()
         },
     ))

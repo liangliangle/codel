@@ -372,11 +372,3 @@ mod tests {
 pub fn has_workspace_env_markers() -> bool {
     std::env::var("CODEL_ROOT").is_ok() && std::env::var("CODEL_USER").is_ok()
 }
-
-/// Opt-in special-user gate for telemetry (`CODEL_TELEMETRY_SPECIAL_USER`).
-pub fn is_special_user() -> bool {
-    matches!(
-        std::env::var("CODEL_TELEMETRY_SPECIAL_USER").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE")
-    )
-}

@@ -161,7 +161,6 @@ async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
                 );
             }
 
-            let telemetry_enabled = agent.product_analytics_enabled();
             let client = agent.feedback_client();
             if client.is_none() {
                 tracing::warn!(
@@ -180,7 +179,6 @@ async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
                 session_handle.as_ref().map(|h| &h.persistence_tx),
                 crate::session::feedback_manager::SubmitFeedbackOptions {
                     solicited: feedback_input.is_solicited(),
-                    telemetry_enabled,
                     author_identity,
                 },
             )
@@ -422,17 +420,14 @@ async fn dismiss_request(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
         "Feedback request dismissed by user"
     );
 
-    // `submit_feedback_workflow` checks the same flag before its "responded" event
-    if agent.product_analytics_enabled() {
-        codel_logging::event_span!(
-            "feedback.survey",
-            survey_type = "session",
-            event_type = "dismissed",
-            appearance_id = %input.request_id,
-            has_feedback_text = false,
-            is_solicited = true,
-        );
-    }
+    codel_logging::event_span!(
+        "feedback.survey",
+        survey_type = "session",
+        event_type = "dismissed",
+        appearance_id = %input.request_id,
+        has_feedback_text = false,
+        is_solicited = true,
+    );
 
     persist_dismissal(agent, &input);
 

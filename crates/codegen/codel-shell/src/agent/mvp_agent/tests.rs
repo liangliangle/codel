@@ -211,7 +211,6 @@ async fn upload_harness_trace_turns_numbers_siblings_and_persists_counter() {
     let agent = build_minimal_agent_for_tests();
     {
         let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
         cfg.telemetry.trace_upload = Some(true);
         cfg.endpoints.trace_upload_bucket = Some("gs://harness-trace-test".to_string());
     }
@@ -327,7 +326,6 @@ async fn upload_harness_trace_turns_build_per_turn_manifest() {
     let agent = build_minimal_agent_for_tests();
     {
         let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
         cfg.telemetry.trace_upload = Some(true);
         cfg.endpoints.trace_upload_bucket = Some("gs://harness-trace-test".to_string());
     }
@@ -1848,7 +1846,6 @@ fn make_trace_card_eligible(agent: &MvpAgent) {
     let mut cfg = agent.cfg.borrow_mut();
     cfg.feature_values
         .insert(crate::agent::config::Feature::FeedbackTraceCard, true);
-    cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
     cfg.telemetry.trace_upload = Some(false);
 }
 /// Pin every env var feeding the trace-offer / one-shot ladders and sandbox
@@ -3021,69 +3018,14 @@ async fn data_collection_enabled_for_non_zdr_team_with_unrelated_blocks() {
         "non-ZDR blocked reasons must not disable data collection"
     );
 }
-fn enable_product_telemetry(agent: &MvpAgent) {
-    agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-}
-/// Enable trace uploads via config so only the auth-level privacy gate can disable collection in the tests below.
-fn enable_trace_upload_config(agent: &MvpAgent) {
-    let mut cfg = agent.cfg.borrow_mut();
-    cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-    cfg.telemetry.trace_upload = Some(true);
-}
-#[tokio::test]
-async fn product_analytics_enabled_for_normal_user_with_telemetry_on() {
-    let agent = build_agent_with_auth(codel_login::CodelAuth::test_default());
-    enable_product_telemetry(&agent);
-    assert!(agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_enabled_despite_coding_retention_opt_out() {
-    let agent = build_agent_with_auth(codel_login::CodelAuth {
-        coding_data_retention_opt_out: true,
-        ..codel_login::CodelAuth::test_default()
-    });
-    enable_product_telemetry(&agent);
-    assert!(agent.is_data_collection_disabled());
-    assert!(agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_disabled_for_zdr_team() {
-    let agent = build_agent_with_auth(codel_login::CodelAuth {
-        team_blocked_reasons: vec!["BLOCKED_REASON_NO_LOGS".into()],
-        ..codel_login::CodelAuth::test_default()
-    });
-    enable_product_telemetry(&agent);
-    assert!(!agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_disabled_when_telemetry_off() {
-    let agent = build_agent_with_auth(codel_login::CodelAuth::test_default());
-    agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
-    assert!(!agent.product_analytics_enabled());
-}
-/// Counting HTTP stub: any request increments the counter and gets a storage-proxy-shaped 200 so the client does not retry.
-async fn spawn_counting_storage_stub() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let count_clone = count.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let app = axum::Router::new().fallback(move || {
-        let count = count_clone.clone();
-        async move {
-            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            (
-                [("content-type", "application/json")],
-                r#"{"bucket":"test-bucket","path":"auth-diagnostics/test.jsonl"}"#,
-            )
-        }
-    });
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://127.0.0.1:{port}"), count)
-}
 use crate::session::storage::search::IndexDecision;
 /// A codel home of its own, with the switch left at its registered default.
 /// `decide_search_index` stops short of a session store, but do not reach `bootstrap_once`.
 /// `bootstrap_once` takes the process-cached `codel_home()`, which these guards cannot redirect, so it could index the developer's own store.
+/// Enable trace uploads via config so only the auth-level privacy gate can disable collection in the tests below.
+fn enable_trace_upload_config(agent: &MvpAgent) {
+    agent.cfg.borrow_mut().telemetry.trace_upload = Some(true);
+}
 fn search_index_env() -> (tempfile::TempDir, [codel_test_support::EnvGuard; 2]) {
     use codel_test_support::EnvGuard;
     let home = tempfile::tempdir().unwrap();
@@ -3297,7 +3239,6 @@ async fn collection_config_gate_mirror_follows_trace_upload_flip() {
     );
     {
         let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
         cfg.telemetry.trace_upload = Some(false);
     }
     agent.sync_collection_config_gate();

@@ -102,7 +102,6 @@ pub(crate) fn new_submission(
 #[derive(Debug)]
 pub(crate) struct SubmitFeedbackOptions {
     pub solicited: bool,
-    pub telemetry_enabled: bool,
     pub author_identity: Option<crate::util::user_identity::ResolvedUserIdentity>,
 }
 
@@ -114,7 +113,6 @@ pub(crate) async fn submit_feedback_workflow(
 ) -> SubmitOutcome {
     let SubmitFeedbackOptions {
         solicited,
-        telemetry_enabled,
         author_identity,
     } = opts;
 
@@ -205,7 +203,7 @@ pub(crate) async fn submit_feedback_workflow(
         SubmitOutcome::LocalOnly
     };
 
-    if telemetry_enabled {
+    {
         let event = user_feedback_event(submission, &outcome, solicited);
         let feedback_span = tracing::info_span!(
             "feedback.survey",
@@ -242,19 +240,14 @@ pub(crate) struct FeedbackFlags {
     pub user: Option<crate::agent::config::FeedbackUserConfig>,
 }
 
-/// Two concerns are gated by separate flags (`feedback_enabled`, `telemetry_enabled`).
-/// Both default to `false`.
+/// The feedback feature is gated by `feedback_enabled`, which defaults to `false`.
 #[derive(Debug, Clone)]
 pub struct FeedbackManagerConfig {
-    /// Interval for syncing signals to the analytics backend (default: 30s)
+    /// Interval for syncing feedback signals (default: 30s)
     pub sync_interval: Duration,
     /// Whether user-facing feedback features are enabled (popups, `/feedback`, ratings).
     /// Gated by `CODEL_FEEDBACK_ENABLED`.
     pub feedback_enabled: bool,
-    /// Whether session analytics (signal sync, turn deltas) are enabled.
-    /// Gated by `CODEL_TELEMETRY_ENABLED`.
-    /// These are analytics data that flow continuously without user action.
-    pub telemetry_enabled: bool,
     pub client_type: ClientType,
     /// Whether LOC attribution tracking is enabled for this session.
     /// Propagated into every `SessionTurnDelta`.
@@ -272,7 +265,6 @@ impl Default for FeedbackManagerConfig {
         Self {
             sync_interval: Duration::from_secs(60),
             feedback_enabled: false,
-            telemetry_enabled: false,
             client_type: ClientType::Agent,
             loc_tracking_enabled: false,
             drain_timeout: Duration::from_secs(30),
@@ -380,7 +372,6 @@ impl FeedbackManager {
         tracing::info!(
             session_id = %session_id,
             feedback_enabled = config.feedback_enabled,
-            telemetry_enabled = config.telemetry_enabled,
             has_client = feedback_client.is_some(),
             "FeedbackManager initialized"
         );
@@ -434,7 +425,6 @@ impl FeedbackManager {
         text: String,
         session_data: SessionFeedbackData,
         persistence_tx: Option<&tokio::sync::mpsc::UnboundedSender<PersistenceMsg>>,
-        telemetry_enabled: bool,
     ) -> SubmitOutcome {
         let sh = self.signals_handle();
         let (signals, tool_outcomes) = tokio::join!(sh.snapshot(), sh.last_turn_tool_outcomes());
@@ -480,7 +470,6 @@ impl FeedbackManager {
             persistence_tx,
             SubmitFeedbackOptions {
                 solicited: false,
-                telemetry_enabled,
                 author_identity,
             },
         )
@@ -679,8 +668,8 @@ impl FeedbackManager {
         turn_duration_ms: Option<i64>,
         turn_outcome: TurnOutcome,
     ) {
-        if !self.config.telemetry_enabled {
-            tracing::debug!("Turn delta skipped: telemetry is disabled");
+        if !self.config.feedback_enabled {
+            tracing::debug!("Turn delta skipped: feedback is disabled");
             return;
         }
 
@@ -762,7 +751,7 @@ impl FeedbackManager {
     /// On `force` (the process-exit final sync), skip the HTTP POST when the session has no turns or tool calls, so exit cannot hang on slow egress.
     /// Periodic sync (`force=false`) still may send empty snapshots.
     async fn sync_signals_inner(&self, force: bool) -> anyhow::Result<()> {
-        if !self.config.telemetry_enabled {
+        if !self.config.feedback_enabled {
             return Ok(());
         }
 
@@ -1446,7 +1435,6 @@ mod tests {
         // Nothing listening, so the first periodic sync errors quickly
         let client = FeedbackClient::with_client(http, "http://127.0.0.1:1", None);
         let config = FeedbackManagerConfig {
-            telemetry_enabled: true,
             sync_interval: Duration::from_secs(3600),
             ..Default::default()
         };
@@ -1503,7 +1491,6 @@ mod tests {
             .expect("reqwest client");
         let client = FeedbackClient::with_client(http, base, None);
         let config = FeedbackManagerConfig {
-            telemetry_enabled: true,
             ..Default::default()
         };
         let manager = FeedbackManager::new("test-empty-skip-sync", Some(client), config);
@@ -1532,10 +1519,9 @@ mod tests {
             .expect("reqwest client");
         let client = FeedbackClient::with_client(http, base, None);
         let config = FeedbackManagerConfig {
-            telemetry_enabled: false,
             ..Default::default()
         };
-        let manager = FeedbackManager::new("test-telemetry-off", Some(client), config);
+        let manager = FeedbackManager::new("test-feedback-sync-off", Some(client), config);
         manager.signals_handle().increment_turn();
 
         let started = Instant::now();
@@ -1563,7 +1549,6 @@ mod tests {
             .expect("reqwest client");
         let client = FeedbackClient::with_client(http, base, None);
         let config = FeedbackManagerConfig {
-            telemetry_enabled: true,
             ..Default::default()
         };
         let manager = FeedbackManager::new("test-session-hung-sync", Some(client), config);
@@ -1622,7 +1607,6 @@ mod tests {
         let client =
             FeedbackClient::with_client(reqwest::Client::new(), format!("http://{addr}/v1"), None);
         let config = FeedbackManagerConfig {
-            telemetry_enabled: true,
             ..Default::default()
         };
         let manager = FeedbackManager::new("test-fifo", Some(client), config);
@@ -2055,7 +2039,6 @@ email = ["$CODEL_TEST_WORK_EMAIL"]
             Some(&tx),
             SubmitFeedbackOptions {
                 solicited: false,
-                telemetry_enabled: false,
                 author_identity: Some(identity),
             },
         )
@@ -2112,7 +2095,6 @@ email = ["$CODEL_TEST_WORK_EMAIL"]
             Some(&tx),
             SubmitFeedbackOptions {
                 solicited: false,
-                telemetry_enabled: false,
                 author_identity: None,
             },
         )
@@ -2165,7 +2147,6 @@ email = ["$CODEL_TEST_WORK_EMAIL"]
             None,
             SubmitFeedbackOptions {
                 solicited: false,
-                telemetry_enabled: false,
                 author_identity: None,
             },
         )
@@ -2192,7 +2173,6 @@ email = ["$CODEL_TEST_WORK_EMAIL"]
             None,
             SubmitFeedbackOptions {
                 solicited: false,
-                telemetry_enabled: false,
                 author_identity: None,
             },
         )
@@ -2235,7 +2215,6 @@ email = ["$CODEL_TEST_WORK_EMAIL"]
                 Some(&tx),
                 SubmitFeedbackOptions {
                     solicited: false,
-                    telemetry_enabled: false,
                     author_identity,
                 },
             )

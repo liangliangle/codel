@@ -106,6 +106,3 @@ pub fn set_release_channel(channel: ReleaseChannel) {
     let _ = RELEASE_CHANNEL.set(channel);
 }
 
-#[cfg(test)]
-#[path = "process_info_tests.rs"]
-mod tests;

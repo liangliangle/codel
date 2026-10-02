@@ -1464,7 +1464,6 @@ pub(crate) async fn run_shell_child(
         parent_mcp_pool,
         Vec::new(),
         true,
-        false,
         None,
         persistence,
         forked_conversation,

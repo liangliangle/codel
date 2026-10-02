@@ -31,7 +31,6 @@ async fn embedded_mode_boots_without_hanging_on_blocked_backend() {
         ("CODEL_API_KEY", "test-key-for-ci"),
         ("CODEL_CLI_CHAT_PROXY_BASE_URL", base.as_str()),
         ("CODEL_CODEL_API_BASE_URL", base.as_str()),
-        ("CODEL_TELEMETRY_ENABLED", "false"),
         ("CODEL_FEEDBACK_ENABLED", "false"),
         ("CODEL_TRACE_UPLOAD", "false"),
     ];

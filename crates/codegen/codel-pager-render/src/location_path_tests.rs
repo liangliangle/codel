@@ -4,7 +4,7 @@ use super::*;
 fn shorten_location_path_kerem_codel_home() {
     assert_eq!(
         shorten_location_path("~/.codel/worktrees/code-codel/dashboard-design").as_ref(),
-        "~/.g/w/code-codel/dashboard-design"
+        "~/.c/w/code-codel/dashboard-design"
     );
     assert_eq!(
         shorten_location_path("$CODEL_HOME/worktrees/code-codel/dashboard-design").as_ref(),
@@ -82,7 +82,7 @@ fn shorten_location_path_multi_dot_dirs_are_not_traversal() {
     assert_eq!(shorten_location_component("."), ".");
     assert_eq!(shorten_location_component(".."), "..");
     assert_eq!(shorten_location_component("..."), "...");
-    assert_eq!(shorten_location_component(".codel"), ".g");
+    assert_eq!(shorten_location_component(".codel"), ".c");
     assert_eq!(shorten_location_component("..cache"), "..c");
     assert_eq!(shorten_location_component("...foo"), "...f");
     assert_eq!(shorten_location_component("Documents"), "D");
@@ -92,7 +92,7 @@ fn shorten_location_path_multi_dot_dirs_are_not_traversal() {
 fn shorten_location_path_non_home() {
     assert_eq!(
         shorten_location_path("/work/codel/frontend/apps").as_ref(),
-        "/w/x/frontend/apps"
+        "/w/c/frontend/apps"
     );
     assert_eq!(
         shorten_location_path("/deep/alpha/bravo/charlie/delta").as_ref(),
@@ -145,7 +145,7 @@ fn shorten_location_path_unix_backslash_stays_in_component() {
     );
     assert_eq!(
         shorten_location_path("/work/codel/team\\notes/repo").as_ref(),
-        "/w/x/team\\notes/repo"
+        "/w/c/team\\notes/repo"
     );
 }
 

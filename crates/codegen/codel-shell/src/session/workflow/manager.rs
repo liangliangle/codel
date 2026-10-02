@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::host_service::{
-    HostDrainOutcome, TelemetryHook, WorkflowHostParams, spawn_workflow_host_service,
+    HostDrainOutcome, WorkflowHostParams, spawn_workflow_host_service,
 };
 use super::notify::WorkflowNotifySender;
 use super::registry::{ResolvedWorkflow, WorkflowSource, bundled_file_is_managed};
@@ -86,7 +86,6 @@ pub(crate) struct WorkflowManager {
     subagent_event_tx: mpsc::UnboundedSender<
         codel_tools::implementations::codel_build::task::types::SubagentEvent,
     >,
-    telemetry: TelemetryHook,
     session_cmd_tx: mpsc::UnboundedSender<crate::session::commands::SessionCommand>,
     templates: HashMap<String, String>,
     active: HashMap<String, ActiveRun>,
@@ -109,7 +108,6 @@ impl WorkflowManager {
         subagent_event_tx: mpsc::UnboundedSender<
             codel_tools::implementations::codel_build::task::types::SubagentEvent,
         >,
-        telemetry: TelemetryHook,
         session_cmd_tx: mpsc::UnboundedSender<crate::session::commands::SessionCommand>,
         templates: HashMap<String, String>,
         max_concurrent_agents: usize,
@@ -124,7 +122,6 @@ impl WorkflowManager {
             store,
             notify,
             subagent_event_tx,
-            telemetry,
             session_cmd_tx,
             templates,
             active: HashMap::new(),
@@ -328,7 +325,6 @@ impl WorkflowManager {
                 allow_fork_context,
                 effort: spec.effort,
                 templates: self.templates.clone(),
-                telemetry: self.telemetry.clone(),
                 stats: agent_stats.clone(),
                 cancel: cancel.clone(),
                 task_model_selection: self.task_model_selection.clone(),
@@ -559,7 +555,6 @@ impl WorkflowManager {
             store,
             notify,
             mpsc::unbounded_channel().0,
-            Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
             std::collections::HashMap::new(),
             super::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
@@ -956,7 +951,6 @@ mod tests {
             store,
             notify,
             subagent_tx,
-            Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,
             HashMap::new(),
             crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,

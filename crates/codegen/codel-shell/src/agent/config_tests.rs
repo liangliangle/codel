@@ -1596,66 +1596,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
     let info = ModelInfo::from_config(&entry);
     assert_eq!(info.inference_idle_timeout_secs, Some(120));
 }
-#[test]
-fn telemetry_config_parses_custom_values_from_toml() {
-    let raw: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            events_url     = "https://custom.example.com/events"
-            events_api_key = "custom-key"
-            mixpanel_token = "custom-token"
-            mixpanel_enabled = false
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
-    assert_eq!(
-        cfg.telemetry.events_url.as_deref(),
-        Some("https://custom.example.com/events")
-    );
-    assert_eq!(cfg.telemetry.events_api_key.as_deref(), Some("custom-key"));
-    assert_eq!(
-        cfg.telemetry.mixpanel_token.as_deref(),
-        Some("custom-token")
-    );
-    assert!(!cfg.telemetry.mixpanel_enabled);
-}
 /// Empty/whitespace values must become `None`, not reach the HTTP client as empty strings.
-#[test]
-fn telemetry_empty_string_disables_sink() {
-    let raw: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            events_url     = ""
-            events_api_key = "  "
-            mixpanel_token = "\t"
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
-    assert!(cfg.telemetry.events_url.is_none());
-    assert!(cfg.telemetry.events_api_key.is_none());
-    assert!(cfg.telemetry.mixpanel_token.is_none());
-}
-#[test]
-fn telemetry_partial_override_retains_defaults() {
-    let raw: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            events_url = "https://my-proxy/events"
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
-    assert_eq!(
-        cfg.telemetry.events_url.as_deref(),
-        Some("https://my-proxy/events")
-    );
-    let defaults = TelemetryConfig::default();
-    assert_eq!(cfg.telemetry.events_api_key, defaults.events_api_key);
-    assert_eq!(cfg.telemetry.mixpanel_token, defaults.mixpanel_token);
-    assert_eq!(cfg.telemetry.mixpanel_enabled, defaults.mixpanel_enabled);
-}
 /// `disable_api_key_auth` parses through the `[auth]` alias, and absent means None (opt-in knob, zero impact by default).
 #[test]
 fn disable_api_key_auth_parses_from_auth_alias() {
@@ -2743,7 +2684,6 @@ fn resolve_trace_upload_disabled_when_telemetry_off_despite_remote_flag() {
     unsafe { std::env::remove_var("CODEL_TELEMETRY_ENABLED") };
     unsafe { std::env::remove_var("CODEL_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Disabled);
     cfg.remote_settings = Some(crate::util::config::RemoteSettings {
         trace_upload_enabled: Some(true),
         ..Default::default()
@@ -2758,7 +2698,6 @@ fn resolve_trace_upload_explicit_config_wins_over_telemetry_off() {
     unsafe { std::env::remove_var("CODEL_TELEMETRY_ENABLED") };
     unsafe { std::env::remove_var("CODEL_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Disabled);
     cfg.telemetry.trace_upload = Some(true);
     let r = cfg.resolve_trace_upload();
     assert!(
@@ -2778,7 +2717,6 @@ fn trace_upload_decision_debug_reports_winning_source() {
     unsafe { std::env::remove_var("CODEL_TELEMETRY_ENABLED") };
     unsafe { std::env::remove_var("CODEL_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Disabled);
     cfg.remote_settings = Some(crate::util::config::RemoteSettings {
         trace_upload_enabled: Some(true),
         ..Default::default()
@@ -2791,10 +2729,6 @@ fn trace_upload_decision_debug_reports_winning_source() {
     assert_eq!(
         d.get("trace_upload_source"),
         Some(&serde_json::json!(serde_json::json!("default")))
-    );
-    assert_eq!(
-        d.get("telemetry_mode"),
-        Some(&serde_json::json!(serde_json::json!("false")))
     );
     assert_eq!(
         d.get("in_remote_trace_upload_enabled"),
@@ -2826,7 +2760,6 @@ fn resolve_trace_upload_honors_config_when_telemetry_on() {
     unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
     unsafe { std::env::remove_var("CODEL_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Enabled);
     cfg.telemetry.trace_upload = Some(false);
     let r = cfg.resolve_trace_upload();
     assert!(!r.value);
@@ -4661,38 +4594,6 @@ fn resolve_runtime_fields_idempotent() {
     assert_eq!(cfg.respect_gitignore, first_gitignore);
     assert_eq!(cfg.managed_mcps_enabled, first_mcps);
     assert_eq!(cfg.web_search_model, first_ws);
-}
-#[test]
-fn telemetry_mode_toml_roundtrip() {
-    let cfg: Features = toml::from_str("telemetry = true").unwrap();
-    assert_eq!(cfg.telemetry, Some(TelemetryMode::Enabled));
-    let cfg: Features = toml::from_str("telemetry = false").unwrap();
-    assert_eq!(cfg.telemetry, Some(TelemetryMode::Disabled));
-    let cfg: Features = toml::from_str(r#"telemetry = "session_metrics""#).unwrap();
-    assert_eq!(cfg.telemetry, Some(TelemetryMode::SessionMetrics));
-    let cfg: Features =
-        toml::from_str(r#"telemetry = "metrics_v3""#).expect("unknown string must not error");
-    assert_eq!(cfg.telemetry, Some(TelemetryMode::Disabled));
-    assert!(toml::from_str::<Features>("telemetry = 42").is_err());
-}
-#[test]
-fn telemetry_enabled_from_toml_recognizes_modes() {
-    let on: toml::Value = toml::from_str("[features]\ntelemetry = true\n").unwrap();
-    assert_eq!(telemetry_enabled_from_toml(&on), Some(true));
-    let session: toml::Value = toml::from_str(
-        r#"[features]
-telemetry = "session_metrics"
-"#,
-    )
-    .unwrap();
-    assert_eq!(telemetry_enabled_from_toml(&session), Some(true));
-    let unknown: toml::Value = toml::from_str(
-        r#"[features]
-telemetry = "garbage"
-"#,
-    )
-    .unwrap();
-    assert_eq!(telemetry_enabled_from_toml(&unknown), None);
 }
 #[test]
 fn global_extra_headers_apply_to_model_without_override() {

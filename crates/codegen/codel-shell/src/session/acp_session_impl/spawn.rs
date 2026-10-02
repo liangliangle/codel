@@ -227,7 +227,6 @@ pub(crate) async fn spawn_session_actor(
     parent_mcp_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
     acp_mcp_servers: Vec<crate::session::mcp_servers::AcpServerEntry>,
     support_permission: bool,
-    telemetry_enabled: bool,
     auto_update: Option<bool>,
     persistence: PersistenceHandle,
     mut conversation: Vec<ConversationItem>,
@@ -1396,7 +1395,6 @@ pub(crate) async fn spawn_session_actor(
     let user_cfg = feedback_flags.user;
     let feedback_config = FeedbackManagerConfig {
         feedback_enabled: feedback_flags.enabled,
-        telemetry_enabled,
         client_type: feedback_client_type,
         loc_tracking_enabled,
         user: user_cfg.clone(),
@@ -1594,11 +1592,6 @@ pub(crate) async fn spawn_session_actor(
                 );
                 tokio::sync::mpsc::unbounded_channel().0
             }),
-            Arc::new(|name: &str, fields: &serde_json::Value, replayed: bool| {
-                if !replayed {
-                    tracing::info!(event = name, %fields, "workflow telemetry");
-                }
-            }),
             cmd_tx.clone(),
             std::collections::HashMap::new(),
             workflow_max_concurrent_agents,
@@ -1719,7 +1712,6 @@ pub(crate) async fn spawn_session_actor(
         current_prompt_id: current_prompt_id.clone(),
         active_work: active_work.clone(),
         pending_interactions: pending_interactions.clone(),
-        telemetry_enabled,
         supports_backend_search: std::cell::Cell::new(sampling_config.supports_backend_search),
         tool_overrides: std::cell::RefCell::new(None),
         resolved_tool_overrides: resolved_tool_overrides.clone(),
@@ -2411,7 +2403,6 @@ pub(crate) async fn spawn_session_on_thread(
     parent_mcp_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
     acp_mcp_servers: Vec<crate::session::mcp_servers::AcpServerEntry>,
     support_permission: bool,
-    telemetry_enabled: bool,
     auto_update: Option<bool>,
     persistence: PersistenceHandle,
     conversation: Vec<ConversationItem>,
@@ -2623,7 +2614,6 @@ pub(crate) async fn spawn_session_on_thread(
                     parent_mcp_pool,
                     acp_mcp_servers,
                     support_permission,
-                    telemetry_enabled,
                     auto_update,
                     persistence,
                     conversation,

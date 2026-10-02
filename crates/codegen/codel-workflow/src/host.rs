@@ -83,11 +83,6 @@ pub enum WorkflowHostRequest {
         message: String,
         replayed: bool,
     },
-    Telemetry {
-        name: String,
-        fields: serde_json::Value,
-        replayed: bool,
-    },
     BudgetQuery {
         reply: oneshot::Sender<Result<BudgetState, HostError>>,
     },
@@ -119,7 +114,6 @@ impl WorkflowHostRequest {
             Self::SpawnAgent { .. } => "spawn_agent",
             Self::Phase { .. } => "phase",
             Self::Log { .. } => "log",
-            Self::Telemetry { .. } => "telemetry",
             Self::BudgetQuery { .. } => "budget",
             Self::RenderTemplate { .. } => "render_template",
             Self::WriteScratchFile { .. } => "write_scratch_file",

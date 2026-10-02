@@ -32,7 +32,6 @@ use crate::request_log::RequestLog;
 pub use crate::scripted::{ScriptedBody, ScriptedResponse, SseEvent};
 use crate::storage_endpoint::StorageEndpointState;
 pub use crate::storage_endpoint::StorageUpload;
-use crate::telemetry_events::TelemetryEventsState;
 
 /// A model served by `/v1/models`.
 /// Each field is emitted under its camelCase name when set, at the top level except for `agent_type`, which goes in `_meta`.
@@ -155,7 +154,6 @@ struct RouterState {
     inference: InferenceRoute,
     storage: Arc<StorageEndpointState>,
     feedback: Arc<FeedbackEndpointState>,
-    telemetry: Arc<TelemetryEventsState>,
     startup_fetch_stall: Arc<std::sync::RwLock<StartupFetchStall>>,
     startup_stalls_served: Arc<AtomicU32>,
     user_tier: Arc<std::sync::RwLock<Option<String>>>,
@@ -269,7 +267,6 @@ impl MockInferenceServer {
             overrides,
             storage: Arc::new(StorageEndpointState::default()),
             feedback: Arc::new(FeedbackEndpointState::default()),
-            telemetry: Arc::new(TelemetryEventsState::default()),
             startup_fetch_stall: Arc::new(std::sync::RwLock::new(StartupFetchStall::None)),
             startup_stalls_served: Arc::new(AtomicU32::new(0)),
             user_tier: Arc::new(std::sync::RwLock::new(None)),
@@ -630,11 +627,6 @@ impl MockInferenceServer {
         self.state.feedback.posts()
     }
 
-    /// Every product-telemetry event posted to `/v1/events` so far, flattened out of its batch, in arrival order.
-    pub fn telemetry_events(&self) -> Vec<Value> {
-        self.state.telemetry.events()
-    }
-
     fn build_router(state: RouterState) -> Router {
         Router::new()
             .route(
@@ -822,17 +814,6 @@ impl MockInferenceServer {
                     move |headers: HeaderMap, body: axum::body::Bytes| {
                         let feedback = feedback.clone();
                         async move { feedback.handle(&headers, &body) }
-                    }
-                }),
-            )
-            // Product telemetry POSTs `CODEL_TELEMETRY_EVENTS_URL` verbatim; tests point it at `{url()}/events`
-            .route(
-                "/v1/events",
-                post({
-                    let telemetry = state.telemetry.clone();
-                    move |body: axum::body::Bytes| {
-                        let telemetry = telemetry.clone();
-                        async move { telemetry.handle(&body) }
                     }
                 }),
             )

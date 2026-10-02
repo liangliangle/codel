@@ -5,7 +5,7 @@ use std::borrow::Cow;
 /// After a `~` / `$CODEL_HOME` prefix (or a leading `/` / drive letter / UNC
 /// `\\server\share` / `//host/share` / `\\?\UNC\server\share`), the last two
 /// components stay full and earlier ones become one letter. Leading dots are
-/// kept plus the first non-dot character (`.codel` → `.g`, `..cache` → `..c`).
+/// kept plus the first non-dot character (`.codel` → `.c`, `..cache` → `..c`).
 /// Literal `.` / `..` stay as-is. Drive-relative `C:foo\bar` does not gain a
 /// root separator; rooted `\foo\bar` keeps one. Paths with 0–2 components
 /// after the prefix are unchanged.

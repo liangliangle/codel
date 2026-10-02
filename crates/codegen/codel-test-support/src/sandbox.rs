@@ -328,18 +328,9 @@ fn baseline_env_from_parent(
         env.insert(key.into(), value.as_os_str().to_owned());
     }
     for (key, value) in [
-        ("CODEL_TELEMETRY_ENABLED", "false"),
-        // A test that re-enables the mode must still have no production sink: the pager bakes in the analytics token and events URL.
-        ("CODEL_TELEMETRY_MIXPANEL_ENABLED", "false"),
-        ("CODEL_TELEMETRY_MIXPANEL_TOKEN", ""),
-        ("CODEL_TELEMETRY_EVENTS_URL", ""),
-        ("CODEL_TELEMETRY_EVENTS_API_KEY", ""),
-        ("CODEL_TELEMETRY_TRACE_UPLOAD", "false"),
         ("CODEL_FEEDBACK_ENABLED", "false"),
         ("CODEL_TRACE_UPLOAD", "false"),
         ("CODEL_INSTRUMENTATION", "disabled"),
-        ("OTEL_SDK_DISABLED", "true"),
-        ("DISABLE_TELEMETRY", "1"),
         ("DISABLE_FEEDBACK_COMMAND", "1"),
         ("CODEL_DISABLE_AUTOUPDATER", "1"),
         ("CODEL_PROMPT_SUGGESTIONS", "false"),
@@ -795,7 +786,7 @@ mod tests {
             Some(OsStr::new("1"))
         );
         assert_eq!(
-            env_value(&sandbox, "CODEL_TELEMETRY_TRACE_UPLOAD").as_deref(),
+            env_value(&sandbox, "CODEL_TRACE_UPLOAD").as_deref(),
             Some(OsStr::new("false"))
         );
         assert_eq!(
@@ -803,18 +794,6 @@ mod tests {
             Some(OsStr::new("codel-e2e-sandbox")),
             "CODEL_AGENT_ID must be pinned so a fresh CODEL_HOME never computes a machine id (WMI on Windows)"
         );
-        for (sink, value) in [
-            ("CODEL_TELEMETRY_MIXPANEL_ENABLED", "false"),
-            ("CODEL_TELEMETRY_MIXPANEL_TOKEN", ""),
-            ("CODEL_TELEMETRY_EVENTS_URL", ""),
-            ("CODEL_TELEMETRY_EVENTS_API_KEY", ""),
-        ] {
-            assert_eq!(
-                env_value(&sandbox, sink).as_deref(),
-                Some(OsStr::new(value)),
-                "{sink} must be pinned off so CODEL_TELEMETRY_ENABLED=true cannot reach a production sink"
-            );
-        }
         assert_eq!(
             env_value(&sandbox, "NO_PROXY").as_deref(),
             Some(OsStr::new("127.0.0.1,localhost,::1"))

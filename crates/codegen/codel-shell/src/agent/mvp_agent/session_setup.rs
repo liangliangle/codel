@@ -1350,7 +1350,6 @@ impl MvpAgent {
                 let _ = handle.cmd_tx.send(SessionCommand::RestorePlanApproval);
             }
         }
-        if self.product_analytics_enabled() {}
         log_session_started(
             &session_id,
             op.start_kind(),

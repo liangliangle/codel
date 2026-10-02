@@ -3139,10 +3139,6 @@ fn config_layers_user_overrides_managed() {
             &layers.effective_config_disk_only(),
         )
         .unwrap();
-    assert_eq!(
-            Some(crate::agent::config::TelemetryMode::Enabled),
-            cfg.features.telemetry
-        );
 }
 /// REGRESSION: the real enterprise two-file merge must resolve the deployment-config fetch to cli-chat-proxy, never the model host. It must also preserve the customer's S3 trace-upload endpoint.
 /// The merge layers `managed_config.toml` (proxy and BYO model host) with `requirements.toml` (deployment key and S3 trace upload). It runs via the actual `ConfigLayers::effective_config()` path.
@@ -3342,10 +3338,6 @@ fn config_layers_system_managed_lowest_priority() {
             &layers.effective_config_disk_only(),
         )
         .unwrap();
-    assert_eq!(
-            Some(crate::agent::config::TelemetryMode::Enabled),
-            cfg.features.telemetry
-        );
 }
 #[test]
 fn apply_requirements_value_overrides_user_settings() {
@@ -3356,17 +3348,13 @@ fn apply_requirements_value_overrides_user_settings() {
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw_config).unwrap();
     cfg.default_yolo_mode = true;
     let requirements: toml::Value = toml::from_str(
-            "[cli]\nauto_update = false\nchannel = \"stable\"\n\n[features]\ntelemetry = false\nfeedback = false\nlsp_tools = false\nweb_fetch = false\nwrite_file = false\nremote_fetch = false\n\n[telemetry]\ntrace_upload = false\nmixpanel_enabled = false\nmixpanel_token = \"enterprise-mp-token\"\n\n[ui]\nyolo = false\n\n[models]\ndefault = \"managed-model\"\nweb_search = \"managed-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://managed-proxy.example/v1\"\ncodel_api_base_url = \"https://managed-api.example/v1\"\nmodels_base_url = \"https://managed-models.example/v1\"\nmodels_list_url = \"https://managed-models.example/v1/models\"\ndeployment_key = \"enterprise-deploy-key-should-not-log\"\ntrace_upload_endpoint_url = \"https://s3.custom.example.com\"\ntrace_upload_credentials = '{\"aws_access_key_id\":\"AKTEST\",\"aws_secret_access_key\":\"secret\"}'\n",
+            "[cli]\nauto_update = false\nchannel = \"stable\"\n\n[features]\ntelemetry = false\nfeedback = false\nlsp_tools = false\nweb_fetch = false\nwrite_file = false\nremote_fetch = false\n\n[telemetry]\ntrace_upload = false\n\n[ui]\nyolo = false\n\n[models]\ndefault = \"managed-model\"\nweb_search = \"managed-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://managed-proxy.example/v1\"\ncodel_api_base_url = \"https://managed-api.example/v1\"\nmodels_base_url = \"https://managed-models.example/v1\"\nmodels_list_url = \"https://managed-models.example/v1/models\"\ndeployment_key = \"enterprise-deploy-key-should-not-log\"\ntrace_upload_endpoint_url = \"https://s3.custom.example.com\"\ntrace_upload_credentials = '{\"aws_access_key_id\":\"AKTEST\",\"aws_secret_access_key\":\"secret\"}'\n",
         )
         .unwrap();
     let source = RequirementSource::Requirements {
         path: std::path::PathBuf::from("/test/requirements.toml"),
     };
     let enforced = apply_requirements_inner(&mut cfg, &requirements, &source);
-    assert_eq!(
-            Some(crate::agent::config::TelemetryMode::Disabled),
-            cfg.features.telemetry
-        );
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::Feedback));
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::LspTools));
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::WebFetch));
@@ -3439,16 +3427,6 @@ fn apply_requirements_value_overrides_user_settings() {
                 .all(|e| e.path != "endpoints.deployment_key"
                     || e.value != "enterprise-deploy-key-should-not-log"),
             "raw deployment_key must not appear in enforced audit entries"
-        );
-    assert!(!cfg.telemetry.mixpanel_enabled);
-    assert_eq!(
-            Some("enterprise-mp-token"),
-            cfg.telemetry.mixpanel_token.as_deref()
-        );
-    assert!(
-            enforced
-                .iter()
-                .any(|e| e.path == "telemetry.mixpanel_token" && e.value == "[redacted]")
         );
 }
 /// Strict precedence: requirement always wins (covers from-None and from-higher-user cases).
@@ -3842,33 +3820,6 @@ fn validate_selectable_rejects_dash_m_outside_fleet_pin() {
         );
 }
 #[test]
-fn apply_requirements_telemetry_string_form_pins_known_modes_only() {
-    use crate::agent::config::TelemetryMode;
-    let source = RequirementSource::Requirements {
-        path: std::path::PathBuf::from("/test/requirements.toml"),
-    };
-    let apply = |toml_str: &str| {
-        let raw = toml::Value::Table(toml::map::Map::new());
-        let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
-        let req: toml::Value = toml::from_str(toml_str).unwrap();
-        let enforced = apply_requirements_inner(&mut cfg, &req, &source);
-        (cfg, enforced)
-    };
-    let (cfg, enforced) = apply("[features]\ntelemetry = \"session_metrics\"\n");
-    assert_eq!(
-            cfg.requirements.telemetry.pinned(),
-            Some(TelemetryMode::SessionMetrics),
-        );
-    assert!(
-            enforced
-                .iter()
-                .any(|e| e.path == "features.telemetry" && e.value == "session_metrics"),
-        );
-    let (cfg, enforced) = apply("[features]\ntelemetry = \"garbage\"\n");
-    assert_eq!(cfg.requirements.telemetry.pinned(), None);
-    assert!(!enforced.iter().any(|e| e.path == "features.telemetry"));
-}
-#[test]
 fn validate_hooks_path_rejects_relative_path() {
     let result = validate_hooks_path("relative/path/hooks");
     assert!(result.is_err());
@@ -3912,7 +3863,6 @@ fn managed_settings_disables_features_and_requirements_overrides() {
     use crate::agent::config::Feature;
     use codel_workspace::permission::resolution::ManagedSettingsFeatures;
     let mut cfg = crate::agent::config::Config::default();
-    cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
     cfg.feature_values.insert(Feature::Feedback, true);
     cfg.default_yolo_mode = true;
     let features = ManagedSettingsFeatures {
@@ -3922,10 +3872,6 @@ fn managed_settings_disables_features_and_requirements_overrides() {
         source_path: Some(std::path::PathBuf::from("/etc/managed-settings.json")),
     };
     let enforced = apply_managed_settings_features_inner(&mut cfg, &features);
-    assert_eq!(
-            cfg.features.telemetry,
-            Some(crate::agent::config::TelemetryMode::Disabled)
-        );
     assert_eq!(cfg.feature_values.get(&Feature::Feedback), Some(&false));
     assert!(cfg.default_yolo_mode);
     assert_eq!(enforced.len(), 2);
@@ -3938,10 +3884,6 @@ fn managed_settings_disables_features_and_requirements_overrides() {
         path: std::path::PathBuf::from("/test/requirements.toml"),
     };
     apply_requirements_inner(&mut cfg, &req, &source);
-    assert_eq!(
-            cfg.features.telemetry,
-            Some(crate::agent::config::TelemetryMode::Enabled)
-        );
     assert!(cfg.is_feature_enabled(Feature::Feedback));
     assert!(cfg.ui.yolo);
 }
@@ -3952,7 +3894,6 @@ fn managed_settings_does_not_override_user_yolo() {
     use crate::agent::config::Feature;
     use codel_workspace::permission::resolution::ManagedSettingsFeatures;
     let mut cfg = crate::agent::config::Config::default();
-    cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
     cfg.feature_values.insert(Feature::Feedback, true);
     cfg.ui.yolo = true;
     cfg.default_yolo_mode = true;
@@ -3965,10 +3906,6 @@ fn managed_settings_does_not_override_user_yolo() {
         ),
     };
     let enforced = apply_managed_settings_features_inner(&mut cfg, &features);
-    assert_eq!(
-            cfg.features.telemetry,
-            Some(crate::agent::config::TelemetryMode::Disabled)
-        );
     assert_eq!(cfg.feature_values.get(&Feature::Feedback), Some(&false));
     assert!(cfg.ui.yolo);
     assert!(cfg.default_yolo_mode);

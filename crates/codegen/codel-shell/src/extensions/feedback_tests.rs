@@ -196,7 +196,6 @@ async fn answer_lists_drafts_and_refuses_an_unknown_method() {
     let listed = answer(
         &drafts_request("codel/feedback/drafts/list"),
         store.clone(),
-        false,
     )
     .await
     .expect("list answers");
@@ -210,7 +209,7 @@ async fn answer_lists_drafts_and_refuses_an_unknown_method() {
         Some(1)
     );
 
-    let unknown = answer(&drafts_request("codel/feedback/drafts/rename"), store, false)
+    let unknown = answer(&drafts_request("codel/feedback/drafts/rename"), store)
         .await
         .expect_err("an unknown drafts method is refused");
     assert_eq!(unknown.code, acp::Error::method_not_found().code);

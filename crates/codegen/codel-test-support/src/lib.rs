@@ -22,7 +22,6 @@
 //! - [`spawn_counting_server`]: Connection-counting HTTP/1.1 server for wire/pooling tests
 //! - [`uds_proxy::UdsProxy`]: Frame-aware fault-injection proxy for leader IPC sockets (unix)
 //! - [`ResourceSnapshot`]: RSS/threads/fds sampling for soak tests
-//! - [`OtelRecorder`]: the mock OTLP server's log, which a test reads and waits on, or fills from its own OTLP transport
 //! - [`MockManagedConfigServer`]: mock of the server the managed configuration supervisor fetches policy from
 //! - [`ManagedPolicy`]: the configuration row the mock server serves for one principal, signed by a [`TestSigningKey`] or not
 #![deny(clippy::indexing_slicing)]
@@ -75,11 +74,6 @@ mod loopback_client;
 pub mod mock_server;
 mod mock_server_tls;
 mod model_reply;
-mod otel_decode;
-mod otel_event;
-#[cfg(test)]
-mod otel_fixtures;
-mod otel_recorder;
 pub mod process;
 mod request_log;
 pub mod resources;
@@ -87,7 +81,6 @@ pub mod sandbox;
 pub mod scripted;
 pub mod sse;
 mod storage_endpoint;
-mod telemetry_events;
 mod tool_call_turn;
 mod tools;
 #[cfg(unix)]
@@ -125,12 +118,6 @@ pub use mock_server::{
     FeedbackPost, GatedUploadProxy, MockCanAdministerTeam, MockInferenceServer, MockModelEntry,
     MockUserTeam, ScriptedResponse, SseEvent, StorageUpload,
 };
-pub use otel_event::{
-    OtelAttributes, OtelBody, OtelDecodeError, OtelEvent, OtelExport, OtelFault, OtelLogRecord,
-    OtelMetricData, OtelMetricPoint, OtelNumber, OtelSignal, OtelSpan, OtelTemporality,
-    OtelUnreadBody,
-};
-pub use otel_recorder::{OtelRecorder, OtelRecorderError};
 #[cfg(unix)]
 pub use process::process_has_exited_without_reap;
 pub use process::{

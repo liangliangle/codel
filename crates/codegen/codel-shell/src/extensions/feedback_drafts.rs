@@ -17,23 +17,19 @@ struct FeedbackDraftSessionRequest {
 
 pub(super) async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let store = feedback_store(agent, &requested_session_id(args)?)?;
-    answer(args, store, agent.product_analytics_enabled()).await
+    answer(args, store).await
 }
 
 /// Answers one `codel/feedback/drafts/*` request against the given store.
-pub async fn answer(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-    telemetry_enabled: bool,
-) -> ExtResult {
+pub async fn answer(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     match args.method.as_ref() {
-        "codel/feedback/drafts/list" => list_feedback_drafts(args, store, telemetry_enabled).await,
-        "codel/feedback/drafts/get" => get_feedback_draft(args, store, telemetry_enabled).await,
+        "codel/feedback/drafts/list" => list_feedback_drafts(args, store).await,
+        "codel/feedback/drafts/get" => get_feedback_draft(args, store).await,
         "codel/feedback/drafts/delete" => {
-            delete_feedback_draft(args, store, telemetry_enabled).await
+            delete_feedback_draft(args, store).await
         }
         "codel/feedback/drafts/update" => {
-            update_feedback_draft(args, store, telemetry_enabled).await
+            update_feedback_draft(args, store).await
         }
         _ => Err(acp::Error::method_not_found()),
     }
@@ -120,7 +116,6 @@ pub(super) fn draft_op_event(
 /// Runs one store op and builds the response before it emits `feedback_draft_op`, so telemetry
 /// cannot alter what the client gets.
 async fn draft_op<T: Send + 'static>(
-    telemetry_enabled: bool,
     session_id: &str,
     op: FeedbackDraftOpKind,
     store_op: impl FnOnce() -> codel_feedback::Result<T> + Send + 'static,
@@ -143,11 +138,9 @@ async fn draft_op<T: Send + 'static>(
 async fn list_feedback_drafts(
     args: &acp::ExtRequest,
     store: FeedbackDraftStore,
-    telemetry_enabled: bool,
 ) -> ExtResult {
     let session_id = requested_session_id(args)?;
     draft_op(
-        telemetry_enabled,
         &session_id,
         FeedbackDraftOpKind::List,
         move || store.list(),
@@ -164,12 +157,10 @@ async fn list_feedback_drafts(
 async fn get_feedback_draft(
     args: &acp::ExtRequest,
     store: FeedbackDraftStore,
-    telemetry_enabled: bool,
 ) -> ExtResult {
     let request: FeedbackDraftRequest = parse_params(args)?;
     let draft_id = request.draft_id;
     draft_op(
-        telemetry_enabled,
         &request.session_id,
         FeedbackDraftOpKind::Load,
         move || store.get(&draft_id),
@@ -190,11 +181,9 @@ async fn get_feedback_draft(
 async fn update_feedback_draft(
     args: &acp::ExtRequest,
     store: FeedbackDraftStore,
-    telemetry_enabled: bool,
 ) -> ExtResult {
     let request: FeedbackDraftUpdateRequest = parse_params(args)?;
     draft_op(
-        telemetry_enabled,
         &request.session_id,
         FeedbackDraftOpKind::Recover,
         move || store.update_from_input(&request.draft_id, request.input),
@@ -216,12 +205,10 @@ async fn update_feedback_draft(
 async fn delete_feedback_draft(
     args: &acp::ExtRequest,
     store: FeedbackDraftStore,
-    telemetry_enabled: bool,
 ) -> ExtResult {
     let request: FeedbackDraftRequest = parse_params(args)?;
     let draft_id = request.draft_id;
     draft_op(
-        telemetry_enabled,
         &request.session_id,
         FeedbackDraftOpKind::Delete,
         move || store.delete(&draft_id),

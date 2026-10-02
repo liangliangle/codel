@@ -885,7 +885,6 @@ impl SessionActor {
                     session_cwd: self.session_info.cwd.clone(),
                 },
                 Some(&self.notifications.persistence_tx),
-                self.telemetry_enabled,
             )
             .await;
 

@@ -674,12 +674,6 @@ impl MvpAgent {
     pub(crate) fn is_data_collection_disabled(&self) -> bool {
         self.auth_manager.is_data_collection_disabled()
     }
-    /// Telemetry enabled and not ZDR. Same gate as session `telemetry_enabled`.
-    pub(crate) fn product_analytics_enabled(&self) -> bool {
-        self.cfg
-            .borrow()
-            .product_analytics_enabled(self.auth_manager.current_or_expired().as_ref())
-    }
     /// Re-sync the `Send` mirror of `cfg.is_trace_upload_enabled()` that the per-session collection gates read.
     /// `cfg` is `!Send`; the gates run on the tokio pool.
     /// Must be called after any mid-session config change that can flip the switch, i.e. every `remote_settings` rewrite.
@@ -3346,7 +3340,6 @@ impl MvpAgent {
     /// Individual consent overriding a fleet default is the feature (its own kill switch is `feedback_trace_card_enabled`).
     fn trace_upload_posture_allows_offer(cfg: &crate::agent::config::Config) -> bool {
         cfg.requirements.trace_upload.pinned() != Some(false)
-            && cfg.is_telemetry_enabled()
     }
     fn has_custom_trace_destination(cfg: &crate::agent::config::Config) -> bool {
         cfg.endpoints.trace_upload_url.is_some()
@@ -4129,7 +4122,6 @@ impl MvpAgent {
             .borrow()
             .is_feature_enabled(crate::agent::config::Feature::AutoWake);
         let support_permission = self.cfg.borrow().features.support_permission;
-        let telemetry_enabled = self.product_analytics_enabled();
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let sampling_config = self
             .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());
@@ -4599,7 +4591,6 @@ impl MvpAgent {
                     None,
                     acp_mcp_servers,
                     support_permission,
-                    telemetry_enabled,
                     auto_update,
                     persistence,
                     chat_history.clone(),

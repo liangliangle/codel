@@ -1006,14 +1006,6 @@ fn apply_managed_settings_features_inner(
     };
     let source = RequirementSource::ManagedSettings { path: path.clone() };
     let mut enforced: Vec<EnforcedField> = Vec::new();
-    if features.disable_telemetry == Some(true) {
-        config.features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
-        enforced.push(EnforcedField {
-            path: "features.telemetry",
-            value: "false (DISABLE_TELEMETRY)".to_string(),
-            source: source.clone(),
-        });
-    }
     if features.disable_feedback == Some(true) {
         use crate::agent::config::Feature;
         config.feature_values.insert(Feature::Feedback, false);
@@ -1164,17 +1156,6 @@ fn apply_requirements_inner(
                 push(concat!($section, ".", $key), format!("{val}"));
             }
         };
-    }
-    use crate::agent::config::TelemetryMode;
-    let req_telemetry_mode = req_str(req, "features", "telemetry")
-        .and_then(TelemetryMode::parse)
-        .or_else(|| req_bool(req, "features", "telemetry").map(TelemetryMode::from));
-    if let Some(mode) = req_telemetry_mode {
-        config.requirements.telemetry.pin(mode, source.clone());
-        if config.features.telemetry != Some(mode) {
-            config.features.telemetry = Some(mode);
-            push("features.telemetry", format!("{mode}"));
-        }
     }
     macro_rules! pin_requirement_only {
         ($name:ident) => {
@@ -1359,24 +1340,6 @@ fn apply_requirements_inner(
         "endpoints",
         "deployment_key",
         config.endpoints.deployment_key,
-        redacted
-    );
-    enforce_str!("telemetry", "events_url", config.telemetry.events_url);
-    enforce_str!(
-        "telemetry",
-        "events_api_key",
-        config.telemetry.events_api_key,
-        redacted
-    );
-    enforce_val!(
-        "telemetry",
-        "mixpanel_enabled",
-        config.telemetry.mixpanel_enabled
-    );
-    enforce_str!(
-        "telemetry",
-        "mixpanel_token",
-        config.telemetry.mixpanel_token,
         redacted
     );
     enforce_str!(

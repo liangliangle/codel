@@ -610,7 +610,6 @@ impl SessionActor {
             }
             acc
         });
-        let mut otel_command_name: Option<String> = None;
         let (resolved, slash_skills, workflow_registry) = match policy.slash {
             SlashAuthority::HumanCatalog => {
                 let slash_skills = self.slash_skills_for_resolve().await;
@@ -690,7 +689,6 @@ impl SessionActor {
                     span.record("command_name", action.command_name());
                     span.record("command_source", "builtin");
                 }
-                otel_command_name = Some(action.command_name().to_string());
                 match action {
                     BuiltinAction::GoalSet {
                         objective,
@@ -744,7 +742,6 @@ impl SessionActor {
             }) => {
                 if let Some(first) = parsed_skills.first() {
                     *self.active_skill.lock() = Some(first.name.clone());
-                    otel_command_name = Some(first.name.clone());
                     let span = tracing::Span::current();
                     span.record("command_name", first.name.as_str());
                     span.record(
@@ -1059,18 +1056,6 @@ impl SessionActor {
                 .await
                 .map(|c| c.model)
                 .unwrap_or_default();
-            if policy.analytics.is_human_prompt() && self.telemetry_enabled {
-                let effective_client_identifier =
-                    prompt_client_identifier.or_else(|| self.client_identifier.clone());
-                let ev = codel_logging::events::PromptSubmitted {
-                    prompt_length: user_message.len(),
-                    model_id,
-                    client_identifier: effective_client_identifier,
-                    screen_mode: prompt_screen_mode,
-                    prompt_text: None,
-                    command_name: otel_command_name,
-                };
-            }
             self.maybe_inject_mcp_reminder().await;
             self.maybe_inject_date_rollover_reminder().await;
             self.inject_plan_mode_reminders().await;

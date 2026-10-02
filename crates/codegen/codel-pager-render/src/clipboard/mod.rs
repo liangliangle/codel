@@ -1196,20 +1196,6 @@ mod tests {
         assert_eq!(read_drop_reason(&other), Reason::ReadFailed);
     }
 
-    /// Within one process equal bytes hash equal regardless of MIME label; 64 hex chars.
-    #[test]
-    fn image_fingerprint_is_content_only_within_the_process() {
-        let image = |data: &[u8], mime: &str| ImageData {
-            data: data.to_vec(),
-            mime_type: mime.to_owned(),
-        };
-        let hash = image_fingerprint(&image(b"\x89PNG", "image/png"));
-        assert_eq!(hash, image_fingerprint(&image(b"\x89PNG", "image/tiff")));
-        assert_ne!(hash, image_fingerprint(&image(b"\x89PNH", "image/png")));
-        assert_eq!(hash.len(), 64);
-        assert!(hash.bytes().all(|b| b.is_ascii_hexdigit()), "{hash}");
-    }
-
     mod guarded_read {
         use super::super::{ProbeDrop, guarded_pasteboard_read};
         use crate::clipboard::ImageData;

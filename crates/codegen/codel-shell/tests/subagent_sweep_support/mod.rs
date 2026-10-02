@@ -497,7 +497,6 @@ pub fn sweep_env_init() -> SweepEnv {
     unsafe {
         std::env::set_var("CODEL_HOME", codel_home.path());
         std::env::set_var("CODEL_API_KEY", "test-key-for-ci");
-        std::env::set_var("CODEL_TELEMETRY_ENABLED", "false");
         std::env::set_var("CODEL_FEEDBACK_ENABLED", "false");
         std::env::set_var("CODEL_TRACE_UPLOAD", "false");
     }

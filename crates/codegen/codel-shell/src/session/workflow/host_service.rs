@@ -46,7 +46,6 @@ fn workflow_max_concurrent_agents_from(configured: usize, parallelism: usize) ->
     }
     requested.min(clamp)
 }
-pub(crate) const WORKFLOW_MAX_SCRIPT_TELEMETRY_EVENTS: u32 = 64;
 pub(crate) const WORKFLOW_MAX_SCRATCH_FILES: usize = 64;
 pub(crate) const WORKFLOW_MAX_SCRATCH_FILE_BYTES: usize = 10 * 1024 * 1024;
 pub(crate) const WORKFLOW_MAX_SCRATCH_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
@@ -57,8 +56,6 @@ const WORKFLOW_MAX_LOG_BYTES: usize = 4 * 1024;
 const WORKFLOW_CHILD_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const WORKFLOW_MAX_SCRATCH_NAME_BYTES: usize = 255;
 const SCRATCH_ARTIFACT_ROOT: &str = "scratch";
-
-pub(crate) type TelemetryHook = Arc<dyn Fn(&str, &serde_json::Value, bool) + Send + Sync>;
 
 /// Per-episode agent counters, reported on `WorkflowRunEnded`.
 #[derive(Debug, Default)]
@@ -86,7 +83,6 @@ pub(crate) struct WorkflowHostParams {
     pub allow_fork_context: bool,
     pub effort: Option<codel_sampling_types::ReasoningEffort>,
     pub templates: std::collections::HashMap<String, String>,
-    pub telemetry: TelemetryHook,
     pub stats: Arc<WorkflowAgentStats>,
     pub cancel: CancellationToken,
     pub task_model_selection: LatchedTaskModelSelection,
@@ -110,7 +106,6 @@ pub(crate) fn spawn_workflow_host_service(
         let service = Arc::new(HostService {
             active_agents: AtomicU32::new(0),
             agent_runs: AtomicU32::new(0),
-            script_telemetry_events: AtomicU32::new(0),
             scratch_io: tokio::sync::Mutex::new(()),
             agent_slots: tokio::sync::Semaphore::new(params.max_concurrent_agents.max(1)),
             params,
@@ -154,14 +149,13 @@ fn reply_cancelled(req: WorkflowHostRequest) {
         | R::GitDiffSince { reply, .. } => {
             let _ = reply.send(Err(HostError::Cancelled));
         }
-        R::Phase { .. } | R::Log { .. } | R::Telemetry { .. } => {}
+        R::Phase { .. } | R::Log { .. } => {}
     }
 }
 
 struct HostService {
     active_agents: AtomicU32,
     agent_runs: AtomicU32,
-    script_telemetry_events: AtomicU32,
     scratch_io: tokio::sync::Mutex<()>,
     agent_slots: tokio::sync::Semaphore,
     params: WorkflowHostParams,
@@ -303,27 +297,6 @@ impl HostService {
                         let agents = self.active_agents.load(Ordering::Relaxed);
                         self.params.notify.emit_ephemeral(&state, elapsed, agents);
                     }
-                }
-            }
-            WorkflowHostRequest::Telemetry {
-                name,
-                fields,
-                replayed,
-            } => {
-                if !replayed
-                    && self.script_telemetry_events.fetch_add(1, Ordering::Relaxed)
-                        < WORKFLOW_MAX_SCRIPT_TELEMETRY_EVENTS
-                {
-                    let host_fields = serde_json::json!({
-                        "run_id": &self.params.run_id,
-                        "script_event_name_bytes": name.len().min(64 * 1024),
-                        "script_event_field_count": fields.as_object().map_or(0, serde_json::Map::len),
-                    });
-                    (self.params.telemetry)(
-                        "workflow_script_event_suppressed",
-                        &host_fields,
-                        false,
-                    );
                 }
             }
             WorkflowHostRequest::BudgetQuery { reply } => {
@@ -1002,7 +975,6 @@ mod tests {
                 allow_fork_context: false,
                 effort: None,
                 templates: Default::default(),
-                telemetry: Arc::new(|_, _, _| {}),
                 stats: Arc::new(WorkflowAgentStats::default()),
                 cancel: CancellationToken::new(),
                 task_model_selection: LatchedTaskModelSelection::default(),

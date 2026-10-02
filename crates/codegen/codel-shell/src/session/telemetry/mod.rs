@@ -126,7 +126,6 @@ impl HookRegInfo {
     }
 }
 
-#[derive(Debug)]
 #[cfg(test)]
 mod is_same_skill_file_tests {
     use super::is_same_skill_file;

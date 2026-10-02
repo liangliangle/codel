@@ -438,7 +438,6 @@ impl<T: Clone> Constrained<T> {
 /// Enforced requirements from `requirements.toml`. Pinned values win over all other sources.
 #[derive(Debug, Clone, Default)]
 pub struct Requirements {
-    pub telemetry: Constrained<TelemetryMode>,
     pub trace_upload: Constrained<bool>,
     pub image_gen: Constrained<bool>,
     pub image_edit: Constrained<bool>,
@@ -686,8 +685,7 @@ pub(crate) fn resolve_enabled(
         .default(default)
         .resolve()
 }
-pub(crate) use codel_logging::config::env_telemetry_mode;
-pub use codel_logging::config::{TelemetryConfig, TelemetryMode};
+pub use codel_logging::config::TelemetryConfig;
 /// Plugin system configuration from `[plugins]` section in config.toml.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PluginsConfig {
@@ -2063,16 +2061,6 @@ impl Config {
     }
     fn apply_env_overrides(&mut self) {
         self.telemetry.apply_env_overrides();
-        if let Some(mode) = env_telemetry_mode("CODEL_TELEMETRY_ENABLED") {
-            self.features.telemetry = Some(mode);
-        }
-    }
-    /// Whether product analytics may run. Every product analytics check calls this.
-    pub fn product_analytics_enabled(&self, auth: Option<&codel_login::CodelAuth>) -> bool {
-        self.is_telemetry_enabled() && !auth.is_some_and(|auth| auth.is_zdr_team())
-    }
-    pub(crate) fn is_telemetry_enabled(&self) -> bool {
-        self.resolve_telemetry_mode().value.is_enabled()
     }
     pub fn is_trace_upload_enabled(&self) -> bool {
         self.resolve_trace_upload().value
@@ -2092,45 +2080,18 @@ impl Config {
     pub(crate) fn is_two_pass_compaction_enabled(&self) -> bool {
         self.is_feature_enabled(Feature::TwoPassCompaction)
     }
-    pub(crate) fn resolve_telemetry_mode(&self) -> Resolved<TelemetryMode> {
-        if let Some(mode) = self.requirements.telemetry.pinned() {
-            return Resolved::new(mode, ConfigSource::Requirement);
-        }
-        if env_bool("DISABLE_TELEMETRY") == Some(true) {
-            return Resolved::new(TelemetryMode::Disabled, ConfigSource::Env);
-        }
-        if let Some(mode) = env_telemetry_mode("CODEL_TELEMETRY_ENABLED") {
-            return Resolved::new(mode, ConfigSource::Env);
-        }
-        if let Some(mode) = self.features.telemetry {
-            return Resolved::new(mode, ConfigSource::Config);
-        }
-        if let Some(rs) = self.remote_settings.as_ref() {
-            if let Some(mode_str) = rs.telemetry_mode.as_deref()
-                && let Some(mode) = TelemetryMode::parse(mode_str)
-            {
-                return Resolved::new(mode, ConfigSource::Remote);
-            }
-            if let Some(val) = rs.telemetry_enabled {
-                return Resolved::new(TelemetryMode::from(val), ConfigSource::Remote);
-            }
-        }
-        Resolved::new(TelemetryMode::Disabled, ConfigSource::Default)
-    }
+    /// Support-bundle upload: requirement pin > env > config > remote > off.
+    /// The fork has no analytics mode to inherit from, so an absent layer means off.
     pub(crate) fn resolve_trace_upload(&self) -> Resolved<bool> {
-        let mode = self.resolve_telemetry_mode();
-        let ff = if mode.value.is_disabled() {
-            None
-        } else {
-            self.remote_settings
-                .as_ref()
-                .and_then(|s| s.trace_upload_enabled)
-        };
         BoolFlag::env("CODEL_TELEMETRY_TRACE_UPLOAD")
             .requirement(self.requirements.trace_upload.pinned())
             .config(self.telemetry.trace_upload)
-            .feature_flag(ff)
-            .default(mode.value.is_enabled())
+            .feature_flag(
+                self.remote_settings
+                    .as_ref()
+                    .and_then(|s| s.trace_upload_enabled),
+            )
+            .default(false)
             .resolve()
     }
     /// Resolve jemalloc heap-profile config from stored remote settings and the current gates.
@@ -2166,21 +2127,15 @@ impl Config {
         )
     }
     pub(crate) fn trace_upload_decision_debug(&self) -> serde_json::Value {
-        let telemetry = self.resolve_telemetry_mode();
         let trace_upload = self.resolve_trace_upload();
         let req = &self.requirements.trace_upload;
         serde_json::json!({
             "trace_upload": trace_upload.value,
             "trace_upload_source": trace_upload.source.to_string(),
-            "telemetry_mode": telemetry.value.to_string(),
-            "telemetry_source": telemetry.source.to_string(),
             "in_requirement_pin": req.pinned(),
             "in_requirement_src": req.source().map(|s| s.to_string()),
             "in_env_trace_upload": std::env::var("CODEL_TELEMETRY_TRACE_UPLOAD").ok(),
-            "in_env_telemetry_enabled": std::env::var("CODEL_TELEMETRY_ENABLED").ok(),
-            "in_env_disable_telemetry": std::env::var("DISABLE_TELEMETRY").ok(),
             "in_cfg_telemetry_trace_upload": self.telemetry.trace_upload,
-            "in_cfg_features_telemetry": self.features.telemetry.map(|m| m.to_string()),
             "in_remote_trace_upload_enabled": self
                 .remote_settings
                 .as_ref()
@@ -2821,46 +2776,6 @@ impl SyncBoolFlag {
         }
         self.inherit.map_or(self.default, |f| f())
     }
-}
-/// Sync slice of [`Config::resolve_telemetry_mode`] for use before the tokio runtime (e.g. `init_sentry`).
-/// `true` only when explicitly off.
-pub(crate) fn is_telemetry_disabled_sync() -> bool {
-    !SyncBoolFlag::new(telemetry_enabled_from_toml)
-        .disable_env("DISABLE_TELEMETRY")
-        .enable_env(codel_telemetry_env_enabled)
-        .resolve()
-}
-/// Sync sibling of [`is_telemetry_disabled_sync`] scoped to Sentry.
-/// Inherits from telemetry when no Sentry-specific signal is set.
-pub fn is_error_reporting_disabled_sync() -> bool {
-    !SyncBoolFlag::new(error_reporting_enabled_from_toml)
-        .disable_env("DISABLE_ERROR_REPORTING")
-        .enable_env(|| env_bool("CODEL_ERROR_REPORTING"))
-        .inherit(|| !is_telemetry_disabled_sync())
-        .resolve()
-}
-/// `[features] telemetry` as enabled bool.
-/// SessionMetrics counts as enabled.
-/// `None` for absent or unparseable.
-fn telemetry_enabled_from_toml(root: &toml::Value) -> Option<bool> {
-    match root.get("features")?.as_table()?.get("telemetry")? {
-        toml::Value::Boolean(b) => Some(*b),
-        toml::Value::String(s) => TelemetryMode::parse(s).map(|m| !m.is_disabled()),
-        _ => None,
-    }
-}
-/// `[diagnostics] error_reporting` as enabled bool.
-/// Bool-only; no `session_metrics` equivalent.
-/// `None` falls through to inheritance.
-fn error_reporting_enabled_from_toml(root: &toml::Value) -> Option<bool> {
-    root.get("diagnostics")?
-        .as_table()?
-        .get("error_reporting")?
-        .as_bool()
-}
-/// `CODEL_TELEMETRY_ENABLED` resolved through `TelemetryMode::parse` so the extended string forms (e.g. `"session_metrics"`) are accepted.
-fn codel_telemetry_env_enabled() -> Option<bool> {
-    env_telemetry_mode("CODEL_TELEMETRY_ENABLED").map(|m| !m.is_disabled())
 }
 /// Load `~/.codel/requirements.toml` standalone so the admin pin can beat
 /// env vars.
@@ -4126,9 +4041,6 @@ pub struct Features {
     /// when set, the agent may ask permission for tool executions
     #[serde(default)]
     pub support_permission: bool,
-    /// `None` defers to remote settings / default (off).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<TelemetryMode>,
     /// Codebase graph indexing for go-to-definition/references.
     /// Accepts: true | false | ["glob", "!negative-glob", ...]
     /// Default: true (index any git repo). Patterns can explicitly match non-git directories.

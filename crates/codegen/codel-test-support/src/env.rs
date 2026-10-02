@@ -70,11 +70,6 @@ pub unsafe fn isolate_codel_env(home: &Path) {
     // SAFETY: forwarded to the caller.
     unsafe {
         std::env::set_var("CODEL_HOME", home);
-        std::env::set_var("CODEL_TELEMETRY_ENABLED", "false");
-        std::env::set_var("CODEL_TELEMETRY_MIXPANEL_ENABLED", "false");
-        std::env::set_var("CODEL_TELEMETRY_MIXPANEL_TOKEN", "");
-        std::env::set_var("CODEL_TELEMETRY_EVENTS_URL", "");
-        std::env::set_var("CODEL_TELEMETRY_EVENTS_API_KEY", "");
         std::env::set_var("CODEL_FEEDBACK_ENABLED", "false");
         std::env::set_var("CODEL_TRACE_UPLOAD", "false");
         for var in [

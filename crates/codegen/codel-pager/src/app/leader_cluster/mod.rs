@@ -320,7 +320,6 @@ impl PagerLeaderCluster {
             crate::test_util::EnvVarGuard::set("CODEL_CLI_CHAT_PROXY_BASE_URL", server.url()),
             crate::test_util::EnvVarGuard::set("CODEL_CODEL_API_BASE_URL", server.url()),
             crate::test_util::EnvVarGuard::set("CODEL_API_KEY", "test-key-for-ci"),
-            crate::test_util::EnvVarGuard::set("CODEL_TELEMETRY_ENABLED", "false"),
             crate::test_util::EnvVarGuard::set("CODEL_FEEDBACK_ENABLED", "false"),
             crate::test_util::EnvVarGuard::set("CODEL_TRACE_UPLOAD", "false"),
             // Pin every leader-path derivation (LeaderLock::new / reconnect's connect_or_spawn) to this cluster's socket

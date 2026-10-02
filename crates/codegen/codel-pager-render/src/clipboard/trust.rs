@@ -230,7 +230,6 @@ mod tests {
     ) -> ClipboardWriteLegs {
         ClipboardWriteLegs {
             route_native: true,
-            route_label: "test".into(),
             cli_tools_tried: String::new(),
             cli_ok_tools: cli_ok_tools.into(),
             wl_copy_ok: cli_ok_tools.split('+').any(|tool| tool == "wl-copy"),

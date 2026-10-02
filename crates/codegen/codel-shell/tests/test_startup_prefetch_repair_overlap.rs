@@ -30,8 +30,7 @@ fn gate_exit_warm_starts_the_one_startup_load_after_the_repair_settles() {
         let team_auth = serde_json::json!({
             scope: {
                 "key": "team-session-token",
-                "auth_mode": "oidc",
-                "oidc_issuer": codel_shell::auth::codel_oauth2_issuer(),
+                "auth_mode": "api_key",
                 "create_time": "2026-01-01T00:00:00Z",
                 "expires_at": "2099-01-01T00:00:00Z",
                 "user_id": "test-user",
