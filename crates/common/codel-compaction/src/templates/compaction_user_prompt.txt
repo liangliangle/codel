@@ -1,4 +1,4 @@
-Your task is to create a detailed summary of the Codel Chat conversation so far, paying close attention to the user's explicit requests and all previous actions as Codel.
+Your task is to create a detailed summary of the Codel Chat conversation so far, paying close attention to the user's explicit requests and all previous actions as Codel (built by Codel).
 This summary should be thorough in capturing technical details, code patterns, architectural decisions, tool chains, and verification steps that would be essential for continuing development, research, or complex tasks without losing context.
 
 Important Clarification on Terminology (Broad File Definition):

@@ -1,10 +1,11 @@
-//! Heap-profile monitor wiring for [`MvpAgent`].
+//! Connects the heap-profile monitor to [`MvpAgent`].
 //!
-//! Full-reapply sites call [`MvpAgent::reconfigure_heap_profile_monitor`].
-//! K12 scoped kill-switch reconfigures only jemalloc fields (no wholesale
-//! `remote_settings` rewrite, no `re_resolve_runtime_fields` / telemetry re-init).
+//! Sites that reapply the full remote settings call [`MvpAgent::reconfigure_heap_profile_monitor`].
+//! The scoped kill-switch reconfigures only the jemalloc fields.
+//! It never rewrites `remote_settings` wholesale, never calls `re_resolve_runtime_fields`, and never re-initializes telemetry.
 
 use super::*;
+use crate::agent::config::TraceUploadEndpoints;
 use crate::heap_profile::{SCOPED_KILL_SWITCH_INTERVAL, build_upload_handles};
 
 impl MvpAgent {
@@ -48,7 +49,7 @@ impl MvpAgent {
         ))
     }
 
-    /// Background poll + scoped kill-switch (agent entrypoints only).
+    /// Spawns the background poll and the scoped kill-switch loop; only agent entrypoints call this.
     /// Idempotent; skipped under `cfg!(test)`.
     pub(super) fn spawn_heap_profile_monitor(&self) {
         if cfg!(test) || self.heap_profile_started.replace(true) {
@@ -68,6 +69,13 @@ impl MvpAgent {
                     }
                 };
                 tokio::time::sleep(poll_interval).await;
+
+                let reported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    agent_ref.get().report_resource_usage_if_due();
+                }));
+                if reported.is_err() {
+                    tracing::error!("resource telemetry: report tick panicked; continuing");
+                }
 
                 let enabled = agent_ref
                     .get()
@@ -123,12 +131,8 @@ impl MvpAgent {
             .finish_tick(threshold, outcome);
     }
 
-    /// K12: fetch settings, reconfigure from jemalloc fields only.
-    ///
-    /// Also patches jemalloc fields on stored `remote_settings` so full-reapply
-    /// sites (`/new` → `reconfigure_heap_profile_monitor`) cannot re-enable
-    /// profiling from a stale enabled flag after a live kill-switch when the
-    /// subsequent wholesale refresh is skipped or fails.
+    /// Fetches settings and reconfigures using only the jemalloc fields. Also patches the jemalloc fields on stored `remote_settings`.
+    /// Without that, a full reapply (`/new` calls `reconfigure_heap_profile_monitor`) could re-enable profiling from a stale enabled flag. That matters when the wholesale refresh after a live kill-switch is skipped or fails.
     pub(super) async fn poll_scoped_jemalloc_kill_switch_once(&self) {
         if !self.heap_profile_monitor.borrow().config().enabled {
             return;
@@ -142,8 +146,8 @@ impl MvpAgent {
             return;
         };
 
-        // Keep stored jemalloc knobs in sync with the live fetch without a
-        // wholesale remote_settings rewrite (no telemetry / announcements churn).
+        // Keep the stored jemalloc fields in sync with the live fetch without rewriting all of remote_settings
+        // A wholesale rewrite would churn telemetry and announcements
         {
             let mut cfg = self.cfg.borrow_mut();
             if let Some(rs) = cfg.remote_settings.as_mut() {
@@ -189,6 +193,7 @@ mod tests {
             jemalloc_heap_profile_enabled: Some(true),
             jemalloc_heap_profile_thresholds_bytes: Some(vec![1_000_000]),
             jemalloc_heap_profile_poll_interval_secs: Some(30),
+            trace_upload_enabled: Some(true),
             ..Default::default()
         });
 
@@ -208,14 +213,15 @@ mod tests {
         );
     }
 
-    /// Kill-switch poll patches stored jemalloc knobs so full reapply (`/new`)
-    /// cannot re-enable from a stale flag when wholesale refresh is skipped.
+    /// The kill-switch poll patches the stored jemalloc fields so a full reapply (`/new`) cannot re-enable profiling from a stale flag.
+    /// That holds even when the wholesale refresh is skipped.
     #[test]
     fn kill_switch_patch_keeps_full_reapply_disabled() {
         let mut cfg = cfg_with_remote(crate::util::config::RemoteSettings {
             jemalloc_heap_profile_enabled: Some(true),
             jemalloc_heap_profile_thresholds_bytes: Some(vec![1_000_000]),
             jemalloc_heap_profile_poll_interval_secs: Some(30),
+            trace_upload_enabled: Some(true),
             ..Default::default()
         });
 
@@ -226,7 +232,7 @@ mod tests {
             rs.jemalloc_heap_profile_poll_interval_secs = Some(30);
         }
 
-        // Full reapply path reads stored fields (hooks available for gate check).
+        // The full reapply path reads the stored fields, with hooks available so the gate check passes
         let free = crate::heap_profile::resolve_jemalloc_heap_profile(
             cfg.remote_settings
                 .as_ref()
@@ -266,6 +272,7 @@ mod tests {
         assert_eq!(free.thresholds, thresholds);
 
         let cfg = cfg_with_remote(crate::util::config::RemoteSettings {
+            trace_upload_enabled: Some(true),
             jemalloc_heap_profile_enabled: Some(false),
             jemalloc_heap_profile_thresholds_bytes: Some(vec![100]),
             ..Default::default()
@@ -301,11 +308,12 @@ mod tests {
             jemalloc_heap_profile_enabled: Some(true),
             jemalloc_heap_profile_thresholds_bytes: Some(thresholds.clone()),
             jemalloc_heap_profile_poll_interval_secs: Some(45),
+            trace_upload_enabled: Some(true),
             ..Default::default()
         });
 
         let full = cfg.resolve_jemalloc_heap_profile(false);
-        // Without installed hooks, prof_available is false → disabled.
+        // Without installed hooks, prof_available is false, so the resolve comes back disabled
         assert!(!full.enabled);
         assert_eq!(full.poll_interval, std::time::Duration::from_secs(45));
         assert_eq!(full.thresholds, vec![100, 200]);

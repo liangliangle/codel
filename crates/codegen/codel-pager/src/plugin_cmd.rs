@@ -1,12 +1,10 @@
-//! `codel plugin` CLI subcommand — manage plugins and marketplace sources.
+//! `codel plugin` CLI subcommand: manage plugins and marketplace sources.
 //!
-//! Follows the `memory_cmd.rs` / `sessions_cmd.rs` / `worktree_cmd` pattern:
-//! clap args and handler logic co-located in a dedicated module. The pager's
-//! `main.rs` dispatches here with a one-liner.
+//! Follows the `memory_cmd.rs`, `sessions_cmd.rs`, and `worktree_cmd` pattern: clap args and handler logic co-located in a dedicated module.
+//! The pager's `main.rs` dispatches here with a one-liner.
 //!
-//! Business logic lives in `codel_shell::plugin` (shared orchestration)
-//! and lower crates (`codel-agent`, `codel-plugin-marketplace`). This
-//! module is a thin CLI wrapper: parse args, call ops, format output.
+//! Business logic lives in `codel_shell::plugin` and lower crates (`codel-agent`, `codel-plugin-marketplace`).
+//! This module is a thin CLI wrapper: parse args, call ops, format output, emit telemetry.
 
 use std::path::{Path, PathBuf};
 
@@ -22,9 +20,9 @@ use codel_shell::plugin::{self, RepoUpdateOutcome, UninstallError};
 
 // ── JSON output types ───────────────────────────────────────────────
 
-/// Typed entry for `codel plugin list --json`. The `status` field acts as a
-/// discriminator: `"installed"` entries have repo/path fields, `"available"`
-/// entries have description/component fields.
+/// Typed entry for `codel plugin list --json`.
+/// The `status` field is the discriminator.
+/// `"installed"` entries have repo and path fields, `"available"` entries have description and component fields.
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum PluginEntry {
@@ -223,7 +221,7 @@ fn print_component_summary(manifest: &PluginManifest, root: &Path) {
 }
 
 fn abbreviated_commit(c: Option<&str>) -> &str {
-    c.map(|s| &s[..7.min(s.len())]).unwrap_or("?")
+    c.and_then(|s| s.get(..7.min(s.len()))).unwrap_or("?")
 }
 
 fn trust_prompt(subject: &str, source_arg: &str) -> String {
@@ -294,10 +292,7 @@ fn cmd_list(json: bool, available: bool) -> Result<()> {
 }
 
 fn installed_plugins(
-    repos: &[(
-        &str,
-        &codel_agent::plugins::install_registry::InstalledRepo,
-    )],
+    repos: &[(&str, &codel_agent::plugins::install_registry::InstalledRepo)],
 ) -> Vec<PluginEntry> {
     repos
         .iter()
@@ -325,15 +320,12 @@ fn installed_plugins(
 }
 
 fn available_plugins(registry: &InstallRegistry) -> Vec<PluginEntry> {
-    let config = codel_shell::config::load_effective_config()
-        .ok()
-        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
-    let mut sources = codel_plugin_marketplace::load_sources(&config);
-    sources.extend(codel_plugin_marketplace::load_extra_sources_from_settings(&sources));
+    // Policy-filtered: blocked marketplaces are neither scanned nor advertised.
+    let sources = codel_shell::plugin::load_filtered_marketplace_sources();
 
     let mut entries = Vec::new();
     for source in &sources {
-        let identity = source_identity(source);
+        let identity = source.identity();
         let root = resolve_marketplace_root(source);
         let Some((root, lease)) = root else { continue };
 
@@ -365,13 +357,6 @@ fn available_plugins(registry: &InstallRegistry) -> Vec<PluginEntry> {
     entries
 }
 
-fn source_identity(source: &codel_plugin_marketplace::MarketplaceSource) -> String {
-    match &source.kind {
-        SourceKind::Git { url, .. } => url.clone(),
-        SourceKind::Local { path } => path.display().to_string(),
-    }
-}
-
 fn resolve_marketplace_root(
     source: &codel_plugin_marketplace::MarketplaceSource,
 ) -> Option<(std::path::PathBuf, Option<SourceCacheLease>)> {
@@ -393,9 +378,23 @@ fn resolve_marketplace_root(
     }
 }
 
+fn install_kind(is_git: bool) -> codel_logging::events::InstallKind {
+    if is_git {
+        codel_logging::events::InstallKind::Git
+    } else {
+        codel_logging::events::InstallKind::Local
+    }
+}
+
+fn log_plugin_installed(
+    install_kind: codel_logging::events::InstallKind,
+    success: bool,
+    error_category: Option<String>,
+) {
+}
+
 fn cmd_install(source: &str, trust: bool) -> Result<()> {
-    if let Some(mref) = codel_plugin_marketplace::install_resolve::parse_marketplace_ref(source)
-    {
+    if let Some(mref) = codel_plugin_marketplace::install_resolve::parse_marketplace_ref(source) {
         return cmd_install_marketplace(source, &mref, trust);
     }
 
@@ -416,6 +415,7 @@ fn cmd_install(source: &str, trust: bool) -> Result<()> {
             for w in &outcome.warnings {
                 tracing::warn!("{w}");
             }
+            log_plugin_installed(install_kind(!outcome.is_local), true, None);
             println!(
                 "Installed {} plugin(s) from {source}: {}",
                 outcome.plugin_names.len(),
@@ -424,6 +424,12 @@ fn cmd_install(source: &str, trust: bool) -> Result<()> {
             Ok(())
         }
         Err(e) => {
+            // On failure we don't know the kind; default to Git (matches canonical).
+            log_plugin_installed(
+                codel_logging::events::InstallKind::Git,
+                false,
+                Some(e.category()),
+            );
             bail!("{e}");
         }
     }
@@ -456,6 +462,11 @@ fn cmd_install_marketplace(
                 tracing::warn!("{w}");
             }
             if outcome.already_installed {
+                log_plugin_installed(
+                    install_kind(outcome.source_is_git),
+                    false,
+                    Some("already_installed".to_string()),
+                );
                 let update_name = outcome
                     .plugin_names
                     .first()
@@ -468,6 +479,7 @@ fn cmd_install_marketplace(
                 );
                 return Ok(());
             }
+            log_plugin_installed(install_kind(outcome.source_is_git), true, None);
             if let Some(note) = &outcome.other_copies_note {
                 println!("{note}");
             }
@@ -480,6 +492,12 @@ fn cmd_install_marketplace(
             Ok(())
         }
         Err(e) => {
+            // On failure we don't know the kind; default to Git (matches canonical).
+            log_plugin_installed(
+                codel_logging::events::InstallKind::Git,
+                false,
+                Some(e.category()),
+            );
             bail!("{e}");
         }
     }
@@ -512,7 +530,13 @@ fn cmd_uninstall(name: &str, confirm: bool, keep_data: bool) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
-        Err(e @ UninstallError::NotFound { .. }) => bail!("{e}"),
+        Err(
+            e @ (UninstallError::NotFound { .. }
+            | UninstallError::RegistryLock { .. }
+            | UninstallError::RegistrySave { .. }),
+        ) => {
+            bail!("{e}")
+        }
     }
 }
 
@@ -551,7 +575,20 @@ fn cmd_update(name: Option<&str>) -> Result<()> {
             }
         }
     }
+    if let Some(summary) = update_failure_summary(&outcomes) {
+        bail!("{summary}");
+    }
     Ok(())
+}
+
+/// Nonzero-exit summary when any repo update failed (policy blocks, sync
+/// errors), so scripts and CI can detect the failure; `None` when all passed.
+fn update_failure_summary(outcomes: &[RepoUpdateOutcome]) -> Option<String> {
+    let failed = outcomes
+        .iter()
+        .filter(|o| matches!(o, RepoUpdateOutcome::Failed { .. }))
+        .count();
+    (failed > 0).then(|| format!("{failed} of {} plugin update(s) failed", outcomes.len()))
 }
 
 fn cmd_enable(name: &str) -> Result<()> {
@@ -741,16 +778,16 @@ fn cmd_tag(path: &str, push: bool, force: bool, dry_run: bool) -> Result<()> {
 // ── Marketplace subcommands ─────────────────────────────────────────
 
 async fn run_marketplace(cmd: MarketplaceCommand) -> Result<()> {
-    let config = codel_shell::config::load_effective_config()
-        .ok()
-        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
-    let mut sources = codel_plugin_marketplace::load_sources(&config);
-    sources.extend(codel_plugin_marketplace::load_extra_sources_from_settings(&sources));
+    // Policy-filtered: list/update must not touch blocked marketplaces.
+    let sources = codel_shell::plugin::load_filtered_marketplace_sources();
 
     match cmd {
         MarketplaceCommand::List { json } => marketplace_list(&sources, json),
-        MarketplaceCommand::Add { url, force } => marketplace_add(&sources, &url, force),
-        MarketplaceCommand::Remove { source } => marketplace_remove(&sources, &source),
+        MarketplaceCommand::Add { url, force } => marketplace_add(&url, force),
+        // Remove is cleanup, not bypass: it must find blocked sources too.
+        MarketplaceCommand::Remove { source } => {
+            marketplace_remove(&codel_shell::plugin::load_marketplace_sources(), &source)
+        }
         MarketplaceCommand::Update { name } => marketplace_update(&sources, name.as_deref()),
     }
 }
@@ -787,21 +824,13 @@ fn marketplace_list(
         );
     } else {
         for s in sources {
-            let id = match &s.kind {
-                SourceKind::Git { url, .. } => url.clone(),
-                SourceKind::Local { path } => path.display().to_string(),
-            };
-            println!("  {}: {id}", s.name);
+            println!("  {}: {}", s.name, s.identity());
         }
     }
     Ok(())
 }
 
-fn marketplace_add(
-    sources: &[codel_plugin_marketplace::MarketplaceSource],
-    url: &str,
-    force: bool,
-) -> Result<()> {
+fn marketplace_add(url: &str, force: bool) -> Result<()> {
     use codel_shell::plugin::MarketplaceAddInput;
 
     let url = url.trim();
@@ -812,8 +841,7 @@ fn marketplace_add(
     let cwd = std::env::current_dir().unwrap_or_default();
     let input = plugin::classify_marketplace_add_input(url, &cwd);
 
-    // Fail fast on missing local paths: without this, a path input would be
-    // stored as a git URL and only error after network clone attempts.
+    // Fail fast on missing local paths: otherwise a path input is stored as a git URL and only errors after network clone attempts
     if let MarketplaceAddInput::LocalPath(path) = &input
         && !path.is_dir()
     {
@@ -828,23 +856,25 @@ fn marketplace_add(
         MarketplaceAddInput::LocalPath(p) => p.display().to_string(),
     };
 
-    // Local paths never match the git-URL allowlist, so a restricted
-    // strictKnownMarketplaces policy blocks them — intentionally fail-closed.
     let allowlist =
         &codel_workspace::permission::resolution::managed_settings().marketplace_allowlist;
-    if allowlist.is_restricted() && !allowlist.is_url_allowed(&identity) {
-        bail!("Marketplace source blocked: {}", allowlist.block_reason());
+    if let Some(reason) = allowlist.add_block_reason(&identity) {
+        bail!("Marketplace source blocked: {reason}");
     }
 
+    // Dedupe against the FULL unfiltered source list by canonical git-URL identity, mirroring the
+    // shell modal twin; the locked add core below re-checks under the flock.
+    let existing = codel_shell::plugin::load_marketplace_sources();
     let already_configured = match &input {
         MarketplaceAddInput::GitUrl(git_url) => {
-            let normalized = git_url.trim_end_matches(".git");
-            sources.iter().any(|s| {
+            use codel_workspace::permission::resolution::normalize_git_url;
+            let normalized = normalize_git_url(git_url);
+            existing.iter().any(|s| {
                 matches!(&s.kind, SourceKind::Git { url: u, .. }
-                    if u.trim_end_matches(".git") == normalized)
+                    if normalize_git_url(u) == normalized)
             })
         }
-        MarketplaceAddInput::LocalPath(path) => sources
+        MarketplaceAddInput::LocalPath(path) => existing
             .iter()
             .any(|s| matches!(&s.kind, SourceKind::Local { path: p } if p == path)),
     };
@@ -861,49 +891,33 @@ fn marketplace_add(
         })?;
     }
 
-    let name = match &input {
-        MarketplaceAddInput::GitUrl(u) => plugin::name_from_url(u),
-        MarketplaceAddInput::LocalPath(p) => plugin::name_from_path(p),
+    let is_official = matches!(&input, MarketplaceAddInput::GitUrl(u)
+        if codel_plugin_marketplace::is_official_source_url(u));
+    let name = if is_official {
+        codel_plugin_marketplace::OFFICIAL_SOURCE_NAME.to_string()
+    } else {
+        match &input {
+            MarketplaceAddInput::GitUrl(u) => plugin::name_from_url(u),
+            MarketplaceAddInput::LocalPath(p) => plugin::name_from_path(p),
+        }
     };
-    let config_path = codel_config::codel_home().join("config.toml");
 
-    let content = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = content
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse config.toml: {e}"))?;
-
-    if doc.get("marketplace").is_none() {
-        doc["marketplace"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    if doc["marketplace"].get("sources").is_none() {
-        doc["marketplace"]["sources"] =
-            toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
-    }
-
-    let sources = doc["marketplace"]["sources"]
-        .as_array_of_tables_mut()
-        .ok_or_else(|| anyhow::anyhow!("marketplace.sources is not an array of tables"))?;
-
-    let mut entry = toml_edit::Table::new();
-    entry["name"] = toml_edit::value(&name);
-    match &input {
-        MarketplaceAddInput::GitUrl(git_url) => {
-            entry["git"] = toml_edit::value(git_url);
-        }
-        MarketplaceAddInput::LocalPath(path) => {
-            entry["path"] = toml_edit::value(path.display().to_string());
-        }
-    }
-    sources.push(entry);
-
-    std::fs::write(&config_path, doc.to_string())?;
+    // Shared locked add core (same as the shell modal): init flock across the
+    // read-modify-write, idempotent normalized dedup, atomic replace.
+    let codel_home = codel_config::codel_home();
+    let _flock = codel_shell::util::config::acquire_init_lock(&codel_home)?;
+    plugin::add_marketplace_source(
+        &codel_home.join(codel_config::USER_CONFIG_FILENAME),
+        &name,
+        &input,
+        is_official,
+    )?;
 
     println!("Added marketplace source: {name} ({identity})");
     Ok(())
 }
 
-/// Resolve `remove` input to a source: exact name match first, then the same
-/// URL/path matching `marketplace add` uses.
+/// Resolve `remove` input to a source: exact name match first, then the same URL or path matching `marketplace add` uses.
 fn find_removal_source<'a>(
     sources: &'a [codel_plugin_marketplace::MarketplaceSource],
     input: &str,
@@ -915,7 +929,7 @@ fn find_removal_source<'a>(
             let identities: Vec<String> = sources
                 .iter()
                 .filter(|s| s.name == input)
-                .map(source_identity)
+                .map(|s| s.identity())
                 .collect();
             return Err(format!(
                 "Multiple sources are named \"{input}\"; remove by URL/path instead: {}",
@@ -925,11 +939,13 @@ fn find_removal_source<'a>(
         return Ok(first);
     }
 
-    let expanded = plugin::normalize_git_url(input);
-    let norm = input.trim_end_matches(".git");
-    let exp_norm = expanded.trim_end_matches(".git");
-    // Loaded local sources carry expanded paths, so expand `~`/relative inputs
-    // the same way `marketplace add` does before comparing.
+    let expanded = plugin::expand_github_shorthand(input);
+    // Full git-URL normalization (`.git`, host case, scp-vs-https spelling),
+    // same matching `marketplace add` dedupes with.
+    use codel_workspace::permission::resolution::normalize_git_url;
+    let norm = normalize_git_url(input);
+    let exp_norm = normalize_git_url(&expanded);
+    // Loaded local sources carry expanded paths, so expand `~` and relative inputs the same way `marketplace add` does before comparing
     let local_input = match plugin::classify_marketplace_add_input(input, cwd) {
         codel_shell::plugin::MarketplaceAddInput::LocalPath(p) => Some(p),
         _ => None,
@@ -939,7 +955,7 @@ fn find_removal_source<'a>(
         .iter()
         .find(|s| match &s.kind {
             SourceKind::Git { url: u, .. } => {
-                let un = u.trim_end_matches(".git");
+                let un = normalize_git_url(u);
                 un == norm || un == exp_norm
             }
             SourceKind::Local { path } => {
@@ -971,24 +987,22 @@ fn marketplace_remove(
     let cwd = std::env::current_dir().unwrap_or_default();
     let source = find_removal_source(sources, input, &cwd).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let identity = source_identity(source);
+    let identity = source.identity();
 
-    let uninstalled = plugin::uninstall_marketplace_source_plugins(&identity);
+    // Uninstall + config rewrite under the init flock with atomic replace, mirroring the shell
+    // modal twin (`remove_source_locked`); an unlocked remove is the lost-update race.
+    let codel_home = codel_config::codel_home();
+    let _flock = codel_shell::util::config::acquire_init_lock(&codel_home)?;
 
-    let config_path = codel_config::codel_home().join("config.toml");
-    let mut removed_from_config = false;
-    if let Ok(content) = std::fs::read_to_string(&config_path)
-        && let Some(new) = plugin::remove_toml_marketplace_block(&content, &identity)
+    let uninstalled = plugin::uninstall_marketplace_source_plugins(&identity)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Shared remove-write core (same as the shell modal): config.toml with the
+    // official flag folded in, JSON stores as fallback.
+    let config_path = codel_home.join(codel_config::USER_CONFIG_FILENAME);
+    if plugin::remove_marketplace_source_from_stores(&config_path, &identity)?
+        == plugin::MarketplaceSourceRemoval::NotFound
     {
-        if let Err(e) = std::fs::write(&config_path, new) {
-            tracing::warn!("failed to write config.toml: {e}");
-        } else {
-            removed_from_config = true;
-        }
-    }
-
-    // Fallback: settings.json / known_marketplaces.json.
-    if !removed_from_config && !plugin::try_remove_source_from_json_files(&identity) {
         eprintln!(
             "Warning: source was found but could not be removed from config files.\n\
              It may be defined in a managed or read-only settings file."
@@ -1052,8 +1066,7 @@ fn marketplace_update_with_cache_root(
     if refreshed == 0 && errors.is_empty() {
         if let Some(filter) = name {
             if name_matched {
-                // Source exists but is local — nothing to sync.
-                println!("Source \"{filter}\" is local — nothing to sync.");
+                println!("Source \"{filter}\" is local, nothing to sync.");
             } else {
                 bail!("Marketplace source \"{filter}\" not found.");
             }
@@ -1076,6 +1089,27 @@ fn marketplace_update_with_cache_root(
 mod tests {
     use super::*;
     use codel_plugin_marketplace::MarketplaceSource;
+
+    /// `codel plugin update` must exit nonzero when any update failed (e.g.
+    /// every update policy-blocked), so scripts can detect the block.
+    #[test]
+    fn update_failure_summary_reports_failed_outcomes() {
+        let outcomes = vec![
+            RepoUpdateOutcome::AlreadyUpToDate {
+                repo_key: "ok-repo".into(),
+            },
+            RepoUpdateOutcome::Failed {
+                repo_key: "blocked-repo".into(),
+                error: "Plugin update blocked: source not in strictKnownMarketplaces".into(),
+            },
+        ];
+        assert_eq!(
+            update_failure_summary(&outcomes).as_deref(),
+            Some("1 of 2 plugin update(s) failed")
+        );
+        let (first, _) = outcomes.split_at_checked(1).expect("two outcomes");
+        assert_eq!(update_failure_summary(first), None);
+    }
 
     fn removal_fixture() -> Vec<MarketplaceSource> {
         vec![
@@ -1211,12 +1245,9 @@ mod tests {
             },
         };
 
-        let cache_dir = codel_plugin_marketplace::git::sync_source_cache(
-            &url,
-            Some("main"),
-            cache_root.path(),
-        )
-        .unwrap();
+        let cache_dir =
+            codel_plugin_marketplace::git::sync_source_cache(&url, Some("main"), cache_root.path())
+                .unwrap();
         let first_head = current_head(&cache_dir);
         add_commit(remote.path(), "second.txt", "second");
 

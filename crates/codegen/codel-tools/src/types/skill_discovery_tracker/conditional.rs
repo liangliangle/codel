@@ -26,6 +26,31 @@ impl ConditionalSkills {
         self.held.is_empty()
     }
 
+    /// Held skills (pending and activated), so registry-wide lookups can see
+    /// skills the listing withholds.
+    pub(super) fn held(&self) -> &[SkillInfo] {
+        &self.held
+    }
+
+    pub(super) fn purge_plugin_state(&mut self, removed: &[(String, PathBuf)]) -> Vec<SkillInfo> {
+        self.activated
+            .retain(|key| !removed.iter().any(|(removed, _)| removed == key));
+        self.dynamic_paths
+            .retain(|path| !removed.iter().any(|(_, removed)| removed == path));
+        let mut native = Vec::new();
+        self.held.retain(|skill| {
+            let path = canonical_path(&skill.path);
+            if skill.plugin_name.is_some() && removed.iter().any(|(_, removed)| removed == &path) {
+                return false;
+            }
+            if skill.plugin_name.is_none() && !self.dynamic_paths.contains(&path) {
+                native.push(skill.clone());
+            }
+            true
+        });
+        native
+    }
+
     /// A `paths:` skill that hasn't been triggered yet — withheld from the
     /// listing until a matching file is touched.
     pub(super) fn is_pending(&self, s: &SkillInfo) -> bool {

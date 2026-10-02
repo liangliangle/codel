@@ -59,6 +59,9 @@ pub struct ToolCallResult {
     pub chat_completion_output: Option<serde_json::Value>,
 }
 
+
+
+
 /// Body of a `tool_call_progress` notification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallProgressFrame {
@@ -120,6 +123,13 @@ impl ToolNotificationFrame {
 
 /// Maximum serialized size of a `system.notify` opaque payload.
 pub const MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES: usize = 256 * 1024;
+
+/// How long the hub waits for a tool server to ack `session.bind` before
+/// failing the bind. Lives in the shared protocol crate so both sides of
+/// the contract reference one value: the hub's ws router uses it as its
+/// bind timeout, and tool servers size any work they do inside the bind
+/// (e.g. the workspace's MCP converge grace) to stay under it.
+pub const SESSION_BIND_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Body of a `system.notify` frame. `payload` is an opaque `SystemNotification`
 /// JSON value forwarded verbatim without decoding.
@@ -280,6 +290,177 @@ pub struct ServerInfo {
     pub connected_since: String,
     /// Lifecycle status (Ready, Busy, Draining, etc.).
     pub status: ToolServerLifecycleStatus,
+    /// Milliseconds since epoch of the hub's last liveness observation:
+    /// last inbound frame for locally connected servers, Redis
+    /// `last_refreshed_ms` for cross-instance entries. Additive; absent
+    /// from old hubs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_ms: Option<u64>,
+    /// What hosts the server, as the hub resolved it from the minter of the
+    /// server's serve credential — never from the `host_kind` the server
+    /// declared in `metadata`, which a process anywhere can spell as it
+    /// likes. A picker groups and labels on this and falls back to the
+    /// declared value only when it is absent (a hub before this field, or a
+    /// minter the hub does not know). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_kind: Option<HostKind>,
+}
+
+/// What hosts a tool server, resolved by the hub from the *minter* of its
+/// serve credential at upgrade — never from the client-declared `host_kind`
+/// in registration `metadata`. Bind-time policy keys on it, and
+/// `servers.list` carries it as [`ServerInfo::host_kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostKind {
+    /// The user's own device (the daemon the desktop runs on the hub's mint).
+    Desktop,
+    /// A container the organisation runs, on its own minter's credential.
+    Container,
+    /// A sandbox guest, on the sandbox service's credential.
+    Sandbox,
+}
+
+impl HostKind {
+    pub const ALL: [HostKind; 3] = [HostKind::Desktop, HostKind::Container, HostKind::Sandbox];
+
+    /// The serde wire spelling, so metric labels join against `servers.list`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Container => "container",
+            Self::Sandbox => "sandbox",
+        }
+    }
+}
+
+impl std::fmt::Display for HostKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Well-known values of the `host_kind` a server *declares* in its
+/// registration `metadata` (display only; the hub's own resolution is
+/// [`ServerInfo::host_kind`]). Readers tolerate unknown strings and fall
+/// back to a plain per-server row.
+pub const HOST_KIND_DESKTOP: &str = "desktop";
+pub const HOST_KIND_DAEMON: &str = "daemon";
+pub const HOST_KIND_SANDBOX: &str = "sandbox";
+
+/// The single catalog of well-known keys a workspace server embeds in its
+/// hub registration `metadata` JSON: machine identity keys announced by
+/// local/RC servers (`hostname`/`display_name`/`cwd`), device identity keys
+/// that let pickers group the N servers one machine exposes into one device
+/// (`device_id`/`host_kind`/`platform`), and sandbox provenance keys
+/// announced by the sandbox start path
+/// (`sandbox_id`/`session_id`/`provider_id`/`launch_id`). Producers merge
+/// these into the metadata blob they announce via
+/// [`ServerIdentityMetadata::merge_into`]; the hub stores metadata
+/// opaquely; readers parse leniently and field-wise via
+/// [`ServerIdentityMetadata::from_metadata`].
+///
+/// `cwd` is shared with the sandbox start-path metadata that every sandbox
+/// workspace server announces, so presence of `cwd` alone does not identify
+/// a local/RC workspace server — `hostname`/`display_name` are the
+/// convention-unique keys. Do not use "parses as this convention" or `cwd`
+/// presence as a local-vs-sandbox discriminator.
+///
+/// `device_id` is the grouping and "is this my device" key; `hostname` is
+/// display-only (it renames and goes stale) and must never stand in for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerIdentityMetadata {
+    /// Machine hostname (e.g. `gethostname()` at startup).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// User-facing name override; wins over `hostname` for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Workspace root the server exposes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Stable per-install identifier of the machine hosting this server,
+    /// shared by every server that machine exposes. Opaque to the hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// What hosts the server: one of the `HOST_KIND_*` constants. Unknown
+    /// values are preserved verbatim for forward compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_kind: Option<String>,
+    /// Host operating system (`std::env::consts::OS` spelling: `macos`,
+    /// `linux`, `windows`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// Sandbox that provisioned this server. Absent for local servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_id: Option<String>,
+    /// Logical sandbox-service session UUID (from `CODEL_SESSION_ID` in the
+    /// container). Absent for local servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Provider that provisioned this server. Populated on the sandbox
+    /// start path only (no container-side source on restore); absent for
+    /// local servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    /// Per-spawn launch nonce minted by the sandbox orchestrator and echoed
+    /// verbatim on the diagnostics `/ready` endpoint. Absent for
+    /// local/legacy launches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_id: Option<String>,
+}
+
+impl ServerIdentityMetadata {
+    /// Lenient FIELD-WISE parse from an opaque registration `metadata` blob:
+    /// unknown keys are ignored, absent keys default to `None`, and a
+    /// wrong-typed key nulls only its own field — correctly typed siblings
+    /// survive (a bad `hostname` must not drop a valid `session_id`).
+    /// Non-object metadata yields all-`None`. Never an error.
+    pub fn from_metadata(metadata: &serde_json::Value) -> Self {
+        let Some(obj) = metadata.as_object() else {
+            return Self::default();
+        };
+        let string_key = |key: &str| {
+            obj.get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        // Exhaustive literal (no `..Default::default()`): a new typed field
+        // must be salvaged here too.
+        Self {
+            hostname: string_key("hostname"),
+            display_name: string_key("display_name"),
+            cwd: string_key("cwd"),
+            device_id: string_key("device_id"),
+            host_kind: string_key("host_kind"),
+            platform: string_key("platform"),
+            sandbox_id: string_key("sandbox_id"),
+            session_id: string_key("session_id"),
+            provider_id: string_key("provider_id"),
+            launch_id: string_key("launch_id"),
+        }
+    }
+
+    /// Merge these identity keys into a registration `metadata` blob
+    /// without clobbering keys already present (caller-supplied values
+    /// win). `None` grows a fresh object; a non-object blob is returned
+    /// unchanged (nothing to merge into).
+    pub fn merge_into(&self, metadata: Option<serde_json::Value>) -> Option<serde_json::Value> {
+        let identity = match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => return metadata,
+        };
+        match metadata {
+            None => Some(serde_json::Value::Object(identity)),
+            Some(serde_json::Value::Object(mut map)) => {
+                for (key, value) in identity {
+                    map.entry(key).or_insert(value);
+                }
+                Some(serde_json::Value::Object(map))
+            }
+            other => other,
+        }
+    }
 }
 
 /// Reply to [`ServersListParams`].
@@ -352,6 +533,11 @@ pub struct ToolsListParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolsListResult {
     pub tools: Vec<codel_tool_types::ToolDescription>,
+    /// Whether this session has invocable workspace tools (local registry
+    /// or published remote routes). Older hubs omit the field; clients
+    /// treat a missing value as unknown and fall back to the tool list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_bound: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -410,6 +596,10 @@ pub struct SessionCloseParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionOpenResult {}
 
+/// `session_detach` params (harness → hub); see [`crate::Method::SessionDetach`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionDetachParams {}
+
 /// `session_bind_server` params (harness → hub). Bind a tool server's
 /// tools to the current session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -440,6 +630,9 @@ pub struct SessionBindServerResult {
     /// [`SessionBindResult::resolve_error`], forwarded verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve_error: Option<String>,
+    /// [`SessionBindResult::image_capabilities`], forwarded verbatim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_capabilities: Vec<String>,
 }
 
 /// `session_unbind_server` params (harness → hub). Unbind a tool
@@ -544,6 +737,53 @@ pub struct SessionBindResult {
     /// resolutions and on servers predating the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve_error: Option<String>,
+    /// Advisory image capability tokens declared by the image the responding
+    /// server runs in, sorted, deduped and validated by that server. Empty
+    /// both on servers predating the field and on images predating the
+    /// declaration; [`IMAGE_CAPABILITIES_V1`] tells the two apart, not this
+    /// field's shape.
+    ///
+    /// Set membership only, never ordered comparison, and never an
+    /// authorization input — the tokens are guest-forgeable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_capabilities: Vec<String>,
+}
+
+/// Self-describing image capability token. Its presence in
+/// [`SessionBindResult::image_capabilities`] means the set is authoritative
+/// (a token not in it is genuinely absent); its absence means unknown.
+pub const IMAGE_CAPABILITIES_V1: &str = "capabilities.v1";
+
+/// Cap on the number of tokens in [`SessionBindResult::image_capabilities`].
+pub const MAX_IMAGE_CAPABILITIES: usize = 128;
+/// Cap on one token's length in bytes.
+pub const MAX_IMAGE_CAPABILITY_LEN: usize = 64;
+
+/// Charset/length gate for an image capability token: dot-separated
+/// `[a-z0-9-]` segments, at least two of them, no empty segment, no
+/// leading/trailing dash, at most [`MAX_IMAGE_CAPABILITY_LEN`] bytes. So it
+/// rejects dotfiles, `..`, uppercase and overlong names.
+///
+/// Declared once here, beside [`IMAGE_CAPABILITIES_V1`], because the producing
+/// reader and every consumer that re-validates the guest-forgeable set must
+/// apply identical rules: a copy that drifts stricter silently drops tokens the
+/// image legitimately declared.
+pub fn is_image_capability_token(name: &str) -> bool {
+    if name.is_empty() || name.len() > MAX_IMAGE_CAPABILITY_LEN {
+        return false;
+    }
+    let mut segments = 0usize;
+    for segment in name.split('.') {
+        let bytes = segment.as_bytes();
+        let charset_ok = bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-');
+        if bytes.is_empty() || !charset_ok || bytes[0] == b'-' || bytes[bytes.len() - 1] == b'-' {
+            return false;
+        }
+        segments += 1;
+    }
+    segments >= 2
 }
 
 /// `session.unbind` params (hub → server). Hub tells the server to
@@ -572,6 +812,11 @@ pub struct NotificationFilter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<String>>,
 }
+
+/// Hub-produced custom `tool.notification` kind for async `bot_send_prompt`.
+/// Auto-subscribed harnesses do not receive this kind. A connection must
+/// list it in [`NotificationFilter::kinds`].
+pub const HUB_KIND_BOT_AGENT_TURN_COMPLETED: &str = "bot_agent_turn_completed";
 
 /// Reply outcome reported by [`SubscribeAck`].
 ///
@@ -647,11 +892,12 @@ pub struct UnsubscribeAck {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HookFrame {
     pub session_id: SessionId,
-    /// Omit for session-wide hooks (broadcast); required for call-scoped
-    /// hooks like `Cancel`.
+    /// The tool server that receives the hook.
+    /// `None` sends it to every tool server bound to the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_id: Option<ToolId>,
-    /// Required for call-scoped hooks (`Cancel`); optional otherwise.
+    /// The running call a `Cancel` ends.
+    /// [`HookEvent::Cancel`] documents a `Cancel` with no `call_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<ToolCallId>,
     /// Correlation id for a request/response hook. The requester mints it and
@@ -780,8 +1026,9 @@ pub struct ToolsChanged {
 /// Lifecycle status of a tool server connection.
 ///
 /// `starting` → `ready` → `busy` ↔ `ready` → `draining` → `shutting_down`.
-/// `disconnected` is hub-only: set during disconnect cleanup, never sent
-/// by the tool server itself.
+/// `disconnected` is set by the hub during disconnect cleanup, and sent by a
+/// tool server tearing down gracefully (`push_disconnect_status`) — the hub
+/// accepts it only for the sender's own connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolServerLifecycleStatus {
@@ -792,6 +1039,20 @@ pub enum ToolServerLifecycleStatus {
     Draining,
     ShuttingDown,
     Disconnected,
+}
+
+impl ToolServerLifecycleStatus {
+    /// The snake_case wire form (the serde encoding), e.g. `"shutting_down"`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Busy => "busy",
+            Self::Draining => "draining",
+            Self::ShuttingDown => "shutting_down",
+            Self::Disconnected => "disconnected",
+        }
+    }
 }
 
 /// `tool_server.status` payload. `session_id = Some` scopes counters
@@ -853,6 +1114,76 @@ pub struct ToolServerStatusPayload {
     /// tasks.
     #[serde(default)]
     pub idle_ignores_background: bool,
+    /// Why `idle_since_ms` is being withheld, when it is. `None` ⇒ not withheld
+    /// (or the tool server is genuinely busy, which `active_tool_calls`
+    /// reports).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withhold_reason: Option<IdleWithholdReason>,
+    /// Epoch ms the current hold is measured from. Never `None` while
+    /// `withhold_reason` is `Some`.
+    ///
+    /// NOT the instant the withhold began, for the preview reasons. It is the
+    /// **real-use anchor**: the last routed request or tool call, floored at
+    /// process start. A status poll never moves it, which is the point — a
+    /// ceiling has to be measured from genuine use, or the pane could hold a
+    /// sandbox open forever by resetting the clock it is judged against. So
+    /// for a poll-pinned session this is *older* than the poll-only period,
+    /// and `now - withhold_since_ms` is time-since-real-use, not
+    /// time-spent-withholding. `Durability` is the exception: there it is the
+    /// true busy-since stamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withhold_since_ms: Option<u64>,
+    /// `true` once the current hold has crossed its effective ceiling. The
+    /// verdict is published rather than re-derived because the ceiling is
+    /// per-session config only the sender can see. Always `false` today: no
+    /// ceilings are configured yet.
+    #[serde(default)]
+    pub withhold_capped: bool,
+    /// Open WebSocket (HMR) tunnels through the in-sandbox preview proxy.
+    /// Nonzero ⇒ a client is attached even if the preview is otherwise silent.
+    #[serde(default)]
+    pub preview_ws_tunnels_open: u32,
+}
+
+/// Why a tool server is withholding `idle_since_ms`, ordered by strength of
+/// evidence that someone is really using the sandbox.
+///
+/// Carries an [`Unknown`](Self::Unknown) escape so adding a variant cannot
+/// break older readers: without it, one unrecognised string would fail
+/// deserialization of the **entire** status frame, taking the idle verdict down
+/// with it. Sandbox binaries are pinned per session, so old and new report side
+/// by side for at least a full session TTL.
+///
+/// Deliberately not `#[non_exhaustive]`: in-workspace matches should stay
+/// exhaustive so a new variant is a compile error at every decision site, which
+/// is a different problem from wire tolerance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleWithholdReason {
+    /// Artifact producers or queued uploads outstanding. Already bounded by the
+    /// durability idle-hold cap.
+    Durability,
+    /// An open WebSocket tunnel or a routed request in flight. Never a status
+    /// poll, however long it is held.
+    PreviewAttached,
+    /// Recent `Routed` preview traffic — a human loading the app.
+    PreviewRouted,
+    /// Only the preview pane's own `/__codel-preview/status` liveness poll.
+    PreviewStatusOnly,
+    /// A recent client-driven mutation RPC (file write, git commit, …) — a
+    /// human working on the workspace through its RPC surface rather than
+    /// through agent tool calls or the preview.
+    ClientRpc,
+    /// A recent `workspace.presence.note`. Like
+    /// [`PreviewStatusOnly`](Self::PreviewStatusOnly) it never advances the
+    /// withhold anchor, so the hub's hold ceiling genuinely caps it.
+    ClientPresence,
+    /// A live scheduled task (`/loop`) has a run coming soon; the workspace limits this hold itself.
+    ScheduledTask,
+    /// A reason this build does not recognise — a newer sender. Never
+    /// constructed locally; only produced by deserialization.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ToolServerStatusPayload {
@@ -1015,6 +1346,13 @@ mod tests {
         SessionId::new("test-session").expect("valid")
     }
 
+    #[test]
+    fn host_kind_as_str_is_the_wire_spelling() {
+        for kind in HostKind::ALL {
+            assert_eq!(json!(kind.as_str()), serde_json::to_value(kind).unwrap());
+        }
+    }
+
     fn tid() -> ToolId {
         ToolId::new("test-tool").expect("valid")
     }
@@ -1068,44 +1406,7 @@ mod tests {
         assert!(hook.tool_id.is_none());
         assert!(hook.call_id.is_none());
     }
-
-    #[test]
-    fn hook_custom_carries_kind_and_payload() {
-        let payload = json!({"key": "value"});
-        let hook = HookFrame::custom(sid(), "my.hook".to_owned(), payload.clone());
-        match &hook.event {
-            HookEvent::Custom { kind, payload: p } => {
-                assert_eq!(kind, "my.hook");
-                assert_eq!(p, &payload);
-            }
-            other => panic!("expected Custom, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hook_cancel_round_trips_through_serde() {
-        let hook = HookFrame::cancel(sid(), tid(), cid());
-        let json = serde_json::to_value(&hook).expect("serialize");
-        let back: HookFrame = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(hook, back);
-    }
-
     // ── ToolNotificationFrame constructors ───────────────────────────
-
-    #[test]
-    fn notification_custom_sets_wire_shape() {
-        let frame = ToolNotificationFrame::custom(tid(), "echo.status", json!({"status": "idle"}));
-        assert_eq!(frame.tool_id.as_ref().unwrap(), &tid());
-        assert!(frame.tool_call_id.is_none());
-        match &frame.notification {
-            WireToolNotification::Custom(c) => {
-                assert_eq!(c.kind, "echo.status");
-                assert_eq!(c.payload, json!({"status": "idle"}));
-            }
-            other => panic!("expected Custom, got {other:?}"),
-        }
-    }
-
     #[test]
     fn notification_known_serializes_value() {
         let inner = json!({"type": "BashOutputChunk", "data": "hello"});
@@ -1155,17 +1456,6 @@ mod tests {
     }
 
     // ── ToolServerStatusPayload ────────────────────────────────────
-
-    #[test]
-    fn tool_server_lifecycle_status_serde_snake_case() {
-        let status = super::ToolServerLifecycleStatus::ShuttingDown;
-        let json = serde_json::to_value(status).expect("serialize");
-        assert_eq!(json.as_str(), Some("shutting_down"));
-        let back: super::ToolServerLifecycleStatus =
-            serde_json::from_value(json).expect("deserialize");
-        assert_eq!(back, status);
-    }
-
     #[test]
     fn tool_server_lifecycle_status_all_variants_round_trip() {
         use super::ToolServerLifecycleStatus::*;
@@ -1179,6 +1469,7 @@ mod tests {
         ] {
             let json = serde_json::to_value(variant).expect("serialize");
             assert_eq!(json.as_str(), Some(expected_str), "variant {variant:?}");
+            assert_eq!(variant.as_str(), expected_str, "variant {variant:?}");
             let back: super::ToolServerLifecycleStatus =
                 serde_json::from_value(json).expect("deserialize");
             assert_eq!(back, variant);
@@ -1260,6 +1551,10 @@ mod tests {
             drain_started_ms: Some(1721234599999),
             turn_active: true,
             idle_ignores_background: false,
+            withhold_reason: None,
+            withhold_since_ms: None,
+            withhold_capped: false,
+            preview_ws_tunnels_open: 0,
         };
         let json = serde_json::to_value(&payload).expect("serialize");
         assert_eq!(json["upload_queue_pending"], 7);
@@ -1272,6 +1567,117 @@ mod tests {
         let back: super::ToolServerStatusPayload =
             serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, payload);
+    }
+
+    /// `withhold_reason` is snake_case on the wire so it can be used directly
+    /// as a metric label.
+    #[test]
+    fn tool_server_status_payload_carries_withhold_fields() {
+        let payload = super::ToolServerStatusPayload {
+            status: super::ToolServerLifecycleStatus::Ready,
+            session_id: Some(sid()),
+            idle_since_ms: None,
+            withhold_reason: Some(super::IdleWithholdReason::PreviewStatusOnly),
+            withhold_since_ms: Some(1721234560000),
+            withhold_capped: true,
+            preview_ws_tunnels_open: 2,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&payload).expect("serialize");
+        assert_eq!(json["withhold_reason"], "preview_status_only");
+        assert_eq!(json["withhold_since_ms"], 1721234560000u64);
+        assert_eq!(json["withhold_capped"], true);
+        assert_eq!(json["preview_ws_tunnels_open"], 2);
+        let back: super::ToolServerStatusPayload =
+            serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, payload);
+    }
+
+    /// Every constructible reason keeps its snake_case wire string stable —
+    /// these strings feed metric labels and cross-version peers directly.
+    #[test]
+    fn withhold_reason_wire_strings_are_stable() {
+        // Exhaustive over the locally-constructible variants: a new variant
+        // fails to compile here before it can reach the wire unpinned.
+        for reason in [
+            super::IdleWithholdReason::Durability,
+            super::IdleWithholdReason::PreviewAttached,
+            super::IdleWithholdReason::PreviewRouted,
+            super::IdleWithholdReason::PreviewStatusOnly,
+            super::IdleWithholdReason::ClientRpc,
+            super::IdleWithholdReason::ClientPresence,
+            super::IdleWithholdReason::ScheduledTask,
+        ] {
+            let expected = match reason {
+                super::IdleWithholdReason::Durability => "durability",
+                super::IdleWithholdReason::PreviewAttached => "preview_attached",
+                super::IdleWithholdReason::PreviewRouted => "preview_routed",
+                super::IdleWithholdReason::PreviewStatusOnly => "preview_status_only",
+                super::IdleWithholdReason::ClientRpc => "client_rpc",
+                super::IdleWithholdReason::ClientPresence => "client_presence",
+                super::IdleWithholdReason::ScheduledTask => "scheduled_task",
+                super::IdleWithholdReason::Unknown => unreachable!("never constructed locally"),
+            };
+            assert_eq!(
+                serde_json::to_value(reason).expect("serialize"),
+                serde_json::Value::String(expected.to_owned())
+            );
+            let back: super::IdleWithholdReason =
+                serde_json::from_value(serde_json::Value::String(expected.to_owned()))
+                    .expect("round-trip");
+            assert_eq!(back, reason);
+        }
+    }
+
+    /// An unrecognised reason from a newer sender must degrade to `Unknown`,
+    /// not fail the whole frame and take the idle verdict with it.
+    #[test]
+    fn unknown_withhold_reason_does_not_fail_the_frame() {
+        let json = serde_json::json!({
+            "status": "ready",
+            "active_tool_calls": 0,
+            "background_tasks": 0,
+            "pending_tool_calls": 0,
+            "last_tool_call_started_ms": 0,
+            "last_tool_call_completed_ms": 0,
+            "uptime_ms": 1000,
+            "withhold_reason": "some_future_reason",
+            "withhold_since_ms": 1721234560000u64,
+        });
+        let back: super::ToolServerStatusPayload =
+            serde_json::from_value(json).expect("a newer reason must not break the frame");
+        assert_eq!(
+            back.withhold_reason,
+            Some(super::IdleWithholdReason::Unknown)
+        );
+        assert_eq!(
+            back.withhold_since_ms,
+            Some(1721234560000),
+            "the rest of the frame must survive intact"
+        );
+    }
+
+    /// The fleet is version-pinned per session, so old and new binaries report
+    /// side by side for at least a full session TTL.
+    #[test]
+    fn tool_server_status_payload_withhold_fields_are_optional_on_the_wire() {
+        let json = serde_json::json!({
+            "status": "ready",
+            "active_tool_calls": 0,
+            "background_tasks": 0,
+            "pending_tool_calls": 0,
+            "last_tool_call_started_ms": 0,
+            "last_tool_call_completed_ms": 0,
+            "uptime_ms": 1000,
+        });
+        let back: super::ToolServerStatusPayload =
+            serde_json::from_value(json).expect("old payload must still deserialize");
+        assert_eq!(back.withhold_reason, None);
+        assert_eq!(back.withhold_since_ms, None);
+        assert!(!back.withhold_capped);
+        assert_eq!(back.preview_ws_tunnels_open, 0);
+        // An absent reason is indistinguishable from "nothing is withheld" —
+        // what the field-coverage ratio exists to measure.
     }
 
     /// A legacy payload without the new fields deserializes with defaults.
@@ -1469,5 +1875,278 @@ mod tests {
         assert_eq!(v["hook_id"], "");
         let back: HookFrame = serde_json::from_value(v).expect("deserialize");
         assert_eq!(back.hook_id, Some(String::new()));
+    }
+
+    // ── Image capability tokens ─────────────────────────────────────
+    //
+    // The canonical accept/reject lists for every hop: the workspace-side
+    // reader and the chat-side re-validation both call this gate, so a rule
+    // change has to break here first.
+
+    #[test]
+    fn image_capability_tokens_accepted() {
+        for name in [
+            IMAGE_CAPABILITIES_V1,
+            "codel-files.occ",
+            "playwright.chromium-headless-shell",
+            "app-template.v2",
+            "a.b.c",
+            "node.22",
+            &format!("a.{}", "b".repeat(MAX_IMAGE_CAPABILITY_LEN - 2)),
+        ] {
+            assert!(is_image_capability_token(name), "expected valid: {name}");
+        }
+    }
+
+    #[test]
+    fn image_capability_tokens_rejected() {
+        for name in [
+            "",
+            "README",
+            "..",
+            ".hidden",
+            "trailing.",
+            "Grove.Daemon",
+            "codel_files.occ",
+            "-lead.ing",
+            "trail-.ing",
+            "seg..empty",
+            "space d.ot",
+            "unicode.é",
+            "single",
+            "../etc/passwd",
+            &format!("a.{}", "b".repeat(MAX_IMAGE_CAPABILITY_LEN)),
+        ] {
+            assert!(!is_image_capability_token(name), "expected invalid: {name}");
+        }
+    }
+
+    // ── ServerIdentityMetadata / ServerInfo.last_seen_ms ────────────
+
+    #[test]
+    fn server_identity_metadata_parses_known_keys_ignoring_extras() {
+        let meta = json!({
+            "hostname": "my-laptop",
+            "display_name": "Work laptop",
+            "cwd": "/home/me/proj",
+            "session_id": "sandbox-announced",
+            "custom_user_key": {"nested": true},
+        });
+        let parsed = ServerIdentityMetadata::from_metadata(&meta);
+        assert_eq!(parsed.hostname.as_deref(), Some("my-laptop"));
+        assert_eq!(parsed.display_name.as_deref(), Some("Work laptop"));
+        assert_eq!(parsed.cwd.as_deref(), Some("/home/me/proj"));
+        assert_eq!(parsed.session_id.as_deref(), Some("sandbox-announced"));
+        assert_eq!(parsed.sandbox_id, None);
+        assert_eq!(parsed.device_id, None);
+    }
+
+    /// Device identity keys group N servers from one machine and drive
+    /// "this device" detection; an unknown `host_kind` is preserved verbatim
+    /// so readers can fall back to a plain row instead of dropping it.
+    #[test]
+    fn server_identity_metadata_parses_device_identity_keys() {
+        let meta = json!({
+            "hostname": "my-laptop",
+            "cwd": "/home/me/proj",
+            "device_id": "dev-0f3a",
+            "host_kind": "spaceship",
+            "platform": "macos",
+        });
+        let parsed = ServerIdentityMetadata::from_metadata(&meta);
+        assert_eq!(
+            parsed,
+            ServerIdentityMetadata {
+                hostname: Some("my-laptop".to_owned()),
+                cwd: Some("/home/me/proj".to_owned()),
+                device_id: Some("dev-0f3a".to_owned()),
+                host_kind: Some("spaceship".to_owned()),
+                platform: Some("macos".to_owned()),
+                ..Default::default()
+            }
+        );
+        let merged = ServerIdentityMetadata {
+            host_kind: Some(HOST_KIND_DESKTOP.to_owned()),
+            platform: Some("linux".to_owned()),
+            ..Default::default()
+        }
+        .merge_into(Some(
+            json!({"device_id": "dev-0f3a", "host_kind": "daemon"}),
+        ))
+        .expect("object stays object");
+        assert_eq!(
+            merged,
+            json!({"device_id": "dev-0f3a", "host_kind": "daemon", "platform": "linux"})
+        );
+    }
+
+    #[test]
+    fn server_identity_metadata_parses_sandbox_start_path_payload() {
+        // Mirrors `build_workspace_server_metadata` in the sandbox start
+        // path (`mode` stays an unknown key: it has no typed consumer).
+        let meta = json!({
+            "cwd": "/workspace",
+            "mode": "remote",
+            "sandbox_id": "sb-start",
+            "session_id": "44444444-4444-4444-4444-444444444444",
+            "provider_id": "test-provider",
+            "launch_id": "55555555-5555-5555-5555-555555555555",
+        });
+        let parsed = ServerIdentityMetadata::from_metadata(&meta);
+        assert_eq!(parsed.cwd.as_deref(), Some("/workspace"));
+        assert_eq!(parsed.sandbox_id.as_deref(), Some("sb-start"));
+        assert_eq!(
+            parsed.session_id.as_deref(),
+            Some("44444444-4444-4444-4444-444444444444")
+        );
+        assert_eq!(parsed.provider_id.as_deref(), Some("test-provider"));
+        assert_eq!(
+            parsed.launch_id.as_deref(),
+            Some("55555555-5555-5555-5555-555555555555")
+        );
+        assert_eq!(parsed.hostname, None);
+    }
+
+    #[test]
+    fn server_identity_metadata_absent_keys_default_to_none() {
+        let parsed = ServerIdentityMetadata::from_metadata(&json!({"other": 1}));
+        assert_eq!(parsed, ServerIdentityMetadata::default());
+    }
+
+    #[test]
+    fn server_identity_metadata_garbage_is_all_none_never_error() {
+        for garbage in [
+            json!(null),
+            json!("a string"),
+            json!(42),
+            json!([1, 2, 3]),
+            json!({"hostname": 42}),
+        ] {
+            assert_eq!(
+                ServerIdentityMetadata::from_metadata(&garbage),
+                ServerIdentityMetadata::default(),
+                "garbage metadata must parse to all-None: {garbage}"
+            );
+        }
+    }
+
+    /// A wrong-typed key must null only itself: the hub resolves sandbox
+    /// sessions from `session_id`, so a bad `hostname`/`cwd` (user-supplied
+    /// `--metadata`) must not suppress session resolution.
+    #[test]
+    fn server_identity_metadata_wrong_typed_key_nulls_only_that_field() {
+        let meta = json!({
+            "hostname": 42,
+            "cwd": ["not", "a", "string"],
+            "session_id": "sess-1",
+            "provider_id": "test-provider",
+        });
+        let parsed = ServerIdentityMetadata::from_metadata(&meta);
+        assert_eq!(parsed.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(parsed.provider_id.as_deref(), Some("test-provider"));
+        assert_eq!(parsed.hostname, None);
+        assert_eq!(parsed.cwd, None);
+    }
+
+    /// Per-field tolerance: each well-known key is independently salvaged
+    /// when every other key is wrong-typed.
+    #[test]
+    fn server_identity_metadata_each_field_survives_bad_siblings() {
+        let keys = [
+            "hostname",
+            "display_name",
+            "cwd",
+            "device_id",
+            "host_kind",
+            "platform",
+            "sandbox_id",
+            "session_id",
+            "provider_id",
+            "launch_id",
+        ];
+        for good in keys {
+            let mut obj = serde_json::Map::new();
+            for key in keys {
+                let value = if key == good {
+                    json!("value")
+                } else {
+                    json!(1)
+                };
+                obj.insert(key.to_owned(), value);
+            }
+            let parsed = ServerIdentityMetadata::from_metadata(&json!(obj));
+            let mut expected = ServerIdentityMetadata::default();
+            match good {
+                "hostname" => expected.hostname = Some("value".to_owned()),
+                "display_name" => expected.display_name = Some("value".to_owned()),
+                "cwd" => expected.cwd = Some("value".to_owned()),
+                "device_id" => expected.device_id = Some("value".to_owned()),
+                "host_kind" => expected.host_kind = Some("value".to_owned()),
+                "platform" => expected.platform = Some("value".to_owned()),
+                "sandbox_id" => expected.sandbox_id = Some("value".to_owned()),
+                "session_id" => expected.session_id = Some("value".to_owned()),
+                "provider_id" => expected.provider_id = Some("value".to_owned()),
+                "launch_id" => expected.launch_id = Some("value".to_owned()),
+                other => unreachable!("unhandled key {other}"),
+            }
+            assert_eq!(parsed, expected, "only {good} must survive");
+        }
+    }
+
+    #[test]
+    fn server_identity_metadata_merge_preserves_user_keys() {
+        let identity = ServerIdentityMetadata {
+            hostname: Some("host-a".to_owned()),
+            cwd: Some("/work".to_owned()),
+            ..Default::default()
+        };
+        let merged = identity
+            .merge_into(Some(json!({"hostname": "user-override", "extra": true})))
+            .expect("object stays object");
+        assert_eq!(merged["hostname"], "user-override");
+        assert_eq!(merged["cwd"], "/work");
+        assert_eq!(merged["extra"], true);
+        assert!(merged.get("display_name").is_none());
+    }
+
+    #[test]
+    fn server_identity_metadata_merge_into_none_and_non_object() {
+        let identity = ServerIdentityMetadata {
+            hostname: Some("host-a".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            identity.merge_into(None),
+            Some(json!({"hostname": "host-a"}))
+        );
+        assert_eq!(
+            identity.merge_into(Some(json!("opaque"))),
+            Some(json!("opaque"))
+        );
+    }
+
+    #[test]
+    fn server_info_last_seen_ms_absent_and_round_trip() {
+        // Old-hub payload without the field deserializes to None.
+        let old = json!({
+            "server_id": "srv-1",
+            "description": "",
+            "metadata": null,
+            "connected_since": "",
+            "status": "ready",
+        });
+        let info: ServerInfo = serde_json::from_value(old).expect("old payload parses");
+        assert_eq!(info.last_seen_ms, None);
+        // None is skipped on serialize; Some round-trips.
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert!(json.get("last_seen_ms").is_none());
+        let with = ServerInfo {
+            last_seen_ms: Some(1_234_567),
+            ..info
+        };
+        let round: ServerInfo =
+            serde_json::from_value(serde_json::to_value(&with).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(round.last_seen_ms, Some(1_234_567));
     }
 }

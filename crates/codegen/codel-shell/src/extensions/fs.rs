@@ -1,7 +1,5 @@
-//! Filesystem extension API layer.
-//!
 //! Routing: absolute paths work directly; relative paths require sessionId for lookup.
-//! Business logic delegated to `session::file_system::*` pure functions.
+//! Business logic is delegated to `session::file_system::*` pure functions.
 use super::{Empty, ExtResult, parse_params, to_ext_response};
 use crate::agent::MvpAgent;
 use crate::session::ExtMethodResult;
@@ -35,7 +33,7 @@ fn default_include_hidden() -> bool {
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FsListRequest {
+pub(crate) struct FsListRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     pub path: String,
@@ -74,14 +72,14 @@ impl FsListRequest {
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FsExistsRequest {
+pub(crate) struct FsExistsRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     pub path: String,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FsReadFileRequest {
+pub(crate) struct FsReadFileRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     pub path: String,
@@ -89,27 +87,22 @@ pub struct FsReadFileRequest {
     pub max_bytes: usize,
     #[serde(default)]
     pub max_lines: Option<usize>,
-    /// Byte offset for a binary-safe ranged read. When `offset`/`length`
-    /// is set (or `encoding` is `base64`) the read returns the chunk
-    /// `[offset, offset + length)`; otherwise the whole file is read
-    /// (legacy behavior).
+    /// Byte offset for a binary-safe ranged read.
+    /// When `offset`/`length` is set (or `encoding` is `base64`) the read returns the chunk `[offset, offset + length)`.
+    /// Otherwise the whole file is read (legacy behavior).
     #[serde(default)]
     pub offset: Option<u64>,
-    /// Bytes to read for a ranged read. Absent means "to EOF", but the
-    /// effective read is always capped at `max_bytes` (default 1 MiB) and the
-    /// server's hard limit, so an unset `length` still yields at most
-    /// `max_bytes`. Detect "more data" by comparing the returned bytes (from
-    /// `offset`) against the response `size`.
+    /// Bytes to read for a ranged read. Absent means "to EOF", but the effective read is always capped at `max_bytes` (default 1 MiB) and the server's hard limit. An unset `length` therefore still yields at most `max_bytes`.
+    /// Detect "more data" by comparing the returned bytes (from `offset`) against the response `size`.
     #[serde(default)]
     pub length: Option<u64>,
-    /// Transfer encoding for ranged reads (default `utf8`; non-UTF-8
-    /// ranges fall back to base64 regardless).
+    /// Transfer encoding for ranged reads (default `utf8`; non-UTF-8 ranges fall back to base64 regardless).
     #[serde(default)]
     pub encoding: FsReadEncoding,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FsWriteFileRequest {
+pub(crate) struct FsWriteFileRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     pub path: String,
@@ -119,13 +112,12 @@ pub struct FsWriteFileRequest {
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FsDeleteFileRequest {
+pub(crate) struct FsDeleteFileRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     pub path: String,
 }
-/// Resolve path from explicit value or session lookup.
-/// For absolute paths, use directly. For relative paths, resolve from session cwd.
+/// Resolve the path: absolute paths are used directly; relative paths are resolved against the session cwd.
 fn resolve_path(
     agent: &MvpAgent,
     path: &str,
@@ -143,10 +135,9 @@ fn resolve_path(
     }
     Err(acp::Error::invalid_params().data("sessionId is required for relative paths"))
 }
-/// Confine `path` to the workspace root, falling back to the session cwd for
-/// worktree sessions (rooted outside it). Returns the resolved path and an
-/// optional confining walk root (`None` when confinement is off — the default,
-/// so the fallback and error paths only apply on a confining sandbox workspace).
+/// Confine `path` to the workspace root, falling back to the session cwd for worktree sessions (rooted outside it).
+/// Returns the resolved path and an optional confining walk root.
+/// The root is `None` when confinement is off (the default), so the fallback and error paths only apply on a confining sandbox workspace.
 async fn confine_local(
     agent: &MvpAgent,
     path: &Path,

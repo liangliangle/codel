@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# Codel CLI installer — https://codel.dev/cli/install.sh
+# Codel CLI installer — https://codel/cli/install.sh
 #
 # Auth: CODEL_DEPLOYMENT_KEY (takes precedence) or ~/.codel/auth.json from `codel login`.
 # Env: CODEL_CHANNEL (stable|alpha|enterprise, default: stable), CODEL_BIN_DIR, CODEL_PROXY_URL
 #
 # Usage:
-#   curl -fsSL https://codel.dev/cli/install.sh | bash            # latest stable
-#   curl -fsSL https://codel.dev/cli/install.sh | bash -s 0.1.42  # specific version
-#   CODEL_DEPLOYMENT_KEY=<key> bash <(curl -fsSL https://codel.dev/cli/install.sh)
+#   curl -fsSL https://codel/cli/install.sh | bash            # latest stable
+#   curl -fsSL https://codel/cli/install.sh | bash -s 0.1.42  # specific version
+#   CODEL_DEPLOYMENT_KEY=<key> bash <(curl -fsSL https://codel/cli/install.sh)
 #
 # Windows: run under Git for Windows / MSYS2 Bash (same curl | bash flow); WSL
 # uses the Linux binary.
@@ -99,6 +99,39 @@ is_not_found() {
     [ "$code" = "404" ]
 }
 
+fetch_compressed() {
+    local url="$1" tmp="$2" out="$3"
+    shift 3
+    is_not_found "$url" && return 1
+    download_file_parallel "$url" "$tmp" || return 1
+    # pipefail catches a decoder error (corrupt) or the over-cap SIGPIPE so the
+    # caller falls back; head bounds the write so a bomb cannot fill the disk.
+    # A real binary is ~170 MiB, well under the cap.
+    local max=$((512 * 1024 * 1024))
+    if (set -o pipefail; "$@" <"$tmp" 2>/dev/null | head -c "$max" >"$out"); then
+        [ -s "$out" ] && return 0
+    fi
+    rm -f "$out"
+    return 1
+}
+
+fetch_binary() {
+    local base="$1" out="$2" tmp
+    tmp=$(mktemp 2>/dev/null) || tmp=""
+    if [ -n "$tmp" ]; then
+        if command -v zstd >/dev/null 2>&1 && fetch_compressed "${base}.zst" "$tmp" "$out" zstd -q -dc; then
+            rm -f "$tmp"
+            return 0
+        fi
+        if command -v gzip >/dev/null 2>&1 && fetch_compressed "${base}.gz" "$tmp" "$out" gzip -dc; then
+            rm -f "$tmp"
+            return 0
+        fi
+        rm -f "$tmp"
+    fi
+    download_file_parallel "$base" "$out"
+}
+
 # JSON field extractor — extract a top-level string value using sed.
 json_get() {
     local json="$1" field="$2"
@@ -119,7 +152,7 @@ read_codel_token() {
 
 # Resolve auth: CODEL_DEPLOYMENT_KEY > OIDC token > legacy token
 OIDC_SCOPE="https://auth.codel.dev::b1a00492-073a-47ea-816f-4c329264a828"
-LEGACY_SCOPE="https://accounts.codel.dev/sign-in"
+LEGACY_SCOPE="https://accounts.codel/sign-in"
 AUTH_SOURCE=""
 
 if [ -n "$CODEL_DEPLOYMENT_KEY" ]; then
@@ -151,7 +184,20 @@ case "$(uname -m)" in
     *)                    echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-BASE_URL_PRIMARY="https://codel.dev/cli"
+# Rosetta lies: in a translated shell on Apple Silicon, uname -m reports
+# x86_64. Install the native arm64 build (faster startup, no translation).
+# sysctl lives in /usr/sbin, which pruned PATHs often drop — resolve the
+# binary first (PATH, then absolute) so the probe cannot quietly keep
+# x86_64. A probe that runs and finds no key is a genuine Intel Mac.
+if [ "$os" = "macos" ] && [ "$arch" = "x86_64" ]; then
+    sysctl_bin="$(command -v sysctl || echo /usr/sbin/sysctl)"
+    if [ "$("$sysctl_bin" -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+        echo "Apple Silicon detected (Rosetta shell); installing the native arm64 build." >&2
+        arch="aarch64"
+    fi
+fi
+
+BASE_URL_PRIMARY="https://codel/cli"
 BASE_URL_FALLBACK="https://storage.googleapis.com/codel-build-public-artifacts/cli"
 DOWNLOAD_DIR="$HOME/.codel/downloads"
 BIN_DIR="${CODEL_BIN_DIR:-$HOME/.codel/bin}"
@@ -159,6 +205,13 @@ mkdir -p "$DOWNLOAD_DIR" "$BIN_DIR"
 
 platform="${os}-${arch}"
 CHANNEL="${CODEL_CHANNEL:-stable}"
+case "$CHANNEL" in
+    stable|alpha|enterprise) ;;
+    *)
+        echo "Invalid CODEL_CHANNEL: '${CHANNEL}' (expected stable, alpha, or enterprise)" >&2
+        exit 1
+        ;;
+esac
 
 # Pick a working BASE_URL: try Cloudflare-fronted codel.dev first, fall back to
 # direct GCS if it's unreachable. The probe doubles as the channel-pointer
@@ -207,8 +260,8 @@ rm -f "$binary_tmp" 2>/dev/null || true
 
 echo "  Downloading codel ${version}..." >&2
 if [ "$os" = "windows" ]; then
-    if ! download_file_parallel "${artifact_base}.exe" "$binary_tmp"; then
-        if ! download_file_parallel "$artifact_base" "$binary_tmp"; then
+    if ! fetch_binary "${artifact_base}.exe" "$binary_tmp"; then
+        if ! fetch_binary "$artifact_base" "$binary_tmp"; then
             rm -f "$binary_tmp"
             if is_not_found "${artifact_base}.exe"; then
                 echo "Error: Codel is not yet available for your system ($platform)." >&2
@@ -218,7 +271,7 @@ if [ "$os" = "windows" ]; then
             exit 1
         fi
     fi
-elif ! download_file_parallel "$artifact_base" "$binary_tmp"; then
+elif ! fetch_binary "$artifact_base" "$binary_tmp"; then
     rm -f "$binary_tmp"
     if is_not_found "$artifact_base"; then
         echo "Error: Codel is not yet available for your system ($platform)." >&2
@@ -278,9 +331,10 @@ fi
 # Persist installer source and channel to config
 CONFIG_FILE="$HOME/.codel/config.toml"
 CLI_BLOCK="installer = \"internal\""
-if [ "$CHANNEL" != "stable" ]; then
-    CLI_BLOCK="${CLI_BLOCK}\nchannel = \"${CHANNEL}\""
-fi
+case "$CHANNEL" in
+    alpha) CLI_BLOCK="${CLI_BLOCK}\nchannel = \"alpha\"" ;;
+    enterprise) CLI_BLOCK="${CLI_BLOCK}\nchannel = \"enterprise\"" ;;
+esac
 if [ ! -f "$CONFIG_FILE" ]; then
     printf '[cli]\n%b\n' "$CLI_BLOCK" > "$CONFIG_FILE"
 elif grep -q '^\[cli\]' "$CONFIG_FILE"; then
@@ -297,14 +351,30 @@ fi
 
 # Fetch managed_config.toml + requirements.toml from server (deployment key only).
 if [ -n "$CODEL_DEPLOYMENT_KEY" ]; then
-    PROXY_URL="${CODEL_PROXY_URL:-https://cli-chat-proxy.codel.com/v1}"
+    PROXY_URL="${CODEL_PROXY_URL:-https://cli-chat-proxy.codel.dev/v1}"
+    # Refuse cleartext / userinfo / empty-host proxies before attaching the key.
+    proxy_authority="${PROXY_URL#*://}"
+    proxy_authority="${proxy_authority%%[/?#]*}"
+    proxy_ok=
+    case "$PROXY_URL" in
+        [hH][tT][tT][pP][sS]://*)
+            case "$proxy_authority" in
+                ""|*@*) ;;
+                *) proxy_ok=1 ;;
+            esac
+            ;;
+    esac
+    if [ -z "$proxy_ok" ]; then
+        echo "Error: CODEL_PROXY_URL must be an https:// URL." >&2
+        exit 1
+    fi
     echo "  Fetching deployment config..." >&2
     DEPLOY_RESPONSE=""
     AUTH_HEADER_FILE=$(mktemp 2>/dev/null) || AUTH_HEADER_FILE=""
     if [ -n "$AUTH_HEADER_FILE" ]; then
         chmod 600 "$AUTH_HEADER_FILE" 2>/dev/null || true
         printf 'Authorization: Bearer %s\n' "$CODEL_DEPLOYMENT_KEY" > "$AUTH_HEADER_FILE"
-        DEPLOY_RESPONSE=$(curl -sS -f \
+        DEPLOY_RESPONSE=$(curl -sS -f --proto '=https' \
             -H "@${AUTH_HEADER_FILE}" \
             "${PROXY_URL}/deployment/config" 2>/dev/null) || DEPLOY_RESPONSE=""
         : > "$AUTH_HEADER_FILE" 2>/dev/null || true

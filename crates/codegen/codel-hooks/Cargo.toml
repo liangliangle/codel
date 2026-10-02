@@ -9,20 +9,26 @@ description = "Runtime hook system for Codel — file-based discovery, command e
 fastrand = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
+codel-extra-ca = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 shellexpand = "3.1"
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process", "rt", "macros", "time"] }
 toml = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 codel-config = { workspace = true }
+# Child-network restriction on hook command spawns; enforce is feature-unified
+# from the binary crate, matching the other consumers.
+codel-sandbox = { path = "../codel-sandbox", default-features = false }
 codel-tools = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { workspace = true, features = ["registry"] }
 
 [lints]
 workspace = true

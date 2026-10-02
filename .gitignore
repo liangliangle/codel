@@ -1,24 +1,3 @@
 /target
 **/*.rs.bk
 .DS_Store
-
-# IDE / editor project files
-.idea/
-.vscode/
-.qoder/
-.fleet/
-.cursor/
-.zed/
-.claude/
-*.iml
-
-# Environment / secrets
-.env
-.env.*
-
-# Logs
-*.log
-
-# Editor temp files
-*.swp
-*~

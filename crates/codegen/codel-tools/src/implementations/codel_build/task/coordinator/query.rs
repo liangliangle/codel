@@ -7,12 +7,29 @@ use tokio::sync::oneshot;
 use super::super::coordinator_state::{
     BlockingWaiter, CompletedChild, ListRequest, OUTPUT_UNAVAILABLE_PLACEHOLDER, ProgressFuture,
     ProgressTarget, RunningSeed, completed_inspection, completed_snapshot, pending_inspection,
-    pending_snapshot, running_inspection, running_seed,
+    pending_snapshot, queued_inspection, queued_snapshot, running_inspection, running_seed,
 };
 use super::super::types::{SubagentInspection, SubagentSnapshot};
-use super::{ChildControl, ChildRunner, SubagentCoordinator, SubagentProgress, belongs_to_session};
+use super::{ChildControl, ChildRunner, SubagentCoordinator, SubagentProgress};
+
+const DEFAULT_QUERY_BLOCK_TIMEOUT_MS: u64 = 30_000;
 
 impl<R: ChildRunner> SubagentCoordinator<R> {
+    fn push_blocking_waiter(
+        &mut self,
+        id: String,
+        timeout_ms: Option<u64>,
+        respond_to: oneshot::Sender<Option<SubagentSnapshot>>,
+    ) {
+        self.waiters.entry(id).or_default().push(BlockingWaiter {
+            deadline: tokio::time::Instant::now()
+                + std::time::Duration::from_millis(
+                    timeout_ms.unwrap_or(DEFAULT_QUERY_BLOCK_TIMEOUT_MS),
+                ),
+            respond_to,
+        });
+    }
+
     pub(super) fn handle_query(
         &mut self,
         id: String,
@@ -21,53 +38,48 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         timeout_ms: Option<u64>,
         respond_to: oneshot::Sender<Option<SubagentSnapshot>>,
     ) {
-        if let Some(child) = self
-            .completed
-            .get(&id)
-            .filter(|child| belongs_to_session(&child.request, parent_session_id.as_deref()))
-        {
+        if !self.is_reachable_from_session(&id, parent_session_id.as_deref()) {
+            let _ = respond_to.send(None);
+            return;
+        }
+        if let Some(child) = self.completed.get(&id) {
             let snapshot = (!child.request.owner.is_workflow())
                 .then(|| self.completed_snapshot_for_query(child));
             let _ = respond_to.send(snapshot);
             return;
         }
-        if let Some(child) = self
-            .active
-            .get(&id)
-            .filter(|child| belongs_to_session(&child.request, parent_session_id.as_deref()))
-        {
+        if let Some(child) = self.active.get(&id) {
             if child.request.owner.is_workflow() {
                 let _ = respond_to.send(None);
                 return;
             }
             if block {
-                self.waiters.entry(id).or_default().push(BlockingWaiter {
-                    deadline: tokio::time::Instant::now()
-                        + std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000)),
-                    respond_to,
-                });
+                self.push_blocking_waiter(id, timeout_ms, respond_to);
             } else {
                 self.queue_active_progress(&id, ProgressTarget::Query(respond_to));
             }
             return;
         }
-        if let Some(child) = self
-            .pending
-            .get(&id)
-            .filter(|child| belongs_to_session(&child.request, parent_session_id.as_deref()))
-        {
+        if let Some(child) = self.pending.get(&id) {
             if child.request.owner.is_workflow() {
                 let _ = respond_to.send(None);
                 return;
             }
             if block {
-                self.waiters.entry(id).or_default().push(BlockingWaiter {
-                    deadline: tokio::time::Instant::now()
-                        + std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000)),
-                    respond_to,
-                });
+                self.push_blocking_waiter(id, timeout_ms, respond_to);
             } else {
                 let _ = respond_to.send(Some(pending_snapshot(child)));
+            }
+            return;
+        }
+        if let Some(queued) = self.queued.iter().find(|queued| queued.request.id == id) {
+            if block {
+                self.push_blocking_waiter(id, timeout_ms, respond_to);
+            } else {
+                let _ = respond_to.send(Some(queued_snapshot(
+                    &queued.request,
+                    queued.queued_at.into_std(),
+                )));
             }
             return;
         }
@@ -80,24 +92,19 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         parent_session_id: Option<String>,
         respond_to: oneshot::Sender<Option<SubagentInspection>>,
     ) {
-        if let Some(child) = self
-            .completed
-            .get(&id)
-            .filter(|child| belongs_to_session(&child.request, parent_session_id.as_deref()))
-        {
+        if !self.is_reachable_from_session(&id, parent_session_id.as_deref()) {
+            let _ = respond_to.send(None);
+        } else if let Some(child) = self.completed.get(&id) {
             let _ = respond_to.send(Some(self.completed_inspection_for_query(child)));
-        } else if let Some(child) = self
-            .pending
-            .get(&id)
-            .filter(|child| belongs_to_session(&child.request, parent_session_id.as_deref()))
-        {
+        } else if let Some(child) = self.pending.get(&id) {
             let _ = respond_to.send(Some(pending_inspection(child)));
-        } else if self
-            .active
-            .get(&id)
-            .is_some_and(|child| belongs_to_session(&child.request, parent_session_id.as_deref()))
-        {
+        } else if self.active.contains_key(&id) {
             self.queue_active_progress(&id, ProgressTarget::Inspect(respond_to));
+        } else if let Some(queued) = self.queued.iter().find(|queued| queued.request.id == id) {
+            let _ = respond_to.send(Some(queued_inspection(
+                &queued.request,
+                queued.queued_at.into_std(),
+            )));
         } else {
             let _ = respond_to.send(None);
         }
@@ -111,7 +118,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         })
     }
 
-    fn completed_snapshot_for_query(&self, child: &CompletedChild) -> SubagentSnapshot {
+    pub(super) fn completed_snapshot_for_query(&self, child: &CompletedChild) -> SubagentSnapshot {
         let output = self.persisted_output(child);
         completed_snapshot(child, output.as_deref())
     }
@@ -132,6 +139,14 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                     .filter(|child| !child.request.owner.is_workflow())
                     .map(pending_snapshot)
             })
+            .or_else(|| {
+                self.queued
+                    .iter()
+                    // Workflow spawns never queue; the filter matches the
+                    // completed/pending arms above should that ever bend.
+                    .find(|queued| queued.request.id == id && !queued.request.owner.is_workflow())
+                    .map(|queued| queued_snapshot(&queued.request, queued.queued_at.into_std()))
+            })
     }
 
     pub(super) fn handle_list_running(
@@ -143,7 +158,8 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             .active
             .values()
             .filter(|child| {
-                child.request.parent_session_id == parent_session_id
+                self.graph
+                    .is_reachable_from(&child.request.id, &parent_session_id)
                     && !child.request.owner.is_workflow()
             })
             .map(|child| child.request.id.clone())
@@ -242,7 +258,9 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         let Some(request) = self.list_requests.get_mut(&request_id) else {
             return;
         };
-        request.slots[index] = inspection;
+        if let Some(slot) = request.slots.get_mut(index) {
+            *slot = inspection;
+        }
         request.remaining = request.remaining.saturating_sub(1);
         if request.remaining != 0 {
             return;

@@ -14,8 +14,8 @@ use crate::util::truncate::format_bytes;
 fn annotations(bash: &BashOutput) -> String {
     let mut s = String::new();
     if bash.truncated {
-        let shown = format_bytes(bash.output.len());
-        let total = format_bytes(bash.total_bytes);
+        let shown = format_bytes(bash.output.len() as u64);
+        let total = format_bytes(bash.total_bytes as u64);
         s.push_str(&format!(
             " [truncated: showing last {} of {} - full output at: {}]",
             shown, total, bash.output_file
@@ -32,10 +32,8 @@ fn annotations(bash: &BashOutput) -> String {
 }
 
 /// CONCISE foreground format: `Exit code: N [annotations]\n\nCommand output:\n\n```...```\n\nCommand completed.\n...`
-///
-/// When the process was killed by the harness or a kernel signal
-/// (see [`KillReason`]), the header reads
-/// `Exit code: killed (reason)` instead of `Exit code: -1 [signal=…]`.
+/// When the process was killed by the harness or a kernel signal (see [`KillReason`]), the header reads `Exit code:
+/// killed (reason)` instead of `Exit code: -1 [signal=…]`.
 fn format_concise_foreground_prompt(bash: &BashOutput) -> String {
     let raw = String::from_utf8_lossy(&bash.output);
     let output_str = strip_str(&raw).to_string();
@@ -63,8 +61,8 @@ fn format_concise_foreground_prompt(bash: &BashOutput) -> String {
 fn format_concise_background_prompt(bash: &BashOutput) -> String {
     let raw = String::from_utf8_lossy(&bash.output);
     let output_str = strip_str(&raw).to_string();
-    let shown = format_bytes(bash.output.len());
-    let total = format_bytes(bash.total_bytes);
+    let shown = format_bytes(bash.output.len() as u64);
+    let total = format_bytes(bash.total_bytes as u64);
     format!(
         "[Command moved to background]\n\n\
          Partial output ({} of {} total):\n\n\
@@ -76,10 +74,8 @@ fn format_concise_background_prompt(bash: &BashOutput) -> String {
     )
 }
 
-/// Concise variant of `BashTool`.
-///
-/// Delegates to `BashTool::run()`, then overwrites `output_for_prompt` with
-/// the concise format. The `concise` concept lives entirely in this file.
+/// Concise variant of `BashTool`. Delegates to `BashTool::run()`, then overwrites
+/// `output_for_prompt` with the concise format. The `concise` concept lives entirely in this file.
 #[derive(Debug, Default)]
 pub struct BashConciseTool;
 
@@ -98,6 +94,42 @@ impl crate::types::tool_metadata::ToolMetadata for BashConciseTool {
 
     fn emitted_notifications(&self) -> &'static [&'static str] {
         crate::types::tool_metadata::ToolMetadata::emitted_notifications(&BashTool)
+    }
+
+    fn advertised_input_schema(
+        &self,
+        contract_version: Option<&str>,
+        input_schema: &serde_json::Value,
+        effective_params: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        crate::types::tool_metadata::ToolMetadata::advertised_input_schema(
+            &BashTool,
+            contract_version,
+            input_schema,
+            effective_params,
+        )
+    }
+
+    fn versioned_definition(
+        &self,
+        contract_version: Option<&str>,
+        client_name: &str,
+        description_override: Option<&str>,
+        renderer: &crate::types::template_renderer::TemplateRenderer,
+        param_map: &std::collections::HashMap<String, String>,
+        input_schema: &serde_json::Value,
+        effective_params: &serde_json::Value,
+    ) -> crate::types::ToolDefinition {
+        crate::types::tool_metadata::ToolMetadata::versioned_definition(
+            &BashTool,
+            contract_version,
+            client_name,
+            description_override,
+            renderer,
+            param_map,
+            input_schema,
+            effective_params,
+        )
     }
 
     fn requires_expr(&self) -> Expr<ToolRequirement> {
@@ -128,7 +160,7 @@ impl codel_tool_runtime::Tool for BashConciseTool {
     ) -> codel_tool_types::ToolDescription {
         codel_tool_types::ToolDescription::new(
             "run_terminal_cmd",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 

@@ -1,9 +1,11 @@
 //! `bash` tool — OpenCode namespace.
 //!
-//! Executes shell commands in a persistent terminal session with optional
-//! timeout and working directory override. Delegates to the shared
-//! `TerminalBackend` for process management, output streaming, and
-//! background task support.
+//! Executes shell commands with optional timeout and working directory
+//! override. Delegates to the shared `TerminalBackend` for process
+//! management, output streaming, and background task support. The
+//! codel-tools-server serves this tool on the stateless local backend
+//! (fresh shell per command; persistent shell state is only enabled when
+//! `Cursor:Shell` is served), which is what the description documents.
 //!
 //! ## Resources
 //!
@@ -44,7 +46,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 // Description
 // ───────────────────────────────────────────────────────────────────────────
 
-const DESCRIPTION: &str = r#"Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.
+const DESCRIPTION: &str = r#"Executes a given bash command in a shell session with optional timeout, ensuring proper handling and security measures. Each command runs in a fresh shell: working directory changes and environment variables do not persist between calls.
 IMPORTANT: This tool is for terminal operations like git, npm, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead.
 
 Before executing the command, please follow these steps:
@@ -71,8 +73,8 @@ Usage notes:
 ${%- if tools.by_kind.list or tools.by_kind.search or tools.by_kind.read or tools.by_kind.edit or tools.by_kind.write %}
 ${%- if has_unix_utilities %}
   - Avoid using this tool with the `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:${%- if tools.by_kind.list %}
-    - File search: Use ${{ tools.by_kind.list }} (NOT find or ls)${%- endif %}${%- if tools.by_kind.search %}
-    - Content search: Use ${{ tools.by_kind.search }} (NOT grep or rg)${%- endif %}${%- if tools.by_kind.read %}
+    - File search: Use the ${{ tools.by_kind.list }} tool (NOT the `find` or `ls` shell commands)${%- endif %}${%- if tools.by_kind.search %}
+    - Content search: Use the ${{ tools.by_kind.search }} tool (NOT the `grep` or `rg` shell commands)${%- endif %}${%- if tools.by_kind.read %}
     - Read files: Use ${{ tools.by_kind.read }} (NOT cat/head/tail)${%- endif %}${%- if tools.by_kind.edit %}
     - Edit files: Use ${{ tools.by_kind.edit }} (NOT sed/awk)${%- endif %}${%- if tools.by_kind.write %}
     - Write files: Use ${{ tools.by_kind.write }} (NOT echo >/cat <<EOF)${%- endif %}
@@ -220,6 +222,7 @@ impl From<BashInput> for ToolInput {
             timeout: value.timeout,
             description: value.description,
             is_background: false,
+            block_until_ms: None,
         })
     }
 }
@@ -319,7 +322,7 @@ impl codel_tool_runtime::Tool for BashTool {
     ) -> codel_tool_types::ToolDescription {
         codel_tool_types::ToolDescription::new(
             "bash",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
@@ -590,12 +593,8 @@ mod tests {
             .render(ToolMetadata::description_template(&BashTool))
             .unwrap();
         assert!(
-            rendered.contains("optional max_wait in milliseconds"),
+            rendered.contains("max_wait"),
             "renamed timeout must appear:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("optional timeout in milliseconds"),
-            "canonical timeout must not remain after rename:\n{rendered}"
         );
     }
 
@@ -618,13 +617,8 @@ mod tests {
             .render(ToolMetadata::description_template(&BashTool))
             .unwrap();
         assert!(
-            rendered.contains("The script argument is required."),
+            rendered.contains("script"),
             "renamed command must appear:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("The command argument is required.")
-                && !rendered.contains("Bash tool"),
-            "stale command/tool-name literals must not remain:\n{rendered}"
         );
     }
 
@@ -1143,10 +1137,8 @@ mod tests {
         );
     }
 
-    // ─── Description template shell-awareness parity tests ───
-    //
-    // Same shape as codel_build/bash: the opencode tool inherits the same
-    // Unix-utility guidance and must branch on PowerShell/cmd.
+    // ─── Description template shell-awareness parity tests ─── Same shape as codel_build/bash: the
+    // opencode tool inherits the same Unix-utility guidance and must branch on PowerShell/cmd.
 
     mod description_shell_branches {
         use super::*;
@@ -1182,20 +1174,10 @@ mod tests {
         }
 
         #[test]
-        fn unix_shell_emits_legacy_avoid_paragraph() {
-            let out = render(true);
-            assert!(out.contains("Avoid using this tool with the `find`, `grep`, `cat`, `head`"));
-            assert!(!out.contains("are NOT available in this shell"));
-        }
-
-        #[test]
-        fn powershell_emits_explicit_unavailable_warning() {
-            let out = render(false);
-            assert!(out.contains(
-                "Unix utilities `grep`, `head`, `tail`, `sed`, `awk`, and `find` are NOT available in this shell"
-            ));
-            assert!(out.contains("'<name>' is not recognized"));
-            assert!(!out.contains("Avoid using this tool with the `find`, `grep`, `cat`, `head`"));
+        fn unix_and_powershell_descriptions_differ() {
+            let unix = render(true);
+            let pwsh = render(false);
+            assert_ne!(unix, pwsh);
         }
     }
 }

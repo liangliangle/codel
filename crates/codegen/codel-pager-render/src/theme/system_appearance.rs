@@ -1,39 +1,42 @@
 //! System appearance detection for automatic day/night theming.
 //!
-//! Uses the `dark-light` crate for cross-platform detection:
-//! - macOS: reads `AppleInterfaceStyle` preference
-//! - Linux: queries XDG Desktop Portal (`org.freedesktop.appearance.color-scheme`)
-//! - Windows: reads system personalization registry
+//! Detection chain (each step only runs when the previous returns nothing):
+//! 1. `dark-light` desktop APIs: macOS `AppleInterfaceStyle`, Linux XDG portal `org.freedesktop.appearance.color-scheme`, Windows registry
+//! 2. Explicit env stamps, `CODEL_APPEARANCE` / `LC_CODEL_APPEARANCE` (SSH with tmux, wrap, headless).
+//!    See [`super::env_appearance`].
+//! 3. OSC 11 terminal background query, **startup-only**; see [`detect_with_osc11_fallback`].
+//!    The result is cached so runtime `detect()` / `resolve_auto` cannot be overwritten by stale `COLORFGBG`.
+//! 4. Inherited `COLORFGBG` guess, the last resort.
 //!
-//! Falls back to OSC 11 terminal background query when `dark-light` returns
-//! `Unspecified` (e.g., over SSH where no desktop session is available).
-//! The OSC 11 fallback is **startup-only** — see [`detect_with_osc11_fallback`].
-//!
-//! Falls back to `None` on total detection failure.
+//! Detection returns `None` when every step fails.
 
 use super::ThemeKind;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::watch;
 
-/// Detected system appearance.
+/// Startup OSC 11 result (`Some`/`None` after a probe); unset until [`detect_with_osc11_fallback`] runs.
+/// Runtime `detect` reuses it so a live OSC 11 polarity is not replaced by inherited `COLORFGBG`.
+static OSC11_STARTUP: OnceLock<Option<SystemAppearance>> = OnceLock::new();
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemAppearance {
     Light,
     Dark,
 }
 
-/// Detect the current system appearance (desktop APIs only).
-///
-/// Detection chain:
-/// 1. `dark-light::detect()` — desktop session APIs (macOS/Linux/Windows)
-/// 2. `None` — if detection fails
-///
-/// For the extended chain that includes OSC 11 as a startup-only fallback,
-/// see [`detect_with_osc11_fallback`].
-///
-/// In `#[cfg(test)]` builds, checks the mock override first so that
-/// `SystemAppearanceWatcher`'s polling loop (which calls `detect()`
-/// directly) is also controllable from tests.
+impl SystemAppearance {
+    /// Canonical env-var payload (`dark` / `light`), ASCII so it is safe in `LC_*` values forwarded by OpenSSH.
+    #[must_use]
+    pub const fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+}
+
+/// Same chain as startup, but OSC 11 reuses the cached result instead of probing. Tests replace the whole chain via the mock.
 #[must_use]
 pub fn detect() -> Option<SystemAppearance> {
     #[cfg(any(test, feature = "test-support"))]
@@ -44,16 +47,8 @@ pub fn detect() -> Option<SystemAppearance> {
     detect_without_mock()
 }
 
-/// Detect system appearance with OSC 11 terminal background fallback.
-///
-/// Extended detection chain:
-/// 1. `dark-light::detect()` — desktop session APIs
-/// 2. OSC 11 terminal background query — fallback for SSH/headless
-/// 3. `None` — if both fail
-///
-/// **Startup-only**: the OSC 11 step requires raw-mode stdin access and
-/// must NOT be called once crossterm's `EventStream` is active.  The
-/// live [`SystemAppearanceWatcher`] uses [`detect`] (without OSC 11).
+/// Startup-only: OSC 11 needs raw-mode stdin and must not run once `EventStream` is active.
+/// The watcher uses [`detect`] and still prefers a cached OSC 11 hit over `COLORFGBG`.
 #[must_use]
 pub fn detect_with_osc11_fallback() -> Option<SystemAppearance> {
     #[cfg(any(test, feature = "test-support"))]
@@ -61,36 +56,56 @@ pub fn detect_with_osc11_fallback() -> Option<SystemAppearance> {
         return v;
     }
 
-    detect_without_mock().or_else(super::osc11::detect_via_osc11)
+    if let Some(appearance) = detect_desktop() {
+        return Some(appearance);
+    }
+    let env = crate::host::collect_unicode_env();
+    let explicit = super::env_appearance::detect_explicit_from_env_map(&env);
+    if explicit.is_some() {
+        return explicit;
+    }
+    let osc11 = super::osc11::detect_via_osc11();
+    let _ = OSC11_STARTUP.set(osc11);
+    osc11.or_else(|| super::env_appearance::detect_colorfgbg_from_env_map(&env))
 }
 
-/// Inner detection via desktop APIs only (no mock, no OSC 11).
-fn detect_without_mock() -> Option<SystemAppearance> {
+fn resolve_appearance_chain(
+    desktop: Option<SystemAppearance>,
+    explicit: Option<SystemAppearance>,
+    osc11: Option<SystemAppearance>,
+    colorfgbg: Option<SystemAppearance>,
+) -> Option<SystemAppearance> {
+    desktop.or(explicit).or(osc11).or(colorfgbg)
+}
+
+/// Desktop APIs only. `codel wrap` stamps the local OS theme before SSH; env hints may be a previous hop's snapshot.
+#[must_use]
+pub fn detect_desktop() -> Option<SystemAppearance> {
     match dark_light::detect() {
         Ok(dark_light::Mode::Dark) => Some(SystemAppearance::Dark),
         Ok(dark_light::Mode::Light) => Some(SystemAppearance::Light),
-        // Mode::Unspecified or Err — no system preference detected
+        // Mode::Unspecified or Err: no system preference detected
         _ => None,
     }
 }
 
-/// Return the mock value if one has been set (test builds only).
-///
-/// Returns `Some(value)` when a mock is active, `None` when real
-/// detection should proceed.
+fn detect_without_mock() -> Option<SystemAppearance> {
+    let env = crate::host::collect_unicode_env();
+    resolve_appearance_chain(
+        detect_desktop(),
+        super::env_appearance::detect_explicit_from_env_map(&env),
+        OSC11_STARTUP.get().copied().flatten(),
+        super::env_appearance::detect_colorfgbg_from_env_map(&env),
+    )
+}
+
+/// Returns `Some(value)` when a mock is active, `None` when real detection should proceed.
 #[cfg(any(test, feature = "test-support"))]
 fn mock_override() -> Option<Option<SystemAppearance>> {
     *MOCK_APPEARANCE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Map system appearance to a theme kind using config-driven overrides.
-///
-/// `dark_theme` and `light_theme` are the user-configured themes for each
-/// appearance mode, read from `[ui].auto_dark_theme` and `[ui].auto_light_theme`
-/// in `config.toml`. When `None`, defaults to `CodelNight` / `CodelDay`.
-///
-/// This function is the single mapping point for appearance -> theme.
-/// All callers go through it, making the mapping trivially extensible.
+/// `[ui].auto_dark_theme` / `auto_light_theme`; `None` defaults to `CodelNight` / `CodelDay`.
 #[must_use]
 pub fn to_theme_kind(
     appearance: SystemAppearance,
@@ -104,30 +119,20 @@ pub fn to_theme_kind(
 }
 
 /// Polling interval for system appearance detection.
-///
-/// In test builds, a shorter interval (50ms) is used so polling tests
-/// complete quickly.
+/// Test builds shorten it so polling tests complete quickly.
 #[cfg(not(test))]
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Watches for system appearance changes via polling.
-///
-/// The spawned polling task only reads system state and sends via
-/// `watch::channel` — it never mutates `theme_cache::CURRENT` or `AUTO_MODE`.
-/// The watcher does NOT use OSC 11 for polling — only [`detect()`].
+/// Polls via [`detect()`] only (no OSC 11) and never mutates `theme_cache::CURRENT` or `AUTO_MODE`.
 pub struct SystemAppearanceWatcher {
     rx: watch::Receiver<Option<SystemAppearance>>,
     _handle: tokio::task::JoinHandle<()>,
 }
 
 impl SystemAppearanceWatcher {
-    /// Start the watcher if auto mode is active.
-    ///
-    /// Returns `None` when `is_auto` is false — the event loop uses
-    /// `std::future::pending()` in that case so the `select!` branch
-    /// never fires.
+    /// Returns `None` when `is_auto` is false; the event loop then uses `std::future::pending()` so the `select!` branch never fires.
     pub fn start_if_auto(is_auto: bool) -> Option<Self> {
         if !is_auto {
             return None;
@@ -155,12 +160,10 @@ impl SystemAppearanceWatcher {
         })
     }
 
-    /// Wait for the next appearance change.
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
         self.rx.changed().await
     }
 
-    /// Return the current detected appearance.
     #[must_use]
     pub fn current(&self) -> Option<SystemAppearance> {
         *self.rx.borrow()
@@ -178,21 +181,18 @@ impl Drop for SystemAppearanceWatcher {
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
-/// Mock override for `detect()`. When set to `Some(value)`, `detect()`
-/// returns the mock value instead of calling `dark_light::detect()`.
-/// This ensures the `SystemAppearanceWatcher` polling loop (which calls
-/// `detect()` directly) is also controllable from tests.
+/// Mock override for `detect()` / `detect_with_osc11_fallback`.
+/// When set, both skip desktop, env, and OSC 11 so tests can control the watcher loop.
 #[cfg(any(test, feature = "test-support"))]
 static MOCK_APPEARANCE: Mutex<Option<Option<SystemAppearance>>> = Mutex::new(None);
 
-/// Override `detect()` for tests. Set to `Some(value)` to mock a specific
-/// appearance, or `None` to mock detection failure.
+/// Override `detect()` for tests.
+/// Set to `Some(value)` to mock a specific appearance, or `None` to mock detection failure.
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_mock(value: Option<SystemAppearance>) {
     *MOCK_APPEARANCE.lock().unwrap_or_else(|e| e.into_inner()) = Some(value);
 }
 
-/// Clear the mock override, restoring real detection behavior.
 #[cfg(any(test, feature = "test-support"))]
 pub fn clear_mock() {
     *MOCK_APPEARANCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -203,14 +203,64 @@ mod tests {
     use super::super::cache as theme_cache;
     use super::*;
 
-    /// Helper: set mock, assert `detect()` returns the expected value, clear mock.
-    /// Caller must hold `theme_cache::test_lock()` to prevent races with parallel
-    /// tests in `cache::tests` and `slash::commands::theme::tests` that also
-    /// mutate the shared `MOCK_APPEARANCE` static via `set_mock`/`clear_mock`.
+    /// Caller must hold `theme_cache::test_lock()`.
+    /// Parallel tests in `cache::tests` and `slash::commands::theme::tests` also mutate `MOCK_APPEARANCE` via `set_mock`/`clear_mock`.
     fn assert_mock_roundtrip(value: Option<SystemAppearance>) {
         set_mock(value);
         assert_eq!(detect(), value);
         clear_mock();
+    }
+
+    #[test]
+    fn appearance_chain_osc11_wins_over_conflicting_colorfgbg() {
+        assert_eq!(
+            resolve_appearance_chain(
+                None,
+                None,
+                Some(SystemAppearance::Light),
+                Some(SystemAppearance::Dark),
+            ),
+            Some(SystemAppearance::Light)
+        );
+        assert_eq!(
+            resolve_appearance_chain(
+                None,
+                None,
+                Some(SystemAppearance::Dark),
+                Some(SystemAppearance::Light),
+            ),
+            Some(SystemAppearance::Dark)
+        );
+    }
+
+    #[test]
+    fn appearance_chain_colorfgbg_used_when_osc11_absent() {
+        assert_eq!(
+            resolve_appearance_chain(None, None, None, Some(SystemAppearance::Dark)),
+            Some(SystemAppearance::Dark)
+        );
+    }
+
+    #[test]
+    fn appearance_chain_explicit_and_desktop_beat_osc11() {
+        assert_eq!(
+            resolve_appearance_chain(
+                Some(SystemAppearance::Dark),
+                Some(SystemAppearance::Light),
+                Some(SystemAppearance::Light),
+                Some(SystemAppearance::Light),
+            ),
+            Some(SystemAppearance::Dark)
+        );
+        assert_eq!(
+            resolve_appearance_chain(
+                None,
+                Some(SystemAppearance::Dark),
+                Some(SystemAppearance::Light),
+                Some(SystemAppearance::Light),
+            ),
+            Some(SystemAppearance::Dark)
+        );
     }
 
     #[test]
@@ -257,14 +307,12 @@ mod tests {
     #[test]
     fn to_theme_kind_dark_ignores_light_override() {
         let result = to_theme_kind(SystemAppearance::Dark, None, Some(ThemeKind::TokyoNight));
-        // Dark appearance should use the dark default, not the light override.
         assert_eq!(result, ThemeKind::CodelNight);
     }
 
     #[test]
     fn to_theme_kind_light_ignores_dark_override() {
         let result = to_theme_kind(SystemAppearance::Light, Some(ThemeKind::TokyoNight), None);
-        // Light appearance should use the light default, not the dark override.
         assert_eq!(result, ThemeKind::CodelDay);
     }
 
@@ -291,21 +339,6 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         assert_mock_roundtrip(None);
     }
-
-    #[test]
-    fn clear_mock_restores_real_detection() {
-        let _guard = theme_cache::test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        set_mock(Some(SystemAppearance::Dark));
-        assert_eq!(detect(), Some(SystemAppearance::Dark));
-        clear_mock();
-        // After clearing, detect() calls dark_light::detect() for real.
-        // We can't assert a specific value since it depends on the system,
-        // but we can verify it doesn't panic.
-        let _ = detect();
-    }
-
     // -- SystemAppearanceWatcher -----------------------------------------
 
     #[tokio::test]
@@ -356,7 +389,6 @@ mod tests {
         let mut watcher = SystemAppearanceWatcher::start_if_auto(true).unwrap();
         assert_eq!(watcher.current(), Some(SystemAppearance::Dark));
 
-        // Change the mock appearance.
         set_mock(Some(SystemAppearance::Light));
 
         // Wait for the watcher to detect the change (polls every 50ms in tests).
@@ -378,11 +410,10 @@ mod tests {
         set_mock(Some(SystemAppearance::Dark));
         let mut watcher = SystemAppearanceWatcher::start_if_auto(true).unwrap();
 
-        // Wait longer than the poll interval — no change should occur.
+        // Wait longer than the poll interval
         let result =
             tokio::time::timeout(std::time::Duration::from_millis(200), watcher.changed()).await;
 
-        // Should timeout because appearance didn't change.
         assert!(
             result.is_err(),
             "expected timeout — no change should be emitted"

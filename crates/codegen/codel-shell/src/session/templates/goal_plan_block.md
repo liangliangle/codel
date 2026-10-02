@@ -1,9 +1,8 @@
-关于该目标的结构化规划已保存在磁盘上——此乃判断“完成”的核心权威依据。
-请先阅读该文件并时刻保持打开。
+A structured plan for this goal is on disk — the source of truth for "done". Read it first and keep it open.
 
-规划文件路径：{PLAN_PATH}
+Plan: {PLAN_PATH}
 
-- 在执行之前，请通过 {TODO_TOOL} 根据规划中的验收标准播种待办清单 (Todos)。
-- 若规划包含 `## Task checklist`，请按顺序推进，并在完成时将规划文件中的每个 `- [ ]` 翻转修改为 `- [x]`——测试框架会提取首个未勾选的复选框作为您的下一步提示，因此滞后的清单会导致滞后的微调提示。
-- 逐项执行；当出现偏离时，向规划中唯一的 `## Deviations` 章节追加一条无序列表项——仅在这一章节中追加，勿创建新章节，亦勿修改规划中既有的条目。保持极其精炼：每次偏离仅用单条列表项（变更内容 + 理由）；此非进度日志，切勿在此重复声明规划、罗列测试计数/“全已修复”/“验证重跑”/“替代方案”等备注。
-- 在声明完成前，请自行运行规划中的 `## Verification plan` 步骤并确认其观察结果完全成立。保存持久凭证：在仓库内提交驱动已交付代码的真实测试，并将捕获的运行输出写入您的暂存目录（即目标准则中所指的暂存区；切勿使用共享的 `/tmp/...`）。在调用目标完成前，修复任何缺失的观测结果。
+- Seed todos from the plan's acceptance criteria via {TODO_TOOL} before executing.
+- If the plan has a `## Task checklist`, work it in order and flip each `- [ ]` to `- [x]` in the plan file as you complete it — the harness mines the first unchecked box as your next-step nudge, so a stale checklist produces stale nudges.
+- Execute item by item; when you deviate, append a bullet to the plan's single `## Deviations` section — add to that one section; don't start a new one, and don't edit the plan's existing items. Keep it TERSE: ONE bullet per deviation (what changed + why); not a progress log, so don't restate the plan or dump test counts / "all fixed" / "verification re-run" / "superseding" notes there.
+- Before claiming completion, run the plan's `## Verification plan` yourself and confirm its observations hold. SAVE durable proof: commit real tests that drive the shipped code in-repo, and write the captured run output to your scratch dir (the one the goal rules name; never shared `/tmp/...`). Fix any missing observation before calling the goal complete.

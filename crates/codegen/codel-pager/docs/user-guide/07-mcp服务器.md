@@ -248,6 +248,18 @@ enabled = true
 headers = { "Authorization" = "Bearer ${INTERNAL_MCP_TOKEN}" }
 ```
 
+当另一个进程（凭据助手、边车进程或定时任务）将短期令牌保存在文件中时，可将 `bearer_token_file` 指向该文件。Codel 会在每次向该服务器发起请求时读取文件并发送 `Authorization: Bearer <文件内容>`（去除首尾空白），因此轮换后的令牌无需重启 Codel 或重新连接服务器即可在下次请求生效：
+
+```toml
+[mcp_servers.internal-tools]
+url = "https://mcp.internal.example.com/mcp"
+bearer_token_file = "~/.config/internal-tools/token"
+```
+
+路径必须是绝对路径或以 `~/` 开头，并可引用 `${VAR}`；其他路径会令该服务器报错。`bearer_token_file` 适用于 HTTP 和 SSE 服务器，并会取代 `Authorization` 请求头或 `bearer_token_env_var`。配置了令牌文件的服务器会跳过 OAuth 发现。当文件缺失、为空、超过 16 KiB、不是 UTF-8 或包含 HTTP 头不允许的字符时，请求会报错并指明路径。
+
+请以原子方式替换令牌文件：将新令牌写入同目录的临时文件，再重命名覆盖旧文件。就地截断重写的写入者可能与请求发生竞态，导致请求失败或发送部分令牌。
+
 ### 本地 stdio 模式
 
 对于必须在本地运行的工具（文件系统访问、本地数据库、内部服务器等），请使用 stdio 传输模式。

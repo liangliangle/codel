@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use indexmap::IndexMap;
 
 use super::config::{ConfigModelOverride, EnvKeys};
@@ -15,54 +17,12 @@ pub struct ModelProviderConfig {
     pub extra_headers: IndexMap<String, String>,
     /// Query parameters folded into every request URL; inherited by models.
     pub query_params: IndexMap<String, String>,
-    /// Header name to environment variable; inherited by models, resolved at
-    /// client build.
+    /// Header name to environment variable; inherited by models, resolved at client build.
     pub env_http_headers: IndexMap<String, String>,
-    pub auth_provider: Option<String>,
-    pub auth: Option<crate::auth::AuthProviderConfig>,
     pub context_window: Option<u64>,
-}
-
-pub(crate) fn model_provider_auth_name(provider_id: &str) -> String {
-    format!("model_provider:{provider_id}")
-}
-
-pub(crate) fn auth_config_issues(
-    config: &crate::auth::AuthProviderConfig,
-) -> Vec<(&'static str, ConfigWarningKind, String)> {
-    let mut issues = Vec::new();
-    if !config.is_usable() {
-        issues.push((
-            "command",
-            ConfigWarningKind::InvalidValue,
-            "missing or empty command; models resolve with no credential".to_owned(),
-        ));
-    }
-    let skew = crate::auth::PROVIDER_TOKEN_EXPIRY_SKEW_SECS;
-    if config.token_ttl_secs.is_some_and(|ttl| ttl <= skew) {
-        issues.push((
-            "token_ttl_secs",
-            ConfigWarningKind::InvalidValue,
-            format!(
-                "at or below the {skew}s refresh margin; the command will run before every turn"
-            ),
-        ));
-    }
-    if let Some(timeout) = config.timeout_secs
-        && !(1..=crate::auth::PROVIDER_TIMEOUT_CEILING_SECS).contains(&timeout)
-    {
-        let ceiling = crate::auth::PROVIDER_TIMEOUT_CEILING_SECS;
-        issues.push((
-            "timeout_secs",
-            ConfigWarningKind::InvalidValue,
-            if timeout == 0 {
-                "below the 1 second minimum; clamped to 1".to_owned()
-            } else {
-                format!("above the {ceiling}s maximum; clamped to {ceiling}")
-            },
-        ));
-    }
-    issues
+    pub context_windows: Option<Vec<NonZeroU64>>,
+    /// Request-body cap of this endpoint; inherited by models that set none of their own.
+    pub max_request_bytes: Option<NonZeroU64>,
 }
 
 pub(crate) fn parse_model_providers(
@@ -98,57 +58,6 @@ pub(crate) fn parse_model_providers(
                         "unrecognized key; field ignored".to_owned(),
                     ));
                 }
-                if let Some(auth) = &provider.auth {
-                    for (field, kind, reason) in auth_config_issues(auth) {
-                        warnings.push(ConfigWarning::model_provider(
-                            id,
-                            Some(&format!("auth.{field}")),
-                            kind,
-                            reason,
-                        ));
-                    }
-                }
-                let has_helper = provider.auth.is_some() || provider.auth_provider.is_some();
-                let has_static_api_key = provider
-                    .api_key
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|k| !k.is_empty());
-                if has_helper && has_static_api_key {
-                    warnings.push(ConfigWarning::model_provider(
-                        id,
-                        Some("api_key"),
-                        ConfigWarningKind::ConflictingFields,
-                        "api_key shadows this provider's auth helper; the static key always \
-                         takes precedence, so the helper never runs for inheriting models"
-                            .to_owned(),
-                    ));
-                } else if has_helper
-                    && provider
-                        .env_key
-                        .as_ref()
-                        .and_then(EnvKeys::primary)
-                        .is_some()
-                {
-                    warnings.push(ConfigWarning::model_provider(
-                        id,
-                        Some("env_key"),
-                        ConfigWarningKind::ConflictingFields,
-                        "env_key may shadow this provider's auth helper; env_key takes precedence \
-                         when its variable resolves, otherwise the helper runs"
-                            .to_owned(),
-                    ));
-                }
-                if provider.auth_provider.is_some() && provider.auth.is_some() {
-                    warnings.push(ConfigWarning::model_provider(
-                        id,
-                        Some("auth"),
-                        ConfigWarningKind::ConflictingFields,
-                        "inline auth is shadowed by auth_provider on this provider; the referenced \
-                         provider takes precedence, so the inline helper never runs"
-                            .to_owned(),
-                    ));
-                }
                 providers.insert(id.clone(), provider);
             }
             Err(error) => {
@@ -182,9 +91,9 @@ impl ConfigModelOverride {
             extra_headers,
             query_params,
             env_http_headers,
-            auth_provider,
-            auth,
             context_window,
+            context_windows,
+            max_request_bytes,
         } = provider;
 
         let mut merged = self.clone();
@@ -192,8 +101,12 @@ impl ConfigModelOverride {
         merged.base_url = merged.base_url.or_else(|| base_url.clone());
         merged.api_base_url = merged.api_base_url.or_else(|| api_base_url.clone());
         merged.api_backend = merged.api_backend.or_else(|| api_backend.clone());
-        merged.context_window = merged.context_window.or(*context_window);
+        merged.max_request_bytes = merged.max_request_bytes.or(*max_request_bytes);
         // Inherited wholesale only when the model sets none of its own.
+        if merged.context_window.is_none() && merged.context_windows.is_none() {
+            merged.context_window = *context_window;
+            merged.context_windows = context_windows.clone();
+        }
         if merged.extra_headers.is_empty() {
             merged.extra_headers = extra_headers.clone();
         }
@@ -208,14 +121,10 @@ impl ConfigModelOverride {
             .as_deref()
             .is_some_and(|k| !k.trim().is_empty());
         let model_sets_own_env_key = self.env_key.as_ref().and_then(EnvKeys::primary).is_some();
-        let model_has_own_auth =
-            model_sets_own_api_key || model_sets_own_env_key || self.auth_provider.is_some();
+        let model_has_own_auth = model_sets_own_api_key || model_sets_own_env_key;
         if !model_has_own_auth {
             merged.api_key = api_key.clone();
             merged.env_key = env_key.clone();
-            merged.auth_provider = auth_provider
-                .clone()
-                .or_else(|| auth.as_ref().map(|_| model_provider_auth_name(provider_id)));
         }
         merged
     }
@@ -229,7 +138,11 @@ impl ConfigModelOverride {
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::config::{Config, resolve_credentials, resolve_model_list};
+    use std::num::NonZeroU64;
+
+    use crate::agent::config::{
+        Config, resolve_credentials, resolve_model_list, sampling_config_for_model,
+    };
     #[test]
     fn model_inherits_provider_connection_defaults() {
         let raw_config: toml::Value = toml::from_str(
@@ -276,6 +189,7 @@ mod tests {
             [model_providers.gateway]
             base_url = "https://gateway.example/v1"
             context_window = 100000
+            context_windows = [100000, 400000]
 
             [model.override-url]
             model = "m"
@@ -291,85 +205,57 @@ mod tests {
         let model = resolved.get("override-url").expect("model should exist");
         assert_eq!(model.info.base_url, "https://model-specific.example/v1");
         assert_eq!(model.info.context_window.get(), 200000);
+        assert!(model.info.context_windows.is_empty());
     }
 
     #[test]
-    fn model_provider_inline_auth_registers_synthetic_provider() {
+    fn model_inherits_provider_max_request_bytes() {
         let raw_config: toml::Value = toml::from_str(
             r#"
-            [model_providers.gateway]
+            [model_providers.messages-gateway]
             base_url = "https://gateway.example/v1"
-            context_window = 200000
+            api_backend = "messages"
+            max_request_bytes = 20000000
 
-            [model_providers.gateway.auth]
-            command = "printf gw-token"
-            token_ttl_secs = 3600
+            [model.inherits]
+            model = "claude-sonnet"
+            model_provider = "messages-gateway"
 
-            [model.byok-via-gateway]
-            model = "m"
-            model_provider = "gateway"
-            "#,
-        )
-        .unwrap();
-
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        assert_eq!(
-            cfg.auth_providers
-                .get("model_provider:gateway")
-                .map(|c| c.command.as_str()),
-            Some("printf gw-token"),
-            "inline auth registers a synthetic provider keyed by the id"
-        );
-        let resolved = resolve_model_list(&cfg, None);
-        let model = resolved
-            .get("byok-via-gateway")
-            .expect("model should exist");
-        let provider = model
-            .auth_provider
-            .as_ref()
-            .expect("the model inherits the provider's auth");
-        assert_eq!(provider.name, "model_provider:gateway");
-        assert_eq!(provider.config.command, "printf gw-token");
-        assert!(
-            model.has_own_credentials(),
-            "a provider-backed model is BYOK (session token must not leak)"
-        );
-    }
-
-    #[test]
-    fn model_with_own_key_ignores_provider_auth() {
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [model_providers.gateway]
-            base_url = "https://gateway.example/v1"
-            context_window = 200000
-
-            [model_providers.gateway.auth]
-            command = "printf gw-token"
-
-            [model.own-key]
-            model = "m"
-            model_provider = "gateway"
-            api_key = "sk-model-own"
+            [model.overrides]
+            model = "claude-opus"
+            model_provider = "messages-gateway"
+            max_request_bytes = 10000000
             "#,
         )
         .unwrap();
 
         let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
         let resolved = resolve_model_list(&cfg, None);
-        let model = resolved.get("own-key").expect("model should exist");
+        let max_request_bytes = |key: &str| {
+            let model = resolved.get(key).expect("model should exist");
+            sampling_config_for_model(
+                model,
+                resolve_credentials(model, None),
+                None,
+                None,
+                None,
+                None,
+            )
+            .max_request_bytes
+        };
         assert_eq!(
-            model.info.base_url, "https://gateway.example/v1",
-            "non-auth connection fields are still inherited"
+            NonZeroU64::new(20_000_000),
+            max_request_bytes("inherits"),
+            "the provider cap reaches a model that sets none and beats the messages default"
         );
         assert_eq!(
-            model.effective_auth_provider().map(|p| p.name.as_str()),
-            None,
-            "the model's own key shadows the provider's auth"
+            NonZeroU64::new(10_000_000),
+            max_request_bytes("overrides"),
+            "the model's own cap overrides the provider's"
         );
-        let creds = resolve_credentials(model, Some("session-jwt"));
-        assert_eq!(creds.api_key.as_deref(), Some("sk-model-own"));
     }
+
+
 
     #[test]
     fn undefined_model_provider_fails_closed() {
@@ -599,76 +485,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn model_provider_inline_auth_namespace_collision_warns() {
-        use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
 
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [auth_provider."model_provider:gateway"]
-            command = "printf hand-written"
-
-            [model_providers.gateway]
-            base_url = "https://gateway.example/v1"
-
-            [model_providers.gateway.auth]
-            command = "printf inline"
-            "#,
-        )
-        .unwrap();
-
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        assert!(
-            cfg.config_warnings.iter().any(|w| {
-                w.kind == ConfigWarningKind::ConflictingFields
-                    && matches!(
-                        &w.target,
-                        WarningTarget::ModelProvider { id, field }
-                            if id == "gateway" && field.as_deref() == Some("auth")
-                    )
-            }),
-            "a reserved-namespace collision warns: {:?}",
-            cfg.config_warnings
-        );
-        assert_eq!(
-            cfg.auth_providers
-                .get("model_provider:gateway")
-                .map(|c| c.command.as_str()),
-            Some("printf inline"),
-            "inline auth wins the reserved name"
-        );
-    }
-
-    #[test]
-    fn model_inherits_provider_named_auth_provider() {
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [auth_provider.corp]
-            command = "printf corp-token"
-            token_ttl_secs = 3600
-
-            [model_providers.gateway]
-            base_url = "https://gateway.example/v1"
-            auth_provider = "corp"
-
-            [model.via-gateway]
-            model = "m"
-            model_provider = "gateway"
-            "#,
-        )
-        .unwrap();
-
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        let resolved = resolve_model_list(&cfg, None);
-        let model = resolved.get("via-gateway").expect("model should exist");
-        let provider = model
-            .auth_provider
-            .as_ref()
-            .expect("the model inherits the provider's named auth_provider");
-        assert_eq!(provider.name, "corp");
-        assert_eq!(provider.config.command, "printf corp-token");
-        assert!(model.has_own_credentials());
-    }
 
     #[test]
     fn model_inherits_provider_static_key() {
@@ -752,80 +569,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn model_own_unresolved_key_ignores_provider_inline_auth() {
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [model_providers.gateway]
-            base_url = "https://gateway.example/v1"
 
-            [model_providers.gateway.auth]
-            command = "printf gw-token"
-
-            [model.own-env]
-            model = "m"
-            model_provider = "gateway"
-            env_key = "DEFINITELY_UNSET_MODEL_PROVIDER_INLINE_VAR"
-            "#,
-        )
-        .unwrap();
-
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        let resolved = resolve_model_list(&cfg, None);
-        let model = resolved.get("own-env").expect("model should exist");
-        let effective = model
-            .effective_auth_provider()
-            .expect("an unresolved own credential fails closed via a provider ref");
-        assert!(
-            effective.name.contains("fail-closed"),
-            "must pin the unusable fail-closed ref, not the live inline auth: {}",
-            effective.name
-        );
-        assert!(
-            effective.config.command.is_empty(),
-            "the fail-closed ref is unusable"
-        );
-        assert_eq!(
-            resolve_credentials(model, Some("session-jwt")).api_key,
-            None,
-            "must not fall back to the session token"
-        );
-    }
-
-    #[test]
-    fn fail_closed_ref_ignores_a_colliding_auth_provider_table() {
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [auth_provider."model_provider:gateway (fail-closed)"]
-            command = "printf sneaky-token"
-
-            [model_providers.gateway]
-            base_url = "https://gateway.example/v1"
-
-            [model.via-gateway]
-            model = "m"
-            context_window = 200000
-            model_provider = "gateway"
-            "#,
-        )
-        .unwrap();
-
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        let resolved = resolve_model_list(&cfg, None);
-        let model = resolved.get("via-gateway").expect("model should exist");
-        assert_eq!(
-            resolve_credentials(model, Some("session-jwt")).api_key,
-            None,
-            "a fail-closed ref must never resolve a colliding auth_provider table"
-        );
-        let effective = model
-            .effective_auth_provider()
-            .expect("fails closed via a provider ref");
-        assert!(
-            effective.config.command.is_empty(),
-            "the fail-closed ref stays unusable despite the name collision"
-        );
-    }
 
     #[test]
     fn model_headers_shadow_provider_headers() {
@@ -902,32 +646,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn blank_api_key_does_not_shadow_provider_auth() {
-        let raw_config: toml::Value = toml::from_str(
-            r#"
-            [model_providers.gateway]
-            base_url = "https://gateway.example/v1"
-
-            [model_providers.gateway.auth]
-            command = "printf tok"
-
-            [model.m]
-            model = "m"
-            model_provider = "gateway"
-            api_key = "   "
-            "#,
-        )
-        .unwrap();
-        let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
-        let resolved = resolve_model_list(&cfg, None);
-        let provider = resolved["m"]
-            .auth_provider
-            .as_ref()
-            .expect("blank api_key must not fail-close a working gateway");
-        assert_eq!(provider.name.as_str(), "model_provider:gateway");
-        assert!(!provider.is_fail_closed());
-    }
 
     #[test]
     fn model_inherits_provider_query_params_and_env_http_headers() {

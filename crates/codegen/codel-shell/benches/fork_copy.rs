@@ -1,11 +1,5 @@
-//! Fork-path benchmark and profiling workbench.
-//!
-//! Synthesizes a session whose `updates.jsonl` matches a configurable target
-//! size (production byte/line shape: user and agent chunks plus one bulky
-//! trailing chunk), then measures `StorageAdapter::copy_session_data`, the
-//! path that materializes the whole file and produced multi-GB RSS spikes on
-//! large production sessions. Also the substrate for allocation/CPU profiling
-//! (`cargo flamegraph --bench fork_copy`, dhat) and future peak-RSS bounds.
+//! Measures the throughput of `StorageAdapter::copy_session_data` over a synthesized session shaped like production data.
+//! The bound on peak RSS is checked in `tests/test_fork_copy_memory.rs`.
 //!
 //! Run: `cargo bench -p codel-shell --bench fork_copy`
 //! Size override: `FORK_BENCH_MB=64 cargo bench ...` (default 16 MB).
@@ -20,7 +14,7 @@ use criterion::{
 use tempfile::TempDir;
 use codel_shell::session::info::Info;
 use codel_shell::session::storage::{CopySessionOptions, JsonlStorageAdapter, StorageAdapter};
-use codel_shell::session::testkit::synth::synthesize_to_target_bytes;
+use codel_shell::session::testkit::synth::make_session_with_size_blocking;
 
 fn bench_fork_copy(c: &mut Criterion) {
     let target_mb: u64 = std::env::var("FORK_BENCH_MB")
@@ -28,7 +22,7 @@ fn bench_fork_copy(c: &mut Criterion) {
         .and_then(|v| v.parse().ok())
         .unwrap_or(16);
     let root = TempDir::new().expect("tempdir");
-    let source = synthesize_to_target_bytes(root.path(), target_mb * 1024 * 1024);
+    let source = make_session_with_size_blocking(root.path(), target_mb * 1024 * 1024);
     let adapter = JsonlStorageAdapter::with_root(root.path().to_path_buf());
     let updates_len = std::fs::metadata(adapter.updates_file_path(&source).expect("updates path"))
         .expect("updates.jsonl")

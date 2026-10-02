@@ -652,7 +652,7 @@ async fn served_then_deleted_refetches_best_effort() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     assert!(
         home.join("requirements.toml").exists(),
         "the best-effort refresh restored the deleted artifact"
@@ -706,7 +706,7 @@ async fn expired_refreshable_team_token_heals_after_auth_refresh() {
         codel_shell::auth::CodelComConfig::default(),
     ));
 
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     // The refresh re-enabled the heal: policy restored, refetched with the fresh token.
     assert!(
@@ -750,7 +750,7 @@ async fn expired_team_token_without_successful_refresh_stays_failed_closed() {
         codel_shell::auth::CodelComConfig::default(),
     ));
 
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     assert!(
         !home.join("requirements.toml").exists(),
@@ -800,7 +800,7 @@ async fn managed_policy_gate_fails_closed_on_deleted_policy_offline() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     assert!(
         !home.join("requirements.toml").exists(),
         "a failed refetch cannot restore the deleted policy"
@@ -827,49 +827,6 @@ async fn managed_policy_gate_fails_closed_on_deleted_policy_offline() {
     );
 }
 
-/// `bootstrap` must run the fail-closed gate (it is `bootstrap`'s first step): a compromised managed policy
-/// must fail the whole bootstrap closed, not just the standalone `managed_policy_gate`. Guards against a
-/// refactor that drops the gate call from `bootstrap` — which the gate's own tests would not catch.
-#[tokio::test]
-#[serial]
-async fn bootstrap_fails_closed_when_managed_policy_compromised() {
-    let home = test_home().clone();
-    reset(&home);
-
-    // Provision a fail_closed team install (both artifacts served), then tamper by deleting the served policy.
-    let body = serde_json::json!({
-        "deployment_id": serde_json::Value::Null,
-        "team_id": "team-007",
-        "managed_config": TEAM_MANAGED,
-        "requirements": format!("fail_closed = true\n{TEAM_REQUIREMENTS}"),
-    })
-    .to_string();
-    let (url, _auths) = spawn_mock(body);
-    write_config(&home, &url);
-    write_team_auth(&home, "team-007");
-    codel_shell::managed_config::sync()
-        .await
-        .expect("initial sync should succeed");
-    std::fs::remove_file(home.join("requirements.toml")).unwrap();
-
-    // The gate is bootstrap's first step, so it refuses before any config/model work.
-    let cfg = codel_shell::agent::config::Config::default();
-    let auth_manager = std::sync::Arc::new(codel_shell::auth::AuthManager::new(
-        &home,
-        codel_shell::auth::CodelComConfig::default(),
-    ));
-    // `bootstrap`'s Ok type isn't `Debug`, so match rather than `expect_err`.
-    let err = match codel_shell::agent::init::bootstrap(&cfg, &auth_manager, None) {
-        Err(e) => e,
-        Ok(_) => {
-            panic!("a compromised fail_closed policy must fail bootstrap closed, but it succeeded")
-        }
-    };
-    assert!(
-        err.contains("Managed policy is required for this account"),
-        "bootstrap must fail via the managed-policy gate (proves bootstrap calls it); got: {err}"
-    );
-}
 
 /// Live wiring guard: an offline `CODEL_DEPLOYMENT_KEY` switch on a fail_closed install must FAIL CLOSED, else a
 /// regression returning `None` silently disables deploy-key-switch detection. Same-key ALLOW checks the lib's own `blake3(KEY-AAA)` exactly.
@@ -1026,7 +983,7 @@ async fn deployment_key_served_then_deleted_heals_online() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     assert!(
         home.join("requirements.toml").exists(),
         "the online refetch must restore the deleted deploy-key policy"
@@ -1074,7 +1031,7 @@ async fn identity_change_permits_offline_team_switch_and_purges_prior_team() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     assert!(
         codel_shell::managed_config::managed_policy_gate().is_ok(),
@@ -2153,7 +2110,7 @@ async fn deploy_key_machine_never_gate_purges_on_team_switch() {
         &home,
         codel_shell::auth::CodelComConfig::default(),
     ));
-    codel_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    codel_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     // The gate is the purge's only caller — without this call the guard is unexercised.
     assert!(

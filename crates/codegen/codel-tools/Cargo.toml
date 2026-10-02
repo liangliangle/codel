@@ -8,28 +8,36 @@ description = "Codel tools library"
 [dependencies]
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-dirs = { workspace = true }
+codel-dirs = { workspace = true }
 derive_more = { workspace = true, features = ["from", "try_into"] }
 dunce = { workspace = true }
+encoding_rs = { workspace = true, optional = true }
 fs2 = { workspace = true }
 educe = { workspace = true, features = ["Debug"] }
 async-openai = { workspace = true }
 codel-tty-utils = { workspace = true }
+codel-auth = { workspace = true }
 codel-config = { path = "../codel-config" }
+codel-permission-rules = { workspace = true }
+codel-extra-ca = { workspace = true }
+codel-feedback = { workspace = true }
 codel-tools-api = { path = "../codel-tools-api" }
 codel-workspace-types = { path = "../codel-workspace-types" }
 codel-version = { workspace = true }
 codel-interjection-core = { workspace = true }
+codel-message-delivery-core = { workspace = true }
 codel-token-estimation = { workspace = true }
 async-lsp = { workspace = true }
 async-stream = { workspace = true }
+bstr = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
-crc32fast = { workspace = true }
+codel-image = { workspace = true }
 ignore = { workspace = true }
 infer = { workspace = true }
 globset = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
+kamadak-exif = { workspace = true, optional = true }
 pdf_oxide = { workspace = true }
 # PPTX text extraction (implementations/read_file/pptx.rs). Deliberately NOT
 # `workspace = true`: the workspace `zip` pin has default features on, which
@@ -72,6 +80,7 @@ tokio = { workspace = true, features = [
 tokio-util = { workspace = true, features = ["compat"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
+unicode-normalization = { workspace = true, optional = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 wildmatch = { workspace = true }
@@ -85,6 +94,9 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 codel-sandbox = { path = "../codel-sandbox", default-features = false }
 codel-file-utils = { path = "../codel-file-utils" }
+codel-trace-context = { workspace = true }
+dhat = { workspace = true, optional = true }
+zstd = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 command-fds = { version = "0.3", features = ["tokio"] }
@@ -100,16 +112,19 @@ libc = { workspace = true }
 windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-dirs = { workspace = true }
+pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 wiremock = { workspace = true }
+codel-test-support = { workspace = true }
 codel-test-utils = { workspace = true }
 
 [build-dependencies]
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 flate2 = { workspace = true }
+sha2 = { workspace = true }
 tar = { workspace = true }
+zstd = { workspace = true }
 
 [lints]
 workspace = true
@@ -118,3 +133,4 @@ workspace = true
 default-bazel = ["serde"]
 default = ["serde"]
 serde = []
+dhat-heap = ["dep:dhat"]

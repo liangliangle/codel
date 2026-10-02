@@ -9,7 +9,7 @@ use crate::client_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 
 pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
     match AuthStatus::resolve(agent_config) {
-        AuthStatus::ApiKey => println!("You are using a model-level API key."),
+        AuthStatus::ApiKey => println!("You are using CODEL_API_KEY."),
         AuthStatus::LoggedIn(host) => println!("You are logged in with {}.", host),
         AuthStatus::ModelCredentials(model) => {
             println!("Model '{model}' is using its own API key.");
@@ -20,8 +20,9 @@ pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
     println!();
 
     let cancel = CancellationToken::new();
+    codel_logging::startup::mark_utility_process();
     let spawned = crate::acp::spawn::spawn_codel_shell(agent_config.clone(), &cancel, None).await?;
-    // Cancel + join on every return path, including the `?` below.
+    // Cancel and join on every return path, including the `?` below
     let _agent_guard =
         crate::acp::spawn::AgentShutdownGuard::new(cancel.clone(), Some(spawned.thread_handle));
 

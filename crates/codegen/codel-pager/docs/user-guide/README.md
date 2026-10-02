@@ -51,3 +51,7 @@
 | 21 | [终端兼容性与排障](21-终端兼容性.md) | tmux、SSH、Truecolor 真彩色、剪贴板与 OSC 52 |
 | 22 | [权限与安全](22-权限与安全.md) | 模式（始终批准、自动、询问）、规则、匹配、钩子与示例 |
 | 23 | [控制面板](23-控制面板.md) | 本地会话与分叉会话的全局总览视图 |
+| 25 | [Status Line](25-status-line.md) | 底部状态行：内置段、命令脚本与 stdin JSON 契约 |
+| 25 | [工作流](25-工作流.md) | 多步骤工作流定义、运行与并发上限 |
+| 26 | [配置参考](26-config-reference.md) | `config.toml`、`managed_config.toml` 与 `requirements.toml` 字段表 |
+| 27 | [codel clone](27-codel-clone.md) | 克隆会话目录与本地工作区 |

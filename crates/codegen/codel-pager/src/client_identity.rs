@@ -3,10 +3,9 @@ pub const HEADLESS_CLIENT_TYPE: &str = "codel-shell";
 
 pub const PAGER_CLIENT_VERSION: &str = codel_version::VERSION;
 
-/// `User-Agent` for pager-owned direct-to-`api.codel.dev` clients (voice STT).
+/// `User-Agent` for the pager's own HTTP clients that call `api.codel.dev` directly (voice STT).
 ///
-/// Matches the sampler's `codel-shell/<version> (os; arch)` shape so server-side
-/// dashboards bucket voice traffic alongside chat / imagine requests.
+/// Matches the sampler's `codel-shell/<version> (os; arch)` shape so server-side dashboards bucket voice traffic alongside chat / imagine requests.
 pub fn client_user_agent() -> String {
     format!(
         "{}/{} ({}; {})",
@@ -23,8 +22,8 @@ mod tests {
 
     #[test]
     fn client_user_agent_has_expected_shape() {
-        // e.g. "codel-shell/1.2.3 (macos; aarch64)". The pieces are wire
-        // contract for server-side UA parsing, so pin the exact shape.
+        // e.g. "codel-shell/1.2.3 (macos; aarch64)".
+        // Servers parse this UA string, so pin the exact shape
         let ua = client_user_agent();
         assert_eq!(
             ua,

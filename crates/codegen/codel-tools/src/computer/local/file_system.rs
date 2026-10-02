@@ -21,6 +21,11 @@ const WINDOWS_ERROR_SHARING_VIOLATION: i32 = 32;
 #[cfg(any(windows, test))]
 const WINDOWS_ERROR_LOCK_VIOLATION: i32 = 33;
 
+/// Check if an IO error is a permission denial (EACCES or EPERM),
+/// which indicates a sandbox violation.
+fn is_permission_error(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::PermissionDenied)
+}
 
 #[cfg(any(windows, test))]
 fn is_windows_transient_write_lock_raw_os_error(raw_os_error: Option<i32>) -> bool {
@@ -114,7 +119,10 @@ where
                     on_exhausted(&e, retry_count);
                     return Err(e);
                 }
-                let delay = WRITE_RETRY_DELAYS[retry_count];
+                let Some(&delay) = WRITE_RETRY_DELAYS.get(retry_count) else {
+                    on_exhausted(&e, retry_count);
+                    return Err(e);
+                };
                 retry_count += 1;
                 on_retry(&e, retry_count, delay);
                 sleep_for(delay).await;
@@ -128,12 +136,48 @@ where
 impl AsyncFileSystem for LocalFs {
     #[tracing::instrument(name = "fs.read_file", skip_all)]
     async fn read_file(&self, path: &Path) -> Result<Vec<u8>, ComputerError> {
-        match fs::read(path).await {
+        match crate::util::file_reader::read_file(
+            path,
+            crate::util::file_reader::FileReadOptions::default(),
+        )
+        .await
+        {
             Ok(data) => Ok(data),
             Err(e) => {
+                if is_permission_error(&e) {
+                    codel_sandbox::log_violation(&path.display().to_string(), "read");
+                }
                 Err(e.into())
             }
         }
+    }
+
+    fn supports_bounded_read(&self) -> bool {
+        true
+    }
+
+    #[tracing::instrument(name = "fs.read_file_bounded", skip_all)]
+    async fn read_file_bounded(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ComputerError> {
+        use crate::util::file_reader::{FileReadMode, FileReadOptions, read_file};
+
+        read_file(
+            path,
+            FileReadOptions {
+                mode: FileReadMode::BoundedComplete { max_bytes },
+                require_regular_file: true,
+            },
+        )
+        .await
+        .map_err(|error| {
+            if is_permission_error(&error) {
+                codel_sandbox::log_violation(&path.display().to_string(), "read");
+            }
+            ComputerError::from(error)
+        })
     }
 
     #[tracing::instrument(name = "fs.write_file", skip_all)]
@@ -142,17 +186,35 @@ impl AsyncFileSystem for LocalFs {
         if let Some(dir) = path.parent()
             && let Err(e) = fs::create_dir_all(dir).await
         {
+            if is_permission_error(&e) {
+                codel_sandbox::log_violation(&dir.display().to_string(), "mkdir");
+            }
             return Err(e.into());
         }
         if let Err(e) = write_file_with_transient_lock_retries(path, data).await {
+            if is_permission_error(&e) {
+                codel_sandbox::log_violation(&path.display().to_string(), "write");
+            }
             return Err(e.into());
         }
         Ok(())
     }
 
+    #[tracing::instrument(name = "fs.file_exists", skip_all)]
+    async fn file_exists(&self, path: &Path) -> Result<bool, ComputerError> {
+        match fs::metadata(path).await {
+            Ok(metadata) => Ok(metadata.is_file()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     #[tracing::instrument(name = "fs.delete_file", skip_all)]
     async fn delete_file(&self, path: &Path) -> Result<(), ComputerError> {
         if let Err(e) = fs::remove_file(path).await {
+            if is_permission_error(&e) {
+                codel_sandbox::log_violation(&path.display().to_string(), "delete");
+            }
             return Err(e.into());
         }
         Ok(())

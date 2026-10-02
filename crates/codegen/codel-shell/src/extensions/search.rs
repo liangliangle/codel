@@ -2,7 +2,7 @@
 //!
 //! Routing: prefers explicit `cwd`, falls back to session lookup via `sessionId`.
 
-use crate::agent::mvp_agent::MvpAgent;
+use crate::extensions::agent_runtime::AgentRuntime;
 use crate::session::ExtMethodResult;
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
@@ -14,14 +14,14 @@ type ExtResult = Result<acp::ExtResponse, acp::Error>;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FuzzyOpenResponse {
+pub(crate) struct FuzzyOpenResponse {
     pub session_id: String,
     pub search_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FuzzyChangeResponse {
+pub(crate) struct FuzzyChangeResponse {
     pub session_id: String,
     pub search_id: String,
 }
@@ -43,7 +43,7 @@ fn parse<T: for<'de> Deserialize<'de>>(s: &str) -> Result<T, acp::Error> {
 
 /// Resolve the search root, preferring an explicit `cwd` over a `sessionId` lookup.
 fn resolve_cwd(
-    agent: &MvpAgent,
+    agent: &dyn AgentRuntime,
     cwd: Option<String>,
     session_id: Option<&acp::SessionId>,
 ) -> Result<PathBuf, acp::Error> {
@@ -65,11 +65,11 @@ fn resolve_cwd(
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FuzzyOpenRequest {
-    /// Optional session ID - used to lookup cwd if cwd not provided directly
+pub(crate) struct FuzzyOpenRequest {
+    /// Optional session ID, used to look up cwd if cwd not provided directly
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
-    /// Optional absolute cwd path - preferred over session_id lookup
+    /// Optional absolute cwd path, preferred over session_id lookup
     #[serde(default)]
     pub cwd: Option<String>,
     /// Optional relative path within the resolved cwd
@@ -86,7 +86,7 @@ pub struct FuzzyOpenRequest {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FuzzyChangeRequest {
+pub(crate) struct FuzzyChangeRequest {
     pub search_id: String,
     pub query: String,
     #[serde(default)]
@@ -97,7 +97,7 @@ pub struct FuzzyChangeRequest {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FuzzyCloseRequest {
+pub(crate) struct FuzzyCloseRequest {
     pub search_id: String,
 }
 
@@ -112,7 +112,7 @@ pub struct ContentSearchRequest {
     pub params: ContentSearchRequestParams,
 }
 
-pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+pub async fn handle(agent: &dyn AgentRuntime, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "codel/search/fuzzy/open" => {
             let req: FuzzyOpenRequest = parse(args.params.get())?;
@@ -154,8 +154,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             let ops = agent
                 .resolve_workspace_ops()
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-            // The workspace owns the manager and spawns the status driver, which
-            // streams `codel/search/fuzzy/status` through the client sink.
+            // The workspace owns the manager and spawns the status driver, which streams `codel/search/fuzzy/status` through the client sink
             let found = ops
                 .dispatch(
                     &FuzzyChangeReq {
@@ -218,8 +217,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
                 .resolve_workspace_ops()
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
 
-            // The workspace runs the streaming search and emits
-            // `codel/search/content/status` batches through the client sink.
+            // The workspace runs the streaming search and emits `codel/search/content/status` batches through the client sink
             let mut op = req.params;
             op.cwd = Some(cwd);
             op.context_id = Some(context_id);
@@ -266,7 +264,7 @@ mod tests {
         let json = r#"{"sessionId": "session-123", "cwd": "/path/to/project"}"#;
         let req: FuzzyOpenRequest = serde_json::from_str(json).unwrap();
 
-        // Both should be present - cwd takes precedence in resolve_cwd
+        // Both are present; cwd takes precedence in resolve_cwd
         assert!(req.session_id.is_some());
         assert_eq!(req.cwd, Some("/path/to/project".to_string()));
     }
@@ -321,8 +319,7 @@ mod tests {
 
     #[test]
     fn test_fuzzy_open_request_with_meta() {
-        // Test that FuzzyOpenRequest correctly deserializes _meta.clientId
-        // This is what the relay injects into the request
+        // FuzzyOpenRequest deserializes _meta.clientId, which the relay injects into the request
         let json = r#"{
             "cwd": "/path/to/project",
             "requestId": "req-123",

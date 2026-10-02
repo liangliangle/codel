@@ -11,17 +11,17 @@ A few worth knowing on day one:
 | `/new` | Start a fresh session |
 | `/compact` | Compress a long conversation to free up context |
 | `/btw` | Send Codel an aside *without* interrupting its current task |
-| `/rewind` | Restore your files and history to an earlier prompt |
+| `/rewind` (alias `/undo`) | Rewind the conversation to an earlier turn |
 | `/docs` | Full How-to Guides, in the TUI or on the web |
 | `/feedback` | Send feedback to the team |
 
 Two of those deserve a second look:
 
-- **`/compact`** takes an optional hint: `/compact keep the auth details`.
+- **`/compact`** compresses the conversation history to free up context.
   Check context usage anytime with `/context` — Codel also auto-compacts
   when the window fills up.
-- **`/rewind`** restores actual file snapshots taken at each prompt, not
-  just the chat.
+- **`/rewind`** (or **`/undo`**) rewinds the conversation to an earlier
+  turn, dropping later turns (file changes are left as-is).
 
 ## The command palette
 

@@ -1,4 +1,4 @@
-//! `codel mcp` — manage MCP server configurations from the command line.
+//! `codel mcp`: manage MCP server configurations from the command line.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -80,9 +80,14 @@ pub enum McpCommand {
         #[arg(short = 's', long, value_enum)]
         scope: Option<McpScope>,
     },
-    /// Authenticate an MCP server via OAuth (prints the auth URL to terminal)
-    Auth {
-        /// Server name to authenticate
+    /// Enable an MCP server
+    Enable {
+        /// Server name
+        name: String,
+    },
+    /// Disable an MCP server
+    Disable {
+        /// Server name
         name: String,
     },
     /// Diagnose MCP server configuration and connectivity
@@ -95,8 +100,7 @@ pub enum McpCommand {
     },
 }
 
-// Everything `mcp add` accepts, before validation; `resolve_add` turns it
-// into a transport config.
+// Everything `mcp add` accepts, before validation; `resolve_add` turns it into a transport config
 #[derive(Debug, clap::Args, Clone)]
 #[command(after_help = ADD_AFTER_HELP)]
 pub struct AddArgs {
@@ -107,12 +111,12 @@ pub struct AddArgs {
     #[arg(value_name = "COMMAND_OR_URL", group = "source")]
     command_or_url: Option<String>,
 
-    /// Arguments passed to the server command. Place them after `--` so
-    /// flags such as `-y` are passed to the server instead of codel.
+    /// Arguments passed to the server command.
+    /// Place them after `--` so flags such as `-y` are passed to the server instead of codel.
     #[arg(value_name = "ARGS")]
     args: Vec<String>,
 
-    /// Transport type. Defaults to stdio.
+    /// Transport type. Defaults to stdio, or to http when the positional argument is an http(s):// URL.
     #[arg(short = 't', long, value_enum)]
     transport: Option<McpTransport>,
 
@@ -147,16 +151,20 @@ pub async fn run(mcp_args: McpArgs) -> Result<()> {
         McpCommand::List { json } => run_list(json),
         McpCommand::Add(args) => run_add(args).await,
         McpCommand::Remove { name, scope } => run_remove(&name, scope).await,
-        McpCommand::Auth { name } => run_auth(&name).await,
+        McpCommand::Enable { name } => run_set_enabled(&name, true).await,
+        McpCommand::Disable { name } => run_set_enabled(&name, false).await,
         McpCommand::Doctor { json, name } => run_doctor(json, name).await,
     }
 }
 
 fn run_list(json: bool) -> Result<()> {
-    // Include project-scoped servers (nearest definition wins), matching what
-    // a session started in this directory would load from config.toml files.
+    // Include project-scoped servers (nearest definition wins), matching what a session started in this directory would load from config.toml files
     let cwd = current_dir_or_exit();
     let servers = codel_shell::util::config::load_mcp_server_configs_with_project(&cwd);
+    let disabled = codel_shell::util::config::disabled_mcp_server_names(&cwd);
+    // `mcp_doctor::policy_subjects` judges this same TOML walk (plus the doctor-only `.mcp.json`
+    // and plugin legs), so every server listed here has a verdict; the rule itself is the merge's.
+    let blocked = codel_shell::mcp_doctor::policy_blocked_servers(&cwd);
 
     if json {
         let payload: serde_json::Value = servers
@@ -166,6 +174,16 @@ fn run_list(json: bool) -> Result<()> {
                 if let Some(obj) = entry.as_object_mut() {
                     obj.insert("name".into(), serde_json::Value::String(name.clone()));
                     obj.insert("scope".into(), serde_json::Value::String(scope.to_string()));
+                    obj.insert(
+                        "enabled".into(),
+                        serde_json::Value::Bool(!disabled.contains(name)),
+                    );
+                    if let Some(reason) = blocked.get(name) {
+                        obj.insert(
+                            "blocked_reason".into(),
+                            serde_json::Value::String(reason.to_string()),
+                        );
+                    }
                 }
                 entry
             })
@@ -185,13 +203,22 @@ fn run_list(json: bool) -> Result<()> {
                 }
                 McpServerTransportConfig::StreamableHttp { url, .. } => url.clone(),
             };
-            let status = if config.enabled { "" } else { " (disabled)" };
-            let scope_note = if *scope == "project" {
-                " (project)"
+            let mut notes = Vec::new();
+            if blocked.contains_key(name) {
+                notes.push("blocked by organization policy");
+            }
+            if disabled.contains(name) {
+                notes.push("disabled");
+            }
+            if *scope == "project" {
+                notes.push("project");
+            }
+            let suffix = if notes.is_empty() {
+                String::new()
             } else {
-                ""
+                format!(" ({})", notes.join(", "))
             };
-            println!("  {name}: {transport}{status}{scope_note}");
+            println!("  {name}: {transport}{suffix}");
         }
     }
     Ok(())
@@ -246,6 +273,20 @@ async fn run_add(args: AddArgs) -> Result<()> {
         expose_image_base64: None,
     };
 
+    // Policy check BEFORE persist (the same gate as the TUI Add): a denied
+    // server must not be written under a success message.
+    let cwd = current_dir_or_exit();
+    let write_scope = match args.scope {
+        McpScope::User => codel_shell::mcp_doctor::McpWriteScope::User,
+        McpScope::Project => codel_shell::mcp_doctor::McpWriteScope::Project,
+    };
+    if let Some(refusal) =
+        codel_shell::mcp_doctor::policy_add_refusal(&cwd, name, &config, write_scope)
+    {
+        eprintln!("{refusal}");
+        std::process::exit(1);
+    }
+
     let path = scope_target(args.scope);
     codel_shell::util::config::save_mcp_server_config_at(&path, name, &config).await?;
     println!("Added {summary} to {} config", args.scope.label());
@@ -254,11 +295,21 @@ async fn run_add(args: AddArgs) -> Result<()> {
 }
 
 /// Validate an `mcp add` request and build the transport config.
-///
-/// The transport flag fully determines how `command_or_url` is interpreted;
-/// URL-looking commands only produce a warning, never a behavior change.
+/// An explicit transport flag fully determines how `command_or_url` is interpreted.
+/// Without one, a bare positional http(s):// URL is inferred to be an HTTP server; other URL-looking commands stay stdio with a warning.
 fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
     validate_server_name(&args.name)?;
+
+    // Extra args or --env mean the user is describing a command, and the legacy --command/--url flags keep their own rules
+    // Only a bare positional http(s):// URL therefore triggers inference
+    let inferred_http = args.transport.is_none()
+        && args.url.is_none()
+        && args.args.is_empty()
+        && args.env.is_empty()
+        && args
+            .command_or_url
+            .as_deref()
+            .is_some_and(|s| s.starts_with("http://") || s.starts_with("https://"));
 
     let transport = match args.transport {
         Some(t) => t,
@@ -267,12 +318,12 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
             Some(t) if t.eq_ignore_ascii_case("sse") => McpTransport::Sse,
             _ => McpTransport::Http,
         },
+        None if inferred_http => McpTransport::Http,
         None => McpTransport::Stdio,
     };
     let explicit_transport = args.transport.is_some();
 
-    // Legacy-flag misroutes: --url always means a remote server, and --type
-    // only modifies --url.
+    // Legacy-flag misroutes: --url always means a remote server, and --type only modifies --url
     if args.url.is_some() && transport == McpTransport::Stdio {
         bail!(
             "--url cannot be combined with --transport stdio. For a remote server, use --transport http or --transport sse."
@@ -304,8 +355,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
             if !args.header.is_empty() {
                 bail!("--header can only be used with HTTP or SSE servers.");
             }
-            // A KEY=value command means an env pair leaked out of -e, which
-            // takes one pair per flag (the pre-parity --env was greedy).
+            // A KEY=value command means an env pair leaked out of -e, which takes one pair per flag (the old --env was greedy)
             if looks_like_env_pair(command) {
                 let pairs: Vec<String> = args
                     .env
@@ -323,8 +373,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
 
             let mut warnings = Vec::new();
             if !explicit_transport && looks_like_url(command) {
-                // Suggest a command that passes URL validation even when the
-                // original lacks a scheme (e.g. localhost:3000).
+                // Suggest a command that passes URL validation even when the original lacks a scheme (e.g. localhost:3000).
                 let suggested_url =
                     if command.starts_with("http://") || command.starts_with("https://") {
                         command.to_string()
@@ -373,18 +422,26 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
             }
             let headers = parse_headers(&args.header)?;
 
+            let mut warnings = Vec::new();
+            if inferred_http {
+                warnings.push(format!(
+                    "No --transport given; '{url}' starts with http(s)://, adding as an HTTP server. Use --transport sse for an SSE server, or --transport stdio to force a stdio command."
+                ));
+            }
+
             Ok(ResolvedAdd {
                 kind: transport,
                 transport: McpServerTransportConfig::StreamableHttp {
                     url: url.to_string(),
                     transport_type: (transport == McpTransport::Sse).then(|| "sse".to_string()),
                     bearer_token_env_var: None,
+                    bearer_token_file: None,
                     headers: (!headers.is_empty()).then_some(headers),
                     oauth_client_id: None,
                     oauth_client_secret_env_var: None,
                     oauth_scopes: None,
                 },
-                warnings: Vec::new(),
+                warnings,
             })
         }
     }
@@ -472,7 +529,7 @@ fn scope_target(scope: McpScope) -> PathBuf {
 /// Display form of a scope's config file path.
 fn scope_display(scope: McpScope, path: &Path) -> String {
     match scope {
-        McpScope::User => display_user_codel_path("config.toml"),
+        McpScope::User => display_user_codel_path(codel_config::USER_CONFIG_FILENAME),
         McpScope::Project => path.display().to_string(),
     }
 }
@@ -486,9 +543,8 @@ enum RemoveError {
     Ambiguous { project_path: PathBuf },
 }
 
-/// Pick the config file `mcp remove` deletes from, given which scopes define
-/// the name. Pure so the scope x presence matrix is unit-testable; printing
-/// and exit codes stay in `run_remove`.
+/// Pick the config file `mcp remove` deletes from, given which scopes define the name.
+/// Pure so the scope-by-presence matrix is unit-testable; printing and exit codes stay in `run_remove`.
 fn select_remove_site(
     user_defined: bool,
     project_site: Option<PathBuf>,
@@ -512,8 +568,7 @@ fn select_remove_site(
     }
 }
 
-/// Where a name still resolves after a delete: project sites shadow user
-/// scope, so the nearest surviving definition wins.
+/// Where a name still resolves after a delete: project sites shadow user scope, so the nearest surviving definition wins.
 fn surviving_definition(
     user_defined: bool,
     project_site: Option<PathBuf>,
@@ -528,6 +583,116 @@ fn surviving_definition(
                 )
             })
         })
+}
+
+/// Known names come from TOML, the disabled list, compat JSON, and plugins.
+/// Gateway connectors are rejected earlier (colon names).
+fn mcp_server_is_known(name: &str, cwd: &Path) -> bool {
+    codel_shell::util::config::cli_known_mcp_server_names(cwd).contains(name)
+}
+
+fn is_gateway_cli_toggle_name(name: &str) -> bool {
+    name.starts_with("managed_gateway:") || name.contains(':')
+}
+
+/// Whether the user config's `disabled_mcp_servers` list, the one write a disable always makes,
+/// already holds `name`. A user-tier `enabled = false` is not enough: a project layer can shadow it.
+fn user_disabled_list_has(user_config: &toml::Value, name: &str) -> bool {
+    user_config
+        .get("disabled_mcp_servers")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(name)))
+}
+
+fn available_mcp_server_names(cwd: &Path) -> Vec<String> {
+    let mut names: Vec<String> = codel_shell::util::config::cli_known_mcp_server_names(cwd)
+        .into_iter()
+        .collect();
+    names.sort();
+    names
+}
+
+async fn run_set_enabled(name: &str, enabled: bool) -> Result<()> {
+    // Do not use validate_server_name (add-only: [A-Za-z0-9_-])
+    // Enable/disable also targets compat/plugin names that may contain dots or other keys
+    if name.is_empty() {
+        bail!("Server name cannot be empty.");
+    }
+    if is_gateway_cli_toggle_name(name) {
+        eprintln!(
+            "Gateway connectors (e.g. managed_gateway:…) cannot be toggled via CLI; use Space in /mcps."
+        );
+        std::process::exit(1);
+    }
+    let cwd = current_dir_or_exit();
+
+    if !mcp_server_is_known(name, &cwd) {
+        eprintln!("No MCP server named '{name}'.");
+        let available = available_mcp_server_names(&cwd);
+        if !available.is_empty() {
+            eprintln!("Available servers: {}", available.join(", "));
+        } else {
+            eprintln!("No MCP servers configured. Run `codel mcp add --help` to get started.");
+        }
+        std::process::exit(1);
+    }
+
+    // Policy check BEFORE the config write, or a blocked server is written under a success
+    // message and resurrects when the pin lifts; disabling only tightens, so it stays allowed.
+    if enabled && let Some(refusal) = codel_shell::mcp_doctor::policy_enable_refusal(&cwd, name)
+    {
+        eprintln!("{refusal}");
+        std::process::exit(1);
+    }
+
+    // No-op check after the policy gate (blocked refuses, not "already enabled") and before the
+    // save, which rewrites `enabled` keys; disable writes only the user list, so judge that list.
+    let already = if enabled {
+        !codel_shell::util::config::disabled_mcp_server_names(&cwd).contains(name)
+    } else {
+        codel_shell::config::load_from_disk()
+            .is_ok_and(|user_config| user_disabled_list_has(&user_config, name))
+    };
+    if already {
+        let state = if enabled { "enabled" } else { "disabled" };
+        println!("MCP server '{name}' is already {state}.");
+        return Ok(());
+    }
+
+    let modified =
+        codel_shell::util::config::save_mcp_server_enabled_in(name, enabled, &cwd).await?;
+
+    let now_disabled = codel_shell::util::config::disabled_mcp_server_names(&cwd).contains(name);
+
+    if enabled && now_disabled {
+        eprintln!(
+            "Warning: '{name}' is still disabled after enable (check project-scoped config)."
+        );
+        std::process::exit(1);
+    }
+    if !enabled && !now_disabled {
+        eprintln!("Warning: '{name}' is still enabled after disable.");
+        std::process::exit(1);
+    }
+
+    if enabled {
+        println!("Enabled MCP server '{name}'.");
+    } else {
+        println!("Disabled MCP server '{name}'.");
+    }
+
+    let user_config = codel_shell::util::config::user_config_path();
+    for path in &modified {
+        if path == &user_config {
+            println!(
+                "File modified: {}",
+                display_user_codel_path(codel_config::USER_CONFIG_FILENAME)
+            );
+        } else {
+            println!("File modified: {}", path.display());
+        }
+    }
+    Ok(())
 }
 
 async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()> {
@@ -556,7 +721,10 @@ async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()>
         }
         Err(RemoveError::Ambiguous { project_path }) => {
             eprintln!("MCP server '{name}' exists in multiple scopes:");
-            eprintln!("  user: {}", display_user_codel_path("config.toml"));
+            eprintln!(
+                "  user: {}",
+                display_user_codel_path(codel_config::USER_CONFIG_FILENAME)
+            );
             eprintln!("  project: {}", project_path.display());
             eprintln!("Specify which one to remove, e.g.: codel mcp remove {name} --scope project");
             std::process::exit(1);
@@ -573,8 +741,7 @@ async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()>
     println!("Removed MCP server '{name}' from {} config", scope.label());
     println!("File modified: {}", scope_display(scope, &path));
 
-    // A scoped delete can leave the name defined in the other scope or an
-    // ancestor .codel/config.toml, where it still resolves for sessions.
+    // A scoped delete can leave the name defined in the other scope or an ancestor .codel/config.toml, where it still resolves for sessions
     let still_user_defined = mcp_server_defined_at(&user_config_path(), name);
     if let Some((survivor_scope, remaining)) =
         surviving_definition(still_user_defined, find_project_site())
@@ -585,94 +752,6 @@ async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()>
         );
     }
 
-    Ok(())
-}
-
-async fn run_auth(name: &str) -> Result<()> {
-    use codel_mcp::rmcp::transport::auth::AuthorizationManager;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    let cwd = current_dir_or_exit();
-    let servers = codel_shell::util::config::load_mcp_server_configs_with_project(&cwd);
-
-    let (config, _scope) = servers
-        .get(name)
-        .ok_or_else(|| {
-            let available: Vec<&String> = servers.keys().collect();
-            anyhow::anyhow!(
-                "MCP server '{}' not found. Available: {}",
-                name,
-                available
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
-
-    let url = match &config.transport {
-        McpServerTransportConfig::StreamableHttp { url, .. } => url.clone(),
-        McpServerTransportConfig::Stdio { .. } => {
-            bail!("MCP server '{}' is a stdio server and does not use OAuth.", name)
-        }
-    };
-
-    eprintln!("Authenticating MCP server '{}' ({})...", name, url);
-
-    // Create the AuthorizationManager and discover OAuth metadata.
-    let mut manager = AuthorizationManager::new(&url)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create OAuth manager: {e}"))?;
-
-    // Set up credential persistence.
-    let parsed_url = url::Url::parse(&url)
-        .map_err(|e| anyhow::anyhow!("Invalid server URL: {e}"))?;
-    let adapter = codel_mcp::credentials::McpCredentialStoreAdapter::new(
-        name.to_string(),
-        parsed_url,
-    );
-    manager.set_credential_store(adapter);
-
-    // Try stored credentials first.
-    if let Ok(true) = manager.initialize_from_store().await {
-        if manager.get_access_token().await.is_ok() {
-            println!("Already authenticated. Stored credentials are valid.");
-            return Ok(());
-        }
-        // Try refresh.
-        if manager.refresh_token().await.is_ok() {
-            println!("Token refreshed successfully.");
-            return Ok(());
-        }
-    }
-
-    // Discover OAuth metadata.
-    let metadata = manager
-        .discover_metadata()
-        .await
-        .map_err(|e| anyhow::anyhow!("OAuth discovery failed: {e}"))?;
-    manager.set_metadata(metadata);
-
-    let auth_manager = Arc::new(Mutex::new(manager));
-
-    // Load BYO OAuth config if present.
-    let byo_config = config.oauth_config();
-
-    // Run the browser auth flow — it prints the URL and waits for callback.
-    eprintln!();
-    codel_mcp::oauth::authenticate_mcp_server_dedup(
-        name,
-        &url,
-        &auth_manager,
-        byo_config.as_ref(),
-        true,
-        true,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Authentication failed: {e}"))?;
-
-    println!("Authentication successful for '{}'.", name);
     Ok(())
 }
 
@@ -723,8 +802,7 @@ mod tests {
 
     #[test]
     fn add_accepts_trailing_command_after_double_dash() {
-        // The invocation from the original report: a stdio server whose
-        // command follows `--`, with an explicit transport.
+        // A stdio server whose command follows `--`, with an explicit transport
         let add = parse_add(&[
             "codel",
             "mcp",
@@ -774,7 +852,7 @@ mod tests {
                 command, args, env, ..
             } => {
                 assert_eq!(command, "npx");
-                assert_eq!(args[0], "-y");
+                assert_eq!(args.first().map(String::as_str), Some("-y"));
                 let env = env.expect("env should be set");
                 assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
                 // Values may themselves contain '='.
@@ -806,6 +884,8 @@ mod tests {
         ]);
 
         let resolved = resolve_add(&add).expect("resolves to http");
+        // Explicit --transport http must not fire the inference info line.
+        assert!(resolved.warnings.is_empty());
         match resolved.transport {
             McpServerTransportConfig::StreamableHttp {
                 url,
@@ -886,25 +966,112 @@ mod tests {
     }
 
     #[test]
+    fn add_infers_http_for_bare_positional_url() {
+        for url in ["https://mcp.example.com/mcp", "http://mcp.example.com/mcp"] {
+            let add = parse_add(&["codel", "mcp", "add", "api", url]);
+            let resolved = resolve_add(&add).expect("bare http(s) URL infers http");
+            assert_eq!(resolved.kind, McpTransport::Http);
+            match resolved.transport {
+                McpServerTransportConfig::StreamableHttp {
+                    url: stored,
+                    transport_type,
+                    ..
+                } => {
+                    assert_eq!(stored, url);
+                    assert_eq!(transport_type, None);
+                }
+                other => panic!("expected http transport, got {other:?}"),
+            }
+            assert_eq!(resolved.warnings.len(), 1);
+            let Some(warning) = resolved.warnings.first() else {
+                panic!("expected a warning: {:?}", resolved.warnings);
+            };
+            assert!(warning.contains("No --transport given"), "got: {warning}");
+        }
+    }
+
+    #[test]
+    fn add_infers_http_with_headers() {
+        // Previously this bailed: stdio was assumed and --header is remote-only.
+        let add = parse_add(&[
+            "codel",
+            "mcp",
+            "add",
+            "api",
+            "https://mcp.example.com/mcp",
+            "--header",
+            "Authorization: Bearer tok",
+        ]);
+        let resolved = resolve_add(&add).expect("URL with headers infers http");
+        assert_eq!(resolved.kind, McpTransport::Http);
+        match resolved.transport {
+            McpServerTransportConfig::StreamableHttp { headers, .. } => {
+                let headers = headers.expect("headers should be set");
+                assert_eq!(
+                    headers.get("Authorization").map(String::as_str),
+                    Some("Bearer tok")
+                );
+            }
+            other => panic!("expected http transport, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn add_default_transport_warns_on_url_looking_command() {
-        let add = parse_add(&["codel", "mcp", "add", "api", "https://mcp.example.com/mcp"]);
-        let resolved = resolve_add(&add).expect("defaults to stdio with a warning");
+        // Scheme-less URL-looking commands are not inferred; they get http:// prepended so the suggested command passes URL validation
+        let add = parse_add(&["codel", "mcp", "add", "local", "localhost:3000"]);
+        let resolved = resolve_add(&add).expect("localhost command warns");
         assert!(matches!(
             resolved.transport,
             McpServerTransportConfig::Stdio { .. }
         ));
         assert_eq!(resolved.warnings.len(), 1);
-        assert!(resolved.warnings[0].contains("--transport http"));
-
-        // Scheme-less commands get http:// prepended so the suggested
-        // command passes URL validation verbatim.
-        let add = parse_add(&["codel", "mcp", "add", "local", "localhost:3000"]);
-        let resolved = resolve_add(&add).expect("localhost command warns");
+        let Some(warning) = resolved.warnings.first() else {
+            panic!("expected a warning: {:?}", resolved.warnings);
+        };
         assert!(
-            resolved.warnings[0].contains("--transport http local http://localhost:3000"),
-            "got: {}",
-            resolved.warnings[0]
+            warning.contains("--transport http local http://localhost:3000"),
+            "got: {warning}"
         );
+
+        // Extra args or --env mean a command; URLs stay stdio with a warning.
+        let add = parse_add(&[
+            "codel",
+            "mcp",
+            "add",
+            "api",
+            "https://mcp.example.com/mcp",
+            "--",
+            "extra",
+        ]);
+        let resolved = resolve_add(&add).expect("URL with args stays stdio");
+        assert!(matches!(
+            resolved.transport,
+            McpServerTransportConfig::Stdio { .. }
+        ));
+        assert_eq!(resolved.warnings.len(), 1);
+        assert!(
+            resolved
+                .warnings
+                .first()
+                .is_some_and(|w| w.contains("--transport http"))
+        );
+
+        let add = parse_add(&[
+            "codel",
+            "mcp",
+            "add",
+            "api",
+            "-e",
+            "K=v",
+            "https://mcp.example.com/mcp",
+        ]);
+        let resolved = resolve_add(&add).expect("URL with env stays stdio");
+        assert!(matches!(
+            resolved.transport,
+            McpServerTransportConfig::Stdio { .. }
+        ));
+        assert_eq!(resolved.warnings.len(), 1);
     }
 
     #[test]
@@ -954,6 +1121,8 @@ mod tests {
             "sse",
         ]);
         let resolved = resolve_add(&add).expect("legacy url form resolves");
+        // Legacy --url defaults to HTTP on its own path, not via inference.
+        assert!(resolved.warnings.is_empty());
         match resolved.transport {
             McpServerTransportConfig::StreamableHttp {
                 url,
@@ -984,8 +1153,7 @@ mod tests {
 
     #[test]
     fn add_legacy_multi_value_env_is_rejected() {
-        // Pre-parity --env was greedy (`--env A=1 B=2`); with --command the
-        // stray pair now lands in the positional and trips the source group.
+        // The old --env was greedy (`--env A=1 B=2`); with --command the stray pair now lands in the positional and trips the source group
         let err = PagerArgs::try_parse_from([
             "codel",
             "mcp",
@@ -1002,8 +1170,7 @@ mod tests {
         .expect_err("greedy --env must no longer parse");
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
 
-        // Without --command the stray pair used to be silently written as the
-        // command; resolve_add must reject it with migration guidance.
+        // Without --command the stray pair used to be silently written as the command; resolve_add must reject it with migration guidance
         let add = parse_add(&[
             "codel", "mcp", "add", "pg", "--env", "A=1", "B=2", "--", "npx", "-y", "server",
         ]);
@@ -1013,8 +1180,7 @@ mod tests {
 
     #[test]
     fn add_legacy_url_and_type_misuse_is_rejected() {
-        // --url with an explicit stdio transport used to silently store the
-        // URL as a stdio command.
+        // --url with an explicit stdio transport used to silently store the URL as a stdio command
         let add = parse_add(&[
             "codel",
             "mcp",
@@ -1142,12 +1308,104 @@ mod tests {
     }
 
     #[test]
+    fn gateway_cli_toggle_names_are_rejected() {
+        assert!(is_gateway_cli_toggle_name("managed_gateway:linear"));
+        assert!(is_gateway_cli_toggle_name("other:colon"));
+        assert!(!is_gateway_cli_toggle_name("codel_com_slack"));
+        assert!(!is_gateway_cli_toggle_name("user-slack"));
+    }
+
+    #[test]
+    fn codel_com_known_only_with_toml_definition() {
+        // Unique name: `codel_home()` is process-wide OnceLock, so CODEL_HOME. `codel_com_*` in the real ~/.codel disabled
+        // list would fail an orphan assertion on a well-known name.
+        let name = format!("codel_com_orphan_{}", uuid::Uuid::new_v4().as_simple());
+
+        let orphan = tempfile::tempdir().unwrap();
+        git2::Repository::init(orphan.path()).unwrap();
+        assert!(
+            !mcp_server_is_known(&name, orphan.path()),
+            "orphan codel_com_* must not be known by prefix"
+        );
+
+        let defined = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(defined.path().join(".codel")).unwrap();
+        std::fs::write(
+            defined
+                .path()
+                .join(".codel")
+                .join(codel_config::USER_CONFIG_FILENAME),
+            format!(
+                r#"
+[mcp_servers.{name}]
+url = "https://mcp.example.test/sse"
+"#
+            ),
+        )
+        .unwrap();
+        git2::Repository::init(defined.path()).unwrap();
+        assert!(
+            mcp_server_is_known(&name, defined.path()),
+            "TOML-defined {name} must be known"
+        );
+    }
+
+    /// A no-op disable is judged by the list the disable writes; a user-tier `enabled = false`
+    /// can be shadowed by a project definition, so it must not short-circuit the write.
+    #[test]
+    fn noop_disable_is_judged_by_the_user_disabled_list_only() {
+        let listed: toml::Value = toml::from_str(
+            "disabled_mcp_servers = [\"svc\"]\n[mcp_servers.svc]\nurl = \"https://svc.example.test/sse\"\n",
+        )
+        .unwrap();
+        assert!(user_disabled_list_has(&listed, "svc"));
+        assert!(!user_disabled_list_has(&listed, "other"));
+
+        let field_off: toml::Value = toml::from_str(
+            "[mcp_servers.svc]\nurl = \"https://svc.example.test/sse\"\nenabled = false\n",
+        )
+        .unwrap();
+        assert!(!user_disabled_list_has(&field_off, "svc"));
+    }
+
+    #[test]
+    fn enable_and_disable_parse_name() {
+        let args = PagerArgs::try_parse_from(["codel", "mcp", "enable", "user-grafana"])
+            .expect("enable should parse");
+        match args.command {
+            Some(Command::Mcp(McpArgs {
+                command: McpCommand::Enable { name },
+            })) => assert_eq!(name, "user-grafana"),
+            other => panic!("expected mcp enable, got {other:?}"),
+        }
+
+        let args = PagerArgs::try_parse_from(["codel", "mcp", "disable", "user-slack"])
+            .expect("disable should parse");
+        match args.command {
+            Some(Command::Mcp(McpArgs {
+                command: McpCommand::Disable { name },
+            })) => assert_eq!(name, "user-slack"),
+            other => panic!("expected mcp disable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enable_disable_require_name() {
+        let err = PagerArgs::try_parse_from(["codel", "mcp", "enable"])
+            .expect_err("enable without name must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let err = PagerArgs::try_parse_from(["codel", "mcp", "disable"])
+            .expect_err("disable without name must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
     fn select_remove_site_covers_scope_presence_matrix() {
         let user = codel_shell::util::config::user_config_path();
         let project = PathBuf::from("/repo/.codel/config.toml");
 
-        // No scope: single hits resolve, both scopes is ambiguous, neither is
-        // not found.
+        // No scope: a single hit resolves, both scopes is ambiguous, neither is NotFound
         assert_eq!(
             select_remove_site(true, None, None),
             Ok((McpScope::User, user.clone()))
@@ -1191,8 +1449,7 @@ mod tests {
         let user = codel_shell::util::config::user_config_path();
         let project = PathBuf::from("/repo/.codel/config.toml");
 
-        // The mirror of the remove note: a user-scope delete with a project
-        // survivor (and vice versa) must still report the remaining site.
+        // The mirror of the remove note: a user-scope delete with a project survivor (and vice versa) must still report the remaining site
         assert_eq!(
             surviving_definition(false, Some(project.clone())),
             Some((McpScope::Project, project.clone()))
@@ -1201,7 +1458,7 @@ mod tests {
             surviving_definition(true, None),
             Some((McpScope::User, user))
         );
-        // Project shadows user when both survive; nothing left is silent.
+        // Project shadows user when both survive; when nothing survives there is nothing to report
         assert_eq!(
             surviving_definition(true, Some(project.clone())),
             Some((McpScope::Project, project))

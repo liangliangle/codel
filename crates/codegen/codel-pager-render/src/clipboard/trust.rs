@@ -1,7 +1,6 @@
 //! Environment-based delivery and toast policy for clipboard writes.
 //!
-//! Writes still multi-fire every backend; this module classifies whether a
-//! successful leg is known to reach the destination named by the UI.
+//! A copy still writes to every backend at once; this module classifies whether a successful leg is known to reach the destination named by the UI.
 
 use crate::host::{DisplayServer, HostOs};
 use crate::terminal::TerminalName;
@@ -9,7 +8,7 @@ use crate::terminal::TerminalName;
 use super::{ClipboardFeedback, ClipboardWriteLegs};
 
 /// Codel's evidence that a clipboard write reached its intended destination.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum::IntoStaticStr)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum::AsRefStr, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum ClipboardDelivery {
     /// A successful write leg has a destination trusted by the environment policy.
@@ -31,6 +30,10 @@ impl ClipboardDelivery {
 
     pub fn reported_success(self) -> bool {
         matches!(self, Self::Confirmed | Self::Unverified)
+    }
+
+    pub fn telemetry_label(self) -> &'static str {
+        self.into()
     }
 }
 
@@ -227,7 +230,6 @@ mod tests {
     ) -> ClipboardWriteLegs {
         ClipboardWriteLegs {
             route_native: true,
-            route_label: "test".into(),
             cli_tools_tried: String::new(),
             cli_ok_tools: cli_ok_tools.into(),
             wl_copy_ok: cli_ok_tools.split('+').any(|tool| tool == "wl-copy"),
@@ -249,6 +251,26 @@ mod tests {
             osc52_sink: false,
             wayland_data_control: false,
             wl_copy_available: false,
+        }
+    }
+
+    #[test]
+    fn telemetry_projection_labels_and_historical_boolean_are_pinned() {
+        for (delivery, label, confirmed, failed, reported_success) in [
+            (ClipboardDelivery::Confirmed, "confirmed", true, false, true),
+            (
+                ClipboardDelivery::Unverified,
+                "unverified",
+                false,
+                false,
+                true,
+            ),
+            (ClipboardDelivery::Failed, "failed", false, true, false),
+        ] {
+            assert_eq!(delivery.telemetry_label(), label);
+            assert_eq!(delivery.is_confirmed(), confirmed);
+            assert_eq!(delivery.is_failed(), failed);
+            assert_eq!(delivery.reported_success(), reported_success);
         }
     }
 
@@ -429,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_and_container_prefer_container_feedback_branch() {
+    fn remote_and_container_prefer_container_feedback_and_telemetry_branch() {
         let confirmed = resolve_copy_decision(
             &legs(false, false, false, false, true, ""),
             "hello",

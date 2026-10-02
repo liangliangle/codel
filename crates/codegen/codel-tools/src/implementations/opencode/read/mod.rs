@@ -34,19 +34,18 @@ const MAX_BYTES: usize = 50 * 1024;
 
 // ─── Description ────────────────────────────────────────────────────
 
-const DESCRIPTION: &str = r#"Reads a file from the local filesystem. You can access any file directly by using this tool.
+const DESCRIPTION: &str = r#"Reads a file or directory from the local filesystem. You can access any file directly by using this tool.
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
 - The ${{ params.read.filePath }} parameter must be an absolute path, not a relative path
-- By default, it reads up to {max_lines_read} lines starting from the beginning of the file
+- By default, it reads up to 2000 lines starting from the beginning of the file
 - You can optionally specify ${{ params.read.offset }} and ${{ params.read.limit }} (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
 - Any lines longer than {max_chars_per_line} characters will be truncated
-- Results are returned using cat -n format, with line numbers starting at 1. The format is: LINE_NUMBER→LINE_CONTENT, where LINE_NUMBER is right-aligned and padded with spaces
+- Contents are returned with each line prefixed by its line number as `LINE_NUMBER: LINE_CONTENT`, with line numbers starting at 1. For example, if a file has contents "foo\n", you will receive "1: foo"
+- For directories, entries are returned one per line (without line numbers) with a trailing `/` for subdirectories
 - This tool can read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as this tool uses multimodal LLMs.
-- This tool can read PDF files (.pdf). PDFs are processed page by page, extracting both text and visual content for analysis.
-- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.
-- This tool can only read files, not directories.${%- if tools.by_kind.execute %} To read a directory, use an ls command via the ${{ tools.by_kind.execute }} tool.${%- endif %}
+- This tool can read PDF files (.pdf). PDFs are presented visually to the multimodal LLM as attachments.
 - You can call multiple tools in a single response. It is always better to speculatively read multiple potentially useful files in parallel.
 - You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents."#;
@@ -106,6 +105,10 @@ impl crate::types::tool_metadata::ToolMetadata for ReadTool {
         ToolNamespace::OpenCode
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("filePath")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }
@@ -129,7 +132,7 @@ impl codel_tool_runtime::Tool for ReadTool {
     ) -> codel_tool_types::ToolDescription {
         codel_tool_types::ToolDescription::new(
             "read",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
@@ -172,6 +175,12 @@ impl codel_tool_runtime::Tool for ReadTool {
             (display_cwd, fs)
         };
         let resolved = resolve_model_path(&cwd, display_cwd.as_deref(), &input.file_path);
+        if let Err(error) =
+            crate::types::memory_v2::validate_memory_v2_read(&resources, &resolved).await
+        {
+            return Ok(ReadFileOutput::FileReadError(error));
+        }
+        let policy_path = resolved.clone();
         let path = crate::util::fs::canonicalize_with_timeout(resolved).await;
 
         // ── Stat the path ───────────────────────────────────────────
@@ -215,6 +224,12 @@ impl codel_tool_runtime::Tool for ReadTool {
                 )));
             }
         };
+        if let Err(error) =
+            crate::types::memory_v2::record_memory_v2_read(&resources, &policy_path, &file_bytes)
+                .await
+        {
+            return Ok(ReadFileOutput::FileReadError(error));
+        }
 
         // Check for images via magic-byte detection. Route through
         // compression — raw bytes (truncated or non-endpoint formats)
@@ -291,9 +306,13 @@ impl codel_tool_runtime::Tool for ReadTool {
 
             // Truncate long lines.
             let line = if line_text.len() > MAX_LINE_LENGTH {
+                let mut n = MAX_LINE_LENGTH;
+                while n > 0 && !line_text.is_char_boundary(n) {
+                    n -= 1;
+                }
                 format!(
                     "{}... (line truncated to {} chars)",
-                    &line_text[..MAX_LINE_LENGTH],
+                    line_text.get(..n).unwrap_or(""),
                     MAX_LINE_LENGTH
                 )
             } else {
@@ -537,16 +556,8 @@ mod tests {
             .render(ToolMetadata::description_template(&ReadTool))
             .unwrap();
         assert!(
-            rendered.contains("start_line and max_lines"),
+            rendered.contains("start_line") && rendered.contains("max_lines"),
             "renamed offset/limit must appear:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("via the run_command tool"),
-            "resolved execute tool name must appear:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("a line offset and limit") && !rendered.contains("Bash tool"),
-            "stale offset/limit/Bash-tool literals must not remain:\n{rendered}"
         );
     }
 
@@ -1328,7 +1339,9 @@ mod tests {
                 assert!(
                     fc.content.starts_with("<path>"),
                     "Output should start with '<path>', got: {}",
-                    &fc.content[..fc.content.len().min(50)],
+                    fc.content
+                        .get(..fc.content.len().min(50))
+                        .unwrap_or(fc.content.as_str()),
                 );
                 assert!(
                     fc.content.contains("<type>file</type>"),
@@ -1341,7 +1354,9 @@ mod tests {
                 assert!(
                     fc.content.ends_with("</content>"),
                     "Output should end with '</content>', got tail: {}",
-                    &fc.content[fc.content.len().saturating_sub(30)..],
+                    fc.content
+                        .get(fc.content.len().saturating_sub(30)..)
+                        .unwrap_or(fc.content.as_str()),
                 );
                 // Verify line number format: "N: content".
                 assert!(

@@ -31,6 +31,7 @@ pub struct CodexReadFileInput {
 
     /// The line number to start reading from. Must be 1 or greater.
     #[serde(default = "defaults::offset")]
+    #[schemars(range(min = 1))]
     pub offset: usize,
 
     /// The maximum number of lines to return.
@@ -135,6 +136,10 @@ impl crate::types::tool_metadata::ToolMetadata for CodexReadFileTool {
         ToolNamespace::Codex
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("file_path")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }
@@ -158,7 +163,7 @@ impl codel_tool_runtime::Tool for CodexReadFileTool {
     ) -> codel_tool_types::ToolDescription {
         codel_tool_types::ToolDescription::new(
             "read_file",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
@@ -179,12 +184,9 @@ impl codel_tool_runtime::Tool for CodexReadFileTool {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
-        // 1. Validate. Codex raises here, but we surface these as a structured
-        // `FileReadError` (a model-facing error) instead of a hard `Err`, so
-        // otherwise-benign validation failures (empty/short files, relative
-        // paths) do not surface as tool-execution failures.
-        // `FileReadError` rides the structured-output path and maps cleanly to
-        // `ReadFileErrorTypes::FILE_READ_ERROR`.
+        // Validate. Codex raises here, but we surface these as a structured `FileReadError` (a model-facing error) instead of a hard `Err`, so
+        // otherwise-benign validation failures (empty/short files, relative paths) do not surface as tool-execution failures. `FileReadError` rides
+        // the structured-output path and maps cleanly to `ReadFileErrorTypes::FILE_READ_ERROR`.
         if input.offset == 0 {
             return Ok(ReadFileOutput::FileReadError(
                 "offset must be a 1-indexed line number".to_string(),

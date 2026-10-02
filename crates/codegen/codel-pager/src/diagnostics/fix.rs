@@ -8,13 +8,16 @@ use codel_config::managed_text::{
     ManagedConfigStatus, ManagedItem, ManagedItemState, SyntaxValidator,
 };
 
-use crate::diagnostics::{DiagnosticId, DiagnosticReport, TmuxOptionFact, TmuxSupportFact};
+use crate::diagnostics::{
+    DiagnosticId, DiagnosticReport, TmuxColorPassthrough, TmuxOptionFact, TmuxSupportFact,
+};
 use crate::terminal::{ByobuBackend, TerminalContext};
 
 pub const SSH_WRAP_ID: DiagnosticId = DiagnosticId::new("terminal", "ssh-wrap");
 pub const TMUX_CLIPBOARD_ID: DiagnosticId = DiagnosticId::new("terminal", "tmux-clipboard");
 pub const DCS_PASSTHROUGH_ID: DiagnosticId = DiagnosticId::new("terminal", "dcs-passthrough");
 pub const TMUX_EXTENDED_KEYS_ID: DiagnosticId = DiagnosticId::new("terminal", "tmux-extended-keys");
+pub const TMUX_TRUECOLOR_ID: DiagnosticId = DiagnosticId::new("terminal", "tmux-truecolor");
 pub const SSH_WRAP_FIX_COMMAND: &str = "codel doctor fix terminal.ssh-wrap";
 pub const SSH_WRAP_ONE_OFF: &str = "codel wrap ssh <host>";
 
@@ -212,8 +215,8 @@ pub struct FixOutcome {
     status: FixStatus,
     changed_file: ChangedFile,
     activation: FixActivation,
-    /// Shell used to plan/apply SSH-wrap. Post-apply verification must use this
-    /// rather than re-reading `$SHELL`, which may be missing or different.
+    /// Shell used to plan/apply SSH-wrap.
+    /// Post-apply verification must use this rather than re-reading `$SHELL`, which may be missing or different.
     shell: Option<ShellKind>,
 }
 
@@ -277,8 +280,8 @@ impl FixOutcome {
         self.shell
     }
 
-    /// Whether the SSH-wrap managed alias is present for the shell that applied
-    /// this outcome. Uses the planned shell, not the current `$SHELL`.
+    /// Whether the SSH-wrap managed alias is present for the shell that applied this outcome.
+    /// Uses the planned shell, not the current `$SHELL`.
     pub fn managed_alias_is_configured(&self) -> bool {
         self.shell
             .is_some_and(|shell| managed_alias_configured(&self.changed_file.path, shell))
@@ -405,6 +408,17 @@ enum TmuxEvidence {
     Clipboard,
     DcsPassthrough,
     ExtendedKeys,
+    ColorPassthrough,
+}
+
+/// How a tmux remedy reaches its healthy state, which decides whether an existing line elsewhere in the config can defeat Codel's managed block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TmuxRemedy {
+    /// `set -g <option> <value>`: the last assignment wins, so a direct assignment in the user's own config must be classified before writing.
+    Assignment,
+    /// `set -as <option> …`: tmux accumulates these and Codel appends its block at the end of the file.
+    /// Earlier lines add to the fix rather than override it and are never a conflict.
+    Accumulating,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -412,7 +426,10 @@ struct TmuxOptionSpec {
     id: DiagnosticId,
     option: &'static str,
     line: &'static str,
+    /// Values that already satisfy the fix.
+    /// Empty for an accumulating remedy, whose health comes from the attached client, not from one option value.
     healthy_values: &'static [&'static str],
+    remedy: TmuxRemedy,
     evidence: TmuxEvidence,
     scope: TmuxOptionScope,
     label: &'static str,
@@ -423,6 +440,7 @@ const TMUX_CLIPBOARD_SPEC: TmuxOptionSpec = TmuxOptionSpec {
     option: "set-clipboard",
     line: "set -g set-clipboard on",
     healthy_values: &["on", "external"],
+    remedy: TmuxRemedy::Assignment,
     evidence: TmuxEvidence::Clipboard,
     scope: TmuxOptionScope::Server,
     label: "Enable tmux clipboard forwarding",
@@ -432,6 +450,7 @@ const DCS_PASSTHROUGH_SPEC: TmuxOptionSpec = TmuxOptionSpec {
     option: "allow-passthrough",
     line: "set -wg allow-passthrough on",
     healthy_values: &["on", "all"],
+    remedy: TmuxRemedy::Assignment,
     evidence: TmuxEvidence::DcsPassthrough,
     scope: TmuxOptionScope::Window,
     label: "Enable tmux DCS passthrough",
@@ -441,9 +460,21 @@ const TMUX_EXTENDED_KEYS_SPEC: TmuxOptionSpec = TmuxOptionSpec {
     option: "extended-keys",
     line: "set -g extended-keys on",
     healthy_values: &["on"],
+    remedy: TmuxRemedy::Assignment,
     evidence: TmuxEvidence::ExtendedKeys,
     scope: TmuxOptionScope::Server,
     label: "Enable tmux extended keys",
+};
+
+const TMUX_TRUECOLOR_SPEC: TmuxOptionSpec = TmuxOptionSpec {
+    id: TMUX_TRUECOLOR_ID,
+    option: "terminal-features",
+    line: "set -as terminal-features \",*:RGB\"",
+    healthy_values: &[],
+    remedy: TmuxRemedy::Accumulating,
+    evidence: TmuxEvidence::ColorPassthrough,
+    scope: TmuxOptionScope::Server,
+    label: "Enable tmux truecolor passthrough",
 };
 
 const FIX_REGISTRY: &[FixSpec] = &[
@@ -474,6 +505,13 @@ const FIX_REGISTRY: &[FixSpec] = &[
         label: TMUX_EXTENDED_KEYS_SPEC.label,
         command: "codel doctor fix terminal.tmux-extended-keys",
         kind: FixKind::TmuxOption(&TMUX_EXTENDED_KEYS_SPEC),
+    },
+    FixSpec {
+        id: TMUX_TRUECOLOR_ID,
+        handle: "tmux-truecolor",
+        label: TMUX_TRUECOLOR_SPEC.label,
+        command: "codel doctor fix terminal.tmux-truecolor",
+        kind: FixKind::TmuxOption(&TMUX_TRUECOLOR_SPEC),
     },
 ];
 
@@ -624,7 +662,8 @@ pub(crate) fn format_fix_preview(plan: &FixPlan) -> String {
             );
         }
         FixPayload::TmuxOption(payload) => {
-            let instruction = reload_instruction(&plan.change.requested_path);
+            let instruction =
+                tmux_activation_instruction(payload.spec, &plan.change.requested_path);
             let _ = writeln!(
                 output,
                 "\nWhat this changes:\n  Persists `{}`.\n  Codel does not reload or modify the live tmux server.\n  After applying, {instruction}\n  Run /doctor again to verify the live setting.",
@@ -723,11 +762,14 @@ fn plan_tmux_option(
         validator: None,
     })
     .map_err(FixError::TmuxManaged)?;
-    let direct = scan_direct_tmux_option(
-        managed.inspection().unmanaged_text(),
-        managed.target_path(),
-        spec,
-    )?;
+    let direct = match spec.remedy {
+        TmuxRemedy::Assignment => scan_direct_tmux_option(
+            managed.inspection().unmanaged_text(),
+            managed.target_path(),
+            spec,
+        )?,
+        TmuxRemedy::Accumulating => DirectOptionState::Absent,
+    };
     let item_state = managed
         .inspection()
         .requested_item_state(0)
@@ -745,10 +787,7 @@ fn plan_tmux_option(
     Ok(FixPlan {
         id: request.id,
         change,
-        caveats: vec![
-            "The live tmux server is unchanged until you reload this config or detach and reattach.",
-            TMUX_SCANNER_CAVEAT,
-        ],
+        caveats: tmux_caveats(spec.remedy),
         payload: FixPayload::TmuxOption(TmuxOptionPlan {
             spec,
             managed,
@@ -761,8 +800,25 @@ fn plan_tmux_option(
     })
 }
 
+fn tmux_caveats(remedy: TmuxRemedy) -> Vec<&'static str> {
+    match remedy {
+        TmuxRemedy::Assignment => vec![
+            "The live tmux server is unchanged until you reload this config or restart it.",
+            TMUX_SCANNER_CAVEAT,
+        ],
+        // Reloading is not enough on its own: tmux fixes a client's feature set when that client attaches
+        TmuxRemedy::Accumulating => vec![
+            "Reloading alone is not enough: the attached client keeps its current color depth until it reattaches.",
+            "Terminals that cannot render 24-bit color ignore the extra escape sequence.",
+        ],
+    }
+}
+
 fn tmux_evidence_is_applicable(report: &DiagnosticReport, spec: &TmuxOptionSpec) -> bool {
     match spec.evidence {
+        TmuxEvidence::ColorPassthrough => {
+            report.facts.tmux.color_passthrough == TmuxColorPassthrough::Reduced
+        }
         TmuxEvidence::Clipboard => matches!(
             &report.facts.tmux.set_clipboard,
             TmuxOptionFact::Available(value)
@@ -890,12 +946,8 @@ fn fix_outcome(
 
 pub(crate) fn format_fix_success(outcome: &FixOutcome) -> String {
     let path = markdown_code_path(outcome.changed_path());
-    let kind = match outcome.id {
-        SSH_WRAP_ID => FixKind::SshWrap,
-        TMUX_CLIPBOARD_ID => FixKind::TmuxOption(&TMUX_CLIPBOARD_SPEC),
-        DCS_PASSTHROUGH_ID => FixKind::TmuxOption(&DCS_PASSTHROUGH_SPEC),
-        TMUX_EXTENDED_KEYS_ID => FixKind::TmuxOption(&TMUX_EXTENDED_KEYS_SPEC),
-        _ => return "Applied the Doctor fix.".to_owned(),
+    let Some(kind) = fix_spec(outcome.id).map(|spec| spec.kind) else {
+        return "Applied the Doctor fix.".to_owned();
     };
     let status = match (kind, outcome.status) {
         (FixKind::SshWrap, FixStatus::Applied) => format!("Set up SSH wrapping in {path}."),
@@ -917,9 +969,9 @@ pub(crate) fn format_fix_success(outcome: &FixOutcome) -> String {
         (FixKind::SshWrap, FixActivation::SatisfiedNow) => {
             "\nStart a new shell to use the alias.".to_owned()
         }
-        (FixKind::TmuxOption(_), FixActivation::RequiresReload) => format!(
+        (FixKind::TmuxOption(tmux), FixActivation::RequiresReload) => format!(
             "\n{}\nRun /doctor again to verify the live setting.",
-            reload_instruction(outcome.changed_path())
+            tmux_activation_instruction(tmux, outcome.changed_path())
         ),
         _ => String::new(),
     };
@@ -971,13 +1023,31 @@ fn shell_quote_path(path: &Path) -> Option<String> {
     Some(format!("'{}'", value.replace('\'', "'\\''")))
 }
 
+/// An accumulating remedy needs both steps: the server reads the new option only on reload, and a client resolves its feature set only at attach.
+/// Neither reloading nor reattaching alone changes anything.
+fn tmux_activation_instruction(spec: &TmuxOptionSpec, path: &Path) -> String {
+    match spec.remedy {
+        TmuxRemedy::Assignment => reload_instruction(path),
+        TmuxRemedy::Accumulating => match shell_quote_path(path) {
+            Some(shell_path) => format!(
+                "Run {}, then detach and reattach: only clients that attach after the reload get \
+                 24-bit color.",
+                commonmark_code_span(&format!("tmux source-file {shell_path}"))
+            ),
+            None => "Reload your tmux config, then detach and reattach: only clients that attach \
+                     after the reload get 24-bit color."
+                .to_owned(),
+        },
+    }
+}
+
 fn reload_instruction(path: &Path) -> String {
     let Some(shell_path) = shell_quote_path(path) else {
-        return "Detach and reattach to activate the persistent tmux setting.".to_owned();
+        return "Reload your tmux config, or restart the tmux server, to activate the persistent setting.".to_owned();
     };
     let command = format!("tmux source-file {shell_path}");
     format!(
-        "Reload tmux with {}, or detach and reattach.",
+        "Reload tmux with {}, or restart the tmux server.",
         commonmark_code_span(&command)
     )
 }
@@ -1006,11 +1076,17 @@ fn tmux_option_configured(path: &Path, spec: &'static TmuxOptionSpec) -> bool {
         comments: CommentSyntax::hash(),
         validator: None,
     };
-    ManagedConfig::plan(request).is_ok_and(|plan| {
-        let direct =
-            scan_direct_tmux_option(plan.inspection().unmanaged_text(), plan.target_path(), spec);
-        matches!(direct, Ok(DirectOptionState::Healthy))
-            || !plan.changes_file() && matches!(direct, Ok(DirectOptionState::Absent))
+    ManagedConfig::plan(request).is_ok_and(|plan| match spec.remedy {
+        TmuxRemedy::Accumulating => !plan.changes_file(),
+        TmuxRemedy::Assignment => {
+            let direct = scan_direct_tmux_option(
+                plan.inspection().unmanaged_text(),
+                plan.target_path(),
+                spec,
+            );
+            matches!(direct, Ok(DirectOptionState::Healthy))
+                || !plan.changes_file() && matches!(direct, Ok(DirectOptionState::Absent))
+        }
     })
 }
 
@@ -1074,7 +1150,9 @@ fn tmux_top_level_commands(
     let chars = text.chars().collect::<Vec<_>>();
     let mut index = 0;
     while index < chars.len() {
-        let character = chars[index];
+        let Some(&character) = chars.get(index) else {
+            break;
+        };
         if escaped {
             if character == '\n' {
                 // tmux removes escaped newlines exactly; it does not insert a space.
@@ -1110,14 +1188,15 @@ fn tmux_top_level_commands(
         if character == '#'
             && (line_start || current.chars().last().is_some_and(char::is_whitespace))
         {
-            while index < chars.len() && chars[index] != '\n' {
+            while chars.get(index).is_some_and(|&c| c != '\n') {
                 index += 1;
             }
             continue;
         }
         if line_start && character == '%' {
-            let directive = chars[index..]
+            let directive = chars
                 .iter()
+                .skip(index)
                 .take_while(|character| **character != '\n')
                 .collect::<String>();
             let directive = directive.trim();
@@ -1126,7 +1205,7 @@ fn tmux_top_level_commands(
             } else if directive.starts_with("%endif") {
                 conditional_depth = conditional_depth.saturating_sub(1);
             }
-            while index < chars.len() && chars[index] != '\n' {
+            while chars.get(index).is_some_and(|&c| c != '\n') {
                 index += 1;
             }
             line_start = true;
@@ -1174,7 +1253,7 @@ fn tokenize_tmux_command<'a>(
     let mut tokens = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
-        while bytes[index..].first().is_some_and(u8::is_ascii_whitespace) {
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
             index += 1;
             if index == bytes.len() {
                 return Ok(tokens);
@@ -1184,7 +1263,9 @@ fn tokenize_tmux_command<'a>(
         let mut quote = None;
         let mut quoted = false;
         while index < bytes.len() {
-            let byte = bytes[index];
+            let Some(&byte) = bytes.get(index) else {
+                break;
+            };
             if let Some(active) = quote {
                 if byte == active {
                     quote = None;
@@ -1210,7 +1291,9 @@ fn tokenize_tmux_command<'a>(
                 "unterminated quoted tmux token",
             ));
         }
-        let raw = &command[start..index];
+        let Some(raw) = command.get(start..index) else {
+            break;
+        };
         let value = raw
             .strip_prefix(['\'', '"'])
             .and_then(|value| value.strip_suffix(['\'', '"']))
@@ -1273,7 +1356,10 @@ fn classify_tmux_assignment(
             index += 1;
             break;
         }
-        let flags = &token.value[1..];
+        let Some(flags) = token.value.get(1..) else {
+            index += 1;
+            continue;
+        };
         is_global |= flags.contains('g');
         if flags.contains('s') {
             explicit_scope = Some(TmuxOptionScope::Server);
@@ -1288,8 +1374,8 @@ fn classify_tmux_assignment(
                 return TmuxAssignment::Ambiguous("missing tmux target argument".to_owned());
             }
         }
-        // -F, -f, -t and similar flags take one following argument. Unknown
-        // flags on a possible target fail closed instead of shifting tokens.
+        // -F, -f, -t and similar flags take one following argument
+        // Unknown flags on a possible target fail closed instead of shifting tokens
         if flags.chars().any(|flag| matches!(flag, 'F' | 'f')) {
             index += 1;
             if tokens.get(index).is_none() {
@@ -1317,8 +1403,8 @@ fn classify_tmux_assignment(
     let effective_scope = explicit_scope.unwrap_or(spec.scope);
     match spec.scope {
         TmuxOptionScope::Server => {
-            // tmux resolves known server options by option scope even when a
-            // window flag is supplied. A target is nonsensical/ambiguous here.
+            // tmux resolves known server options by option scope even when a window flag is supplied
+            // A target is nonsensical/ambiguous here
             if has_target {
                 return TmuxAssignment::Ambiguous(format!(
                     "targeted server assignment may affect `{}`",
@@ -1334,13 +1420,19 @@ fn classify_tmux_assignment(
             }
         }
     }
-    if tokens.len() != index + 2 || tokens[index + 1].quoted {
+    let Some(value_token) = tokens.get(index + 1) else {
+        return TmuxAssignment::Ambiguous(format!(
+            "ambiguous direct assignment of `{}`",
+            spec.option
+        ));
+    };
+    if tokens.len() != index + 2 || value_token.quoted {
         return TmuxAssignment::Ambiguous(format!(
             "ambiguous direct assignment of `{}`",
             spec.option
         ));
     }
-    let value = tokens[index + 1].value;
+    let value = value_token.value;
     if spec.healthy_values.contains(&value) {
         TmuxAssignment::Healthy
     } else {
@@ -1454,7 +1546,10 @@ fn is_posix_ssh_function_declaration(line: &str) -> bool {
     };
     let after_name = after_name.trim_start();
     after_name.starts_with("()")
-        || (after_name.starts_with('(') && after_name[1..].trim_start().starts_with(')'))
+        || (after_name.starts_with('(')
+            && after_name
+                .get(1..)
+                .is_some_and(|s| s.trim_start().starts_with(')')))
 }
 
 fn token_is_exact_name(text: &str, name: &str) -> bool {
@@ -1500,8 +1595,7 @@ fn detect_fish_ssh_customization(text: &str) -> Option<String> {
 }
 
 fn actual_home() -> Option<PathBuf> {
-    #[allow(deprecated)]
-    std::env::home_dir()
+    codel_dirs::home_dir()
 }
 
 pub fn configured_report(mut report: DiagnosticReport, configured: bool) -> DiagnosticReport {

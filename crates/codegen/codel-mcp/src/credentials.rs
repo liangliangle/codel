@@ -1,14 +1,13 @@
 //! Persistent credential storage for MCP server OAuth tokens.
 //!
-//! Credentials are stored in `$CODEL_HOME/mcp_credentials.json`, keyed by a
-//! composite key derived from the server name and URL. This keeps MCP OAuth
-//! tokens isolated from the user's Codel auth (`auth.json`).
+//! Credentials are stored in `$CODEL_HOME/mcp_credentials.json`, keyed by a composite key derived from the server name and URL.
+//! This keeps MCP OAuth tokens isolated from the user's Codel auth (`auth.json`).
 //!
-//! Stores rmcp's `StoredCredentials` type directly — the same type that
-//! rmcp's `AuthorizationManager` uses internally.
+//! Stores rmcp's `StoredCredentials` type directly, the same type that rmcp's `AuthorizationManager` uses internally.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -16,10 +15,8 @@ use url::Url;
 use crate::rmcp;
 
 /// Ensure credential paths are owner-only (Unix `0o600`).
-///
-/// Local helper (not shell-base): `codel-mcp` sits below `config-types` in the
-/// dep graph, and shell-base pulls shared→config-types→mcp — a cycle if linked.
-/// Windows ACL tightening stays on auth via shell-base; MCP is Unix-first here.
+/// Local helper, not shell-base's: `codel-mcp` sits below `config-types` in the dep graph.
+/// Shell-base pulls shared, then config-types, then mcp, so this crate linking shell-base would be a cycle.
 fn ensure_owner_only_permissions(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -62,8 +59,7 @@ const CREDENTIALS_FILENAME: &str = "mcp_credentials.json";
 
 /// On-disk credential store: `$CODEL_HOME/mcp_credentials.json`.
 ///
-/// Stores rmcp `StoredCredentials` per MCP server, keyed by
-/// `"{server_name}:{server_url}"`.
+/// Stores rmcp `StoredCredentials` per MCP server, keyed by `"{server_name}:{server_url}"`.
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct McpCredentialStore {
     #[serde(flatten)]
@@ -94,7 +90,6 @@ impl McpCredentialStore {
         }
     }
 
-    /// Load from a specific path.
     pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
@@ -113,7 +108,6 @@ impl McpCredentialStore {
         Ok(store)
     }
 
-    /// Save the credential store to the default path.
     pub fn save_default(&self) -> Result<()> {
         let path = Self::default_path().ok_or_else(|| {
             McpCredentialError::Other("no user codel home (set $CODEL_HOME or $HOME)".into())
@@ -121,128 +115,50 @@ impl McpCredentialStore {
         self.save_to(&path)
     }
 
-    /// Atomically insert a credential and save — safe for concurrent use.
-    ///
-    /// Instead of the caller doing `insert_rmcp` + `save_default` (which races
-    /// with other processes), this method:
-    /// 1. Acquires a file lock on `mcp_credentials.json.lock`
-    /// 2. Reloads the store from disk (picks up other processes' writes)
-    /// 3. Inserts the new entry
-    /// 4. Saves atomically (temp + rename)
-    /// 5. Updates `self` with the merged result
-    /// 6. Releases the lock
+    fn locked_mutate_and_save(&mut self, mutate: &dyn Fn(&mut Self)) -> Result<()> {
+        let path = Self::default_path().ok_or_else(|| {
+            McpCredentialError::Other("no user codel home (set $CODEL_HOME or $HOME)".into())
+        })?;
+        match acquire_store_lock(&path) {
+            Some(_lock) => {
+                let mut fresh = Self::load_from(&path).unwrap_or_default();
+                mutate(&mut fresh);
+                fresh.save_to(&path)?;
+                *self = fresh;
+                Ok(())
+            }
+            None => {
+                mutate(self);
+                self.save_to(&path)
+            }
+        }
+    }
+
+    /// Locked insert ([`Self::locked_mutate_and_save`]) with a freshness guard.
+    /// Otherwise a slow writer rolls the stored refresh token back to a rotated-out value (`invalid_grant` on its next use).
     pub fn insert_and_save(
         &mut self,
         server_name: &str,
         server_url: &url::Url,
         creds: rmcp::transport::auth::StoredCredentials,
     ) -> Result<()> {
-        let path = Self::default_path().ok_or_else(|| {
-            McpCredentialError::Other("no user codel home (set $CODEL_HOME or $HOME)".into())
-        })?;
-        let lock_path = path.with_extension("lock");
-
-        // Ensure parent dir exists.
-        if let Some(parent) = lock_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-
-            let lock_file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&lock_path)?;
-            let fd = lock_file.as_raw_fd();
-            loop {
-                if unsafe { libc::flock(fd, libc::LOCK_EX) } == 0 {
-                    break;
-                }
-                let err = std::io::Error::last_os_error();
-                if err.kind() == std::io::ErrorKind::Interrupted {
-                    continue; // Retry on EINTR.
-                }
-                // Lock failed for another reason — fall back to non-atomic insert.
-                self.insert_rmcp(server_name, server_url, creds);
-                return self.save_to(&path);
+        let key = Self::key(server_name, server_url);
+        self.locked_mutate_and_save(&move |store: &mut Self| {
+            if disk_entry_is_newer(store.entries.get(&key), &creds) {
+                tracing::info!(
+                    key = key.as_str(),
+                    "mcp credentials: skipping stale save (disk entry is newer)"
+                );
+                return;
             }
-
-            // Reload from disk under lock to merge with concurrent writes.
-            let mut fresh = Self::load_from(&path).unwrap_or_default();
-            fresh.insert_rmcp(server_name, server_url, creds);
-            fresh.save_to(&path)?;
-            *self = fresh;
-
-            // Lock released when lock_file is dropped.
-        }
-
-        #[cfg(not(unix))]
-        {
-            // No flock on non-unix — best-effort.
-            self.insert_rmcp(server_name, server_url, creds);
-            self.save_to(&path)?;
-        }
-
-        Ok(())
+            store.entries.insert(key.clone(), creds.clone());
+        })
     }
 
-    /// Save to a specific path.
-    ///
-    /// Writes atomically via temp file + rename to prevent credential loss on
-    /// crash. On Unix, the temp file is created with 0600 permissions from the
-    /// start (no TOCTOU window where secrets are world-readable).
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let content = serde_json::to_string_pretty(self)?;
-        let tmp_path = path.with_extension("tmp");
-
-        {
-            use std::io::Write;
-
-            #[cfg(unix)]
-            let file = {
-                use std::os::unix::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&tmp_path)?
-            };
-            #[cfg(not(unix))]
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)?;
-
-            let mut writer = std::io::BufWriter::new(file);
-            writer.write_all(content.as_bytes())?;
-            writer.flush()?;
-        }
-
-        // `mode(0o600)` only applies on create; tighten before rename.
-        // Fail hard on tmp: credentials are not published yet.
-        ensure_owner_only_permissions(&tmp_path)?;
-        std::fs::rename(&tmp_path, path)?;
-        // Best-effort after rename: new tokens are already published.
-        if let Err(e) = ensure_owner_only_permissions(path) {
-            tracing::warn!(
-                error = %e,
-                path = %path.display(),
-                "mcp: failed to ensure owner-only permissions after credential save"
-            );
-        }
-        Ok(())
+        write_owner_only_atomic(path, &serde_json::to_string_pretty(self)?)
     }
 
-    /// Look up credentials for a server.
     pub fn get(
         &self,
         server_name: &str,
@@ -251,7 +167,6 @@ impl McpCredentialStore {
         self.entries.get(&Self::key(server_name, server_url))
     }
 
-    /// Insert rmcp `StoredCredentials` for a server.
     pub fn insert_rmcp(
         &mut self,
         server_name: &str,
@@ -268,9 +183,18 @@ impl McpCredentialStore {
             .contains_key(&Self::key(server_name, server_url))
     }
 
-    /// Remove credentials for a server.
     pub fn remove(&mut self, server_name: &str, server_url: &Url) {
         self.entries.remove(&Self::key(server_name, server_url));
+    }
+
+    /// Remove a server's credentials and persist, under the cross-process file lock (reload and merge, remove, then atomic save).
+    /// The locked counterpart of [`Self::remove`] and [`Self::save_default`] for callers that persist the removal.
+    /// An unlocked whole-file rewrite can drop other processes' concurrent writes for unrelated servers.
+    pub fn remove_and_save(&mut self, server_name: &str, server_url: &Url) -> Result<()> {
+        let key = Self::key(server_name, server_url);
+        self.locked_mutate_and_save(&move |store: &mut Self| {
+            store.entries.remove(&key);
+        })
     }
 
     /// Remove all credentials for a server by name (any URL).
@@ -281,7 +205,6 @@ impl McpCredentialStore {
         before - self.entries.len()
     }
 
-    /// Whether the store is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -292,13 +215,88 @@ impl McpCredentialStore {
     }
 }
 
-/// Adapter implementing rmcp's `CredentialStore` trait backed by the on-disk
-/// `McpCredentialStore`. Each adapter instance is scoped to a single MCP server
-/// (keyed by name + URL); rmcp's `AuthorizationManager` calls load/save/clear
-/// transparently during token exchange and refresh.
+/// `true` when the on-disk `existing` entry is strictly newer than the `incoming` credentials by `token_received_at`.
+/// This is the [`Self::insert_and_save`] freshness guard.
+/// Missing timestamps on either side compare as "not newer" (the write proceeds), preserving pre-guard behavior for expiry-less tokens.
+fn disk_entry_is_newer(
+    existing: Option<&rmcp::transport::auth::StoredCredentials>,
+    incoming: &rmcp::transport::auth::StoredCredentials,
+) -> bool {
+    match (
+        existing.and_then(|e| e.token_received_at),
+        incoming.token_received_at,
+    ) {
+        (Some(existing), Some(incoming)) => existing > incoming,
+        _ => false,
+    }
+}
+
+#[must_use]
+fn acquire_store_lock(store_path: &Path) -> Option<std::fs::File> {
+    let lock_path = store_path.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                return Some(file);
+            }
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return None;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+/// Config URLs can embed secrets. Written through a `CODEL_HOME`-overlay link, like `auth.json`.
+fn write_owner_only_atomic(path: &Path, content: &str) -> Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(parent)?;
+    codel_config::fs_atomic::write_user_file_atomically(path, content, Some(0o600))?;
+    Ok(())
+}
+
+/// Last access token an adapter served.
+/// Reauth compares the store against this to tell a fresh token apart from one this client already failed with.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ObservedAccessToken(Arc<parking_lot::Mutex<Option<String>>>);
+
+impl ObservedAccessToken {
+    pub(crate) fn snapshot(&self) -> Option<String> {
+        self.0.lock().clone()
+    }
+
+    pub(crate) fn record(&self, token: Option<String>) {
+        *self.0.lock() = token;
+    }
+}
+
+fn access_token_secret(creds: Option<&rmcp::transport::auth::StoredCredentials>) -> Option<String> {
+    use oauth2::TokenResponse as _;
+    creds
+        .and_then(|c| c.token_response.as_ref())
+        .map(|t| t.access_token().secret().clone())
+}
+
+/// Every load records the served token in `observed`.
 pub struct McpCredentialStoreAdapter {
     server_name: String,
     server_url: url::Url,
+    observed: ObservedAccessToken,
 }
 
 impl McpCredentialStoreAdapter {
@@ -306,7 +304,12 @@ impl McpCredentialStoreAdapter {
         Self {
             server_name,
             server_url,
+            observed: ObservedAccessToken::default(),
         }
+    }
+
+    pub(crate) fn observed(&self) -> ObservedAccessToken {
+        self.observed.clone()
     }
 }
 
@@ -320,13 +323,17 @@ impl rmcp::transport::auth::CredentialStore for McpCredentialStoreAdapter {
     > {
         let name = self.server_name.clone();
         let url = self.server_url.clone();
-        tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let store = McpCredentialStore::load_default()
                 .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))?;
             Ok(store.get(&name, &url).cloned())
         })
         .await
-        .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))?
+        .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))?;
+        if let Ok(creds) = &result {
+            self.observed.record(access_token_secret(creds.as_ref()));
+        }
+        result
     }
 
     async fn save(
@@ -349,10 +356,12 @@ impl rmcp::transport::auth::CredentialStore for McpCredentialStoreAdapter {
         let name = self.server_name.clone();
         let url = self.server_url.clone();
         tokio::task::spawn_blocking(move || {
+            // Under the same flock as `insert_and_save`: this is a whole-file read-modify-write
+            // An unlocked snapshot here could silently drop *other servers'* entries another process wrote concurrently
+            // Their just-rotated refresh tokens would go with them
             let mut store = McpCredentialStore::load_default().unwrap_or_default();
-            store.remove(&name, &url);
             store
-                .save_default()
+                .remove_and_save(&name, &url)
                 .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))
         })
         .await
@@ -406,11 +415,9 @@ mod tests {
         assert!(loaded.get("test", &url).is_some());
     }
 
-    /// Raw JSON fixture in the exact shape rmcp 0.17 persisted to
-    /// `$CODEL_HOME/mcp_credentials.json`. Existing credential files must keep
-    /// loading across rmcp upgrades (2.1's `OAuthTokenResponse` gained vendor
-    /// extra token fields), so this must be a string literal — never JSON
-    /// serialized by the current code.
+    /// Raw JSON fixture in the exact shape rmcp 0.17 persisted to `$CODEL_HOME/mcp_credentials.json`.
+    /// Existing credential files must keep loading across rmcp upgrades (2.1's `OAuthTokenResponse` gained vendor extra token fields).
+    /// So this must be a string literal, never JSON serialized by the current code.
     #[test]
     fn legacy_on_disk_fixture_still_deserializes() {
         use oauth2::TokenResponse as _;
@@ -467,9 +474,11 @@ mod tests {
 
     #[test]
     fn save_and_load_from_file() {
-        let dir = std::env::temp_dir().join("codel-mcp-credentials-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test_creds.json");
+        // Unique dir: a hardcoded `$TMP/codel-mcp-credentials-test` is shared
+        // across `--runs_per_test` shards on the same worker, so a sibling
+        // can delete the file between `exists()` and `read_to_string`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_creds.json");
 
         let mut store = McpCredentialStore::default();
         let url = Url::parse("https://test.example.com/mcp").unwrap();
@@ -478,9 +487,6 @@ mod tests {
 
         let loaded = McpCredentialStore::load_from(&path).unwrap();
         assert!(loaded.get("test", &url).is_some());
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir(&dir);
     }
 
     #[cfg(unix)]
@@ -514,5 +520,74 @@ mod tests {
         let _ = McpCredentialStore::load_from(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// The `insert_and_save` freshness guard: a save older (by `token_received_at`) than the on-disk entry must be skipped.
+    #[test]
+    fn stale_save_does_not_clobber_newer_disk_entry() {
+        // `StoredCredentials` is #[non_exhaustive]; construct via `new` and set the (public) timestamp field afterwards
+        let mut older = test_stored_creds("c");
+        older.token_received_at = Some(1_000);
+        let mut newer = test_stored_creds("c");
+        newer.token_received_at = Some(2_000);
+        let no_ts = test_stored_creds("c");
+
+        assert!(
+            disk_entry_is_newer(Some(&newer), &older),
+            "older incoming vs newer disk → skip the write"
+        );
+        assert!(
+            !disk_entry_is_newer(Some(&older), &newer),
+            "newer incoming vs older disk → write proceeds"
+        );
+        assert!(
+            !disk_entry_is_newer(Some(&older), &older),
+            "equal timestamps → write proceeds (idempotent re-save)"
+        );
+        assert!(
+            !disk_entry_is_newer(None, &older),
+            "no disk entry → write proceeds"
+        );
+        assert!(
+            !disk_entry_is_newer(Some(&newer), &no_ts),
+            "timestamp-less incoming keeps pre-guard behavior (writes)"
+        );
+        assert!(
+            !disk_entry_is_newer(Some(&no_ts), &older),
+            "timestamp-less disk entry keeps pre-guard behavior (writes)"
+        );
+    }
+
+    /// The refresh-failure classifier gates browser escalation (`force_reauth`).
+    /// Network-level failures (the `oauth2` crate's `Display` for request/parse errors) are transient.
+    /// IdP rejections and missing-credential states stay terminal and escalate.
+    #[test]
+    fn refresh_failure_transient_classification() {
+        use crate::servers::mcp_refresh_failure_is_transient;
+        use rmcp::transport::auth::AuthError;
+
+        // oauth2 RequestTokenError::Request renders exactly "Request failed".
+        assert!(mcp_refresh_failure_is_transient(
+            &AuthError::TokenRefreshFailed("Request failed".into())
+        ));
+        // "Failed to parse server response" covers 5xx/proxy bodies that aren't OAuth JSON
+        assert!(mcp_refresh_failure_is_transient(
+            &AuthError::TokenRefreshFailed("Failed to parse server response".into())
+        ));
+
+        // IdP rejections carry the RFC 6749 code, so they stay terminal
+        assert!(!mcp_refresh_failure_is_transient(
+            &AuthError::TokenRefreshFailed(
+                "Server returned error response: invalid_grant: token revoked".into()
+            )
+        ));
+        // With no refresh token at all, only the browser flow can help
+        assert!(!mcp_refresh_failure_is_transient(
+            &AuthError::TokenRefreshFailed("No refresh token available".into())
+        ));
+        // An empty credential store requires interactive auth
+        assert!(!mcp_refresh_failure_is_transient(
+            &AuthError::AuthorizationRequired
+        ));
     }
 }

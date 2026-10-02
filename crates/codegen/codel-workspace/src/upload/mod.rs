@@ -1,4 +1,5 @@
 pub(crate) mod environment;
+use crate::telemetry::dc_log;
 use environment::WorkspaceIdentity;
 use prometheus::{IntCounterVec, IntGauge, register_int_counter_vec, register_int_gauge};
 use std::sync::Arc;
@@ -24,8 +25,7 @@ static UPLOAD_QUEUE_PENDING: LazyLock<IntGauge> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// Per-phase terminal upload outcome: `succeeded` (bytes accepted, not
-/// GCS-confirmed) / `failed` / `skipped`.
+/// Per-phase terminal upload outcome: `succeeded` (bytes accepted, not GCS-confirmed) / `failed` / `skipped`.
 static UPLOAD_OUTCOME_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "codel_workspace_upload_outcome_total",
@@ -34,8 +34,7 @@ static UPLOAD_OUTCOME_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// Per-phase upload failures, by error category
-/// (`archive_failed` / `enqueue_failed` / `upload_failed`).
+/// Per-phase upload failures, by error category (`archive_failed` / `enqueue_failed` / `upload_failed`).
 static UPLOAD_FAILED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "codel_workspace_upload_failed_total",
@@ -44,8 +43,8 @@ static UPLOAD_FAILED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// Per-phase deliberate upload skips (policy / missing-config only). Failure
-/// declines are counted as failures, not here.
+/// Per-phase deliberate upload skips (policy / missing-config only).
+/// Failure declines are counted as failures, not here.
 static UPLOAD_SKIPPED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "codel_workspace_upload_skipped_total",
@@ -54,20 +53,17 @@ static UPLOAD_SKIPPED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// Record a terminal upload outcome; call sites pair it with the matching
-/// [`record_upload_failed`] / [`record_upload_skipped`] when one applies.
+/// Record a terminal upload outcome; call sites pair it with the matching [`record_upload_failed`] / [`record_upload_skipped`] when one applies.
 pub(crate) fn record_upload_outcome(phase: &str, outcome: &str) {
     UPLOAD_OUTCOME_TOTAL
         .with_label_values(&[phase, outcome])
         .inc();
 }
-/// Record an upload failure, by error category.
 pub(crate) fn record_upload_failed(phase: &str, error_category: &str) {
     UPLOAD_FAILED_TOTAL
         .with_label_values(&[phase, error_category])
         .inc();
 }
-/// Record a deliberate upload skip, by skip reason.
 pub(crate) fn record_upload_skipped(phase: &str, skip_reason: &str) {
     UPLOAD_SKIPPED_TOTAL
         .with_label_values(&[phase, skip_reason])
@@ -99,16 +95,28 @@ pub(crate) fn init_metrics() {
         .with_label_values(&["workspace_environment", "enqueue_failed"])
         .inc_by(0);
 }
-/// Spawn a detached sampler that mirrors the queue's pending/pending-bytes
-/// stats into the Prometheus gauges every `interval`, and emits a matching
-/// queue-aggregate telemetry snapshot so queue pressure is visible in the
-/// same log stream as upload outcomes.
+pub(crate) struct QueueStatsSamplerGuard {
+    task: tokio::task::JoinHandle<()>,
+}
+impl QueueStatsSamplerGuard {
+    pub(crate) fn abort(&self) {
+        self.task.abort();
+    }
+}
+impl Drop for QueueStatsSamplerGuard {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+/// Spawn a sampler that mirrors the queue's pending/pending-bytes stats into the Prometheus gauges every `interval`.
+/// It also emits a matching queue-aggregate telemetry snapshot so queue pressure is visible in the same log stream as upload outcomes.
 pub(crate) fn spawn_queue_stats_sampler(
     queue: Arc<UploadQueue>,
     interval: std::time::Duration,
-) -> tokio::task::JoinHandle<()> {
+) -> QueueStatsSamplerGuard {
     let stats = queue.stats_arc();
-    tokio::spawn(async move {
+    let sample_period_secs = interval.as_secs();
+    let task = tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -119,15 +127,21 @@ pub(crate) fn spawn_queue_stats_sampler(
             let pending = stats.pending.load(std::sync::atomic::Ordering::Relaxed);
             UPLOAD_QUEUE_PENDING_BYTES.set(pending_bytes as i64);
             UPLOAD_QUEUE_PENDING.set(pending as i64);
+            dc_log!(
+                info,
+                pending,
+                pending_bytes,
+                sample_period_secs,
+                "workspace: upload queue pending stats"
+            );
         }
-    })
+    });
+    QueueStatsSamplerGuard { task }
 }
-/// Wraps the server [`AuthProvider`] as an [`AuthCredentialProvider`] +
-/// [`HttpAuth`] so the `StorageClient` can authenticate requests.
+/// Wraps the server [`AuthProvider`] as an [`AuthCredentialProvider`] and [`HttpAuth`] so the `StorageClient` can authenticate requests.
 struct HubAuthCredentialProvider {
     auth: Arc<dyn AuthProvider>,
-    /// Resolved workspace owner so `snapshot` can attribute uploads (and 401s)
-    /// to the real `user_id`/`team_id`.
+    /// Resolved workspace owner so `snapshot` can attribute uploads (and 401s) to the real `user_id`/`team_id`.
     identity: WorkspaceIdentity,
 }
 impl codel_auth::visibility::HttpAuth for HubAuthCredentialProvider {
@@ -171,8 +185,7 @@ impl AuthCredentialProvider for HubAuthCredentialProvider {
         false
     }
 }
-/// [`StorageConfig`] implementation that proxies uploads through the
-/// configured proxy endpoint using the connection's auth credentials.
+/// [`StorageConfig`] implementation that proxies uploads through the configured proxy endpoint using the connection's auth credentials.
 pub(crate) struct ProxyStorageConfig {
     method: UploadMethod,
     credentials: Arc<dyn AuthCredentialProvider>,
@@ -208,15 +221,8 @@ impl StorageConfig for ProxyStorageConfig {
         Some(self.credentials.clone())
     }
 }
-/// Adapts the workspace's [`ProxyStorageConfig`] to the upload queue's
-/// [`TraceExportSource`] contract so [`UploadQueue`] can resolve fresh proxy
-/// credentials on every upload attempt.
-///
-/// `resolve` builds a [`TraceExportConfig`] from the proxy config's
-/// `bucket_url` + `upload_method`; the auth / attribution / http-client hooks
-/// delegate straight through to the wrapped [`ProxyStorageConfig`] (whose
-/// `proxy_credentials` is a [`HubAuthCredentialProvider`] over the server's
-/// `AuthProvider`).
+/// Adapts the workspace's [`ProxyStorageConfig`] to the upload queue's [`TraceExportSource`] contract.
+/// [`UploadQueue`] resolves fresh proxy credentials through it on every upload attempt.
 pub(crate) struct WorkspaceTraceExportSource {
     proxy_storage_config: Arc<ProxyStorageConfig>,
 }
@@ -249,10 +255,8 @@ impl TraceExportSource for WorkspaceTraceExportSource {
         self.proxy_storage_config.proxy_http_client()
     }
 }
-/// Enqueue the flushed tool-state bytes at
-/// `"{session_id}/turn_{turn_number}/tool_state.json"`. The local spill file is
-/// named `resources_state.json`, but the durable artifact is always
-/// `tool_state.json` to match the environment naming scheme.
+/// Enqueue the flushed tool-state bytes at `"{session_id}/turn_{turn_number}/tool_state.json"`.
+/// The local spill file is named `resources_state.json`, but the durable artifact is `tool_state.json` to match the environment naming scheme.
 /// `Enqueued`/`FellBackToInline` are success; `Failed` is an error.
 pub(crate) async fn upload_tool_state_queued(
     state_bytes: Vec<u8>,
@@ -261,6 +265,12 @@ pub(crate) async fn upload_tool_state_queued(
     upload_queue: Arc<UploadQueue>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let object_path = format!("{session_id}/turn_{turn_number}/tool_state.json");
+    let bytes_len = state_bytes.len();
+    let region = codel_logging::region::Region::from_span(tracing::info_span!(
+        "workspace.tool_state_upload",
+        bytes = tracing::field::Empty,
+    ));
+    region.span().record("bytes", bytes_len as i64);
     match upload_queue
         .enqueue_bytes_blocking(
             &state_bytes,
@@ -273,15 +283,47 @@ pub(crate) async fn upload_tool_state_queued(
         .await
     {
         EnqueueOutcome::Enqueued => {
+            dc_log!(
+                info,
+                session_id = %session_id,
+                turn_number,
+                bytes = bytes_len,
+                "workspace: tool_state upload enqueued"
+            );
             record_upload_outcome("tool_state", "succeeded");
             Ok(())
         }
         EnqueueOutcome::FellBackToInline => {
+            dc_log!(
+                info,
+                session_id = %session_id,
+                turn_number,
+                bytes = bytes_len,
+                "workspace: tool_state upload fell back to inline"
+            );
             record_upload_outcome("tool_state", "succeeded");
             Ok(())
         }
         EnqueueOutcome::Deduplicated => {
+            dc_log!(
+                info,
+                session_id = %session_id,
+                turn_number,
+                "workspace: tool_state upload deduplicated, identical upload already in flight"
+            );
             record_upload_outcome("tool_state", "succeeded");
+            Ok(())
+        }
+        EnqueueOutcome::Skipped { reason } => {
+            dc_log!(
+                info,
+                session_id = %session_id,
+                turn_number,
+                skip_reason = reason.as_str(),
+                "workspace: tool_state upload skipped"
+            );
+            record_upload_skipped("tool_state", &reason);
+            record_upload_outcome("tool_state", "skipped");
             Ok(())
         }
         EnqueueOutcome::Failed { reason } => Err(reason.into()),
@@ -302,8 +344,7 @@ mod tests {
             identity,
         ))
     }
-    /// A Team principal's snapshot must carry the real `user_id` and the
-    /// `team_id` (from `principal_id`).
+    /// A Team principal's snapshot must carry the real `user_id` and the `team_id` (from `principal_id`).
     #[test]
     fn snapshot_carries_team_identity() {
         let identity = WorkspaceIdentity::new(
@@ -320,8 +361,7 @@ mod tests {
         assert_eq!(snap.user_id.as_deref(), Some("user-team-1"));
         assert_eq!(snap.team_id.as_deref(), Some("team-9"));
     }
-    /// A User principal's snapshot carries `user_id` but never a `team_id`,
-    /// even though the same code path runs.
+    /// A User principal's snapshot carries `user_id` but never a `team_id`, even though the same code path runs.
     #[test]
     fn snapshot_user_identity_has_no_team_id() {
         let identity = WorkspaceIdentity::new("user-solo", Some("User".to_string()), None);
@@ -333,8 +373,7 @@ mod tests {
         assert_eq!(snap.user_id.as_deref(), Some("user-solo"));
         assert_eq!(snap.team_id, None);
     }
-    /// With no resolved identity (headless / local-dev), `user_id` and
-    /// `team_id` are `None` but the live bearer token still flows.
+    /// With no resolved identity (headless / local-dev), `user_id` and `team_id` are `None` but the live bearer token still flows.
     #[test]
     fn snapshot_default_identity_omits_user_and_team() {
         let snap = proxy_config()
@@ -345,8 +384,8 @@ mod tests {
         assert_eq!(snap.user_id, None);
         assert_eq!(snap.team_id, None);
     }
-    /// The `Headers` credential arm must surface the real `user_id` / `team_id`
-    /// too. It has no bearer token, so `token` stays `None`.
+    /// The `Headers` credential arm must carry the real `user_id` / `team_id` too.
+    /// It has no bearer token, so `token` stays `None`.
     #[test]
     fn snapshot_headers_credential_carries_identity() {
         let identity = WorkspaceIdentity::new(
@@ -362,8 +401,7 @@ mod tests {
         assert_eq!(snap.user_id.as_deref(), Some("user-headers"));
         assert_eq!(snap.team_id.as_deref(), Some("team-h"));
     }
-    /// `WorkspaceTraceExportSource` must delegate all four `TraceExportSource`
-    /// hooks to the wrapped `ProxyStorageConfig`.
+    /// `WorkspaceTraceExportSource` must delegate all four `TraceExportSource` hooks to the wrapped `ProxyStorageConfig`.
     #[tokio::test]
     async fn workspace_trace_export_source_delegates_all_methods() {
         let source = WorkspaceTraceExportSource::new(proxy_config());
@@ -385,9 +423,8 @@ mod tests {
         assert!(source.proxy_attribution().is_none());
         assert!(source.proxy_http_client().is_none());
     }
-    /// The credential the queue resolves must be the server-backed provider whose
-    /// snapshot carries the live bearer token (not the placeholder baked into
-    /// `UploadMethod::Proxy`).
+    /// The credential the queue resolves must be the server-backed provider.
+    /// Its snapshot carries the live bearer token, not the placeholder baked into `UploadMethod::Proxy`.
     #[test]
     fn workspace_trace_export_source_credentials_snapshot_live_token() {
         let source = WorkspaceTraceExportSource::new(proxy_config());
@@ -396,9 +433,27 @@ mod tests {
             .expect("proxy_credentials must be Some");
         assert_eq!(creds.snapshot().token.as_deref(), Some("test-token"));
     }
-    /// Pins the tool-state path contract: bytes enqueued at exactly
-    /// `{session_id}/turn_{N}/tool_state.json` with JSON content-type and the
-    /// `tool_state` artifact name (asserted via queue stat + sidecar manifest).
+    use std::path::Path;
+    use tempfile::TempDir;
+    /// Spawn a real [`UploadQueue`] spilling under `home`.
+    /// The proxy points at a dead local port so any background cloud upload fails fast without DNS.
+    /// The tests only assert the *enqueue* side (`stats().enqueued`), never the upload itself.
+    fn test_queue(home: &Path) -> Arc<UploadQueue> {
+        let auth: Arc<dyn AuthProvider> = Arc::new(AuthCredential::bearer("test-token"));
+        let proxy = Arc::new(ProxyStorageConfig::new(
+            auth,
+            "http://127.0.0.1:1/v1".to_string(),
+            WorkspaceIdentity::default(),
+        ));
+        let source: Arc<dyn TraceExportSource> = Arc::new(WorkspaceTraceExportSource::new(proxy));
+        Arc::new(UploadQueue::spawn(
+            home,
+            source,
+            codel_file_utils::queue::UploadRetryPolicy::default(),
+        ))
+    }
+    /// Pins the tool-state path contract: bytes enqueued at exactly `{session_id}/turn_{N}/tool_state.json`.
+    /// The content-type is JSON and the artifact name is `tool_state` (asserted via queue stat and sidecar manifest).
     #[tokio::test]
     async fn tool_state_enqueues_at_session_turn_gcs_path() {
         use codel_file_utils::queue::{
@@ -450,5 +505,194 @@ mod tests {
         assert_eq!(sidecar.content_type, "application/json");
         assert_eq!(sidecar.session_id, "sess-XYZ");
         assert_eq!(sidecar.turn_number, 7);
+    }
+    /// The closed field vocabulary; only fields in this set are emitted (never the free-form `reason`/`error`/`*_path`).
+    const APPROVED_DC_FIELDS: &[&str] = &[
+        "session_id",
+        "turn_number",
+        "phase",
+        "bytes",
+        "file_count",
+        "pending",
+        "pending_bytes",
+        "sample_period_secs",
+        "error_category",
+        "outcome",
+        "skip_reason",
+        "drain_reason",
+        "grace_ms",
+        "active_at_start",
+        "pending_at_start",
+        "producers_at_start",
+    ];
+    #[derive(Clone)]
+    struct CapturedEvent {
+        level: tracing::Level,
+        target: String,
+        message: String,
+        fields: Vec<String>,
+    }
+    #[derive(Default)]
+    struct FieldVisitor {
+        message: String,
+        fields: Vec<String>,
+    }
+    impl tracing::field::Visit for FieldVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            } else {
+                self.fields.push(field.name().to_string());
+            }
+        }
+    }
+    #[derive(Clone)]
+    struct CaptureLayer {
+        events: Arc<std::sync::Mutex<Vec<CapturedEvent>>>,
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut v = FieldVisitor::default();
+            event.record(&mut v);
+            let meta = event.metadata();
+            self.events.lock().unwrap().push(CapturedEvent {
+                level: *meta.level(),
+                target: meta.target().to_string(),
+                message: v.message,
+                fields: v.fields,
+            });
+        }
+    }
+    /// Run `f` with a thread-local capturing subscriber; returns only the events on the `workspace::telemetry` target.
+    fn capture_dc(f: impl FnOnce()) -> Vec<CapturedEvent> {
+        use tracing_subscriber::layer::SubscriberExt;
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let layer = CaptureLayer {
+            events: events.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, f);
+        let out = events.lock().unwrap().clone();
+        out.into_iter()
+            .filter(|e| e.target == crate::telemetry::TELEMETRY_TARGET)
+            .collect()
+    }
+    /// `dc_log!` pins the target, honors the level, keeps the message a verbatim literal, and only ever carries the approved field vocabulary.
+    #[test]
+    fn dc_log_pins_target_level_and_vocabulary() {
+        let events = capture_dc(|| {
+            dc_log!(
+                info,
+                session_id = %"s",
+                turn_number = 1u64,
+                bytes = 5usize,
+                "constant info message"
+            );
+            dc_log!(
+                warn,
+                session_id = %"s",
+                outcome = "skipped",
+                skip_reason = "no_upload_queue",
+                "constant warn message"
+            );
+        });
+        assert_eq!(events.len(), 2, "both events land on the target");
+        assert!(
+            events
+                .iter()
+                .all(|e| e.target == crate::telemetry::TELEMETRY_TARGET)
+        );
+        let [e0, e1] = events.as_slice() else {
+            panic!("expected two events, got {}", events.len());
+        };
+        assert_eq!(e0.level, tracing::Level::INFO);
+        assert_eq!(e0.message, "constant info message");
+        assert_eq!(e1.level, tracing::Level::WARN);
+        for e in &events {
+            for f in &e.fields {
+                assert!(
+                    APPROVED_DC_FIELDS.contains(&f.as_str()),
+                    "field {f:?} is not in the approved field vocabulary"
+                );
+            }
+        }
+    }
+    #[tokio::test]
+    async fn sampler_guard_aborts_on_drop() {
+        let home = TempDir::new().unwrap();
+        let queue = test_queue(home.path());
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            use tracing_subscriber::layer::SubscriberExt;
+            let layer = CaptureLayer {
+                events: events.clone(),
+            };
+            let subscriber = tracing_subscriber::registry().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let sampler = spawn_queue_stats_sampler(queue, std::time::Duration::from_millis(20));
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            drop(sampler);
+            let count_after_drop = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.message.contains("upload queue pending stats"))
+                .count();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let count_after_wait = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.message.contains("upload queue pending stats"))
+                .count();
+            assert_eq!(count_after_drop, count_after_wait);
+        }
+    }
+    /// The queue-stats snapshot is INFO, queue-aggregate (no `session_id`), and carries exactly the queue counters.
+    #[tokio::test]
+    async fn queue_stats_sampler_emits_info_snapshot() {
+        let home = TempDir::new().unwrap();
+        let queue = test_queue(home.path());
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            use tracing_subscriber::layer::SubscriberExt;
+            let layer = CaptureLayer {
+                events: events.clone(),
+            };
+            let subscriber = tracing_subscriber::registry().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let handle = spawn_queue_stats_sampler(queue, std::time::Duration::from_millis(20));
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            handle.abort();
+        }
+        let snaps: Vec<_> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.target == crate::telemetry::TELEMETRY_TARGET
+                    && e.message.contains("upload queue pending stats")
+            })
+            .cloned()
+            .collect();
+        assert!(
+            !snaps.is_empty(),
+            "the sampler must emit at least one snapshot"
+        );
+        let Some(e) = snaps.first() else {
+            panic!("expected queue-stats snapshot");
+        };
+        assert_eq!(e.level, tracing::Level::INFO);
+        let mut fields = e.fields.clone();
+        fields.sort();
+        assert_eq!(
+            fields,
+            vec!["pending", "pending_bytes", "sample_period_secs"],
+            "queue-aggregate snapshot carries only the queue counters (no session_id)"
+        );
     }
 }

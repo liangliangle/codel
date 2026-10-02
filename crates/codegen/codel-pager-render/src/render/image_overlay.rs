@@ -1,15 +1,14 @@
 //! Image preview overlay for prompt image chips.
 //!
-//! Renders a bordered popup when the cursor is on (or right after) an image
-//! chip, or when the chip is hovered. Content follows a pure 2×2 matrix:
+//! Renders a bordered popup when the cursor is on (or right after) an image chip, or when the chip is hovered.
+//! Content follows a 2×2 matrix:
 //!
 //! |                    | Has filepath              | No filepath                |
 //! |--------------------|---------------------------|----------------------------|
 //! | **Pixels available** | Image + path footer       | Image only                 |
 //! | **Pixels unavailable** | Metadata + path         | Metadata only              |
 //!
-//! The prompt bar chip itself is always path-free (`[Image #N]`); paths
-//! appear only here.
+//! The prompt bar chip itself never shows the path (`[Image #N]`); paths appear only here.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -20,13 +19,13 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
 use crate::prompt_images::PastedImage;
 use crate::terminal::image as terminal_image;
 use crate::terminal::overlay;
+use crate::util::format_bytes;
 
 mod content;
 mod geometry;
 
-use content::{
-    build_meta_line, format_bytes, format_mime, paint_path_line, truncate_path_for_overlay,
-};
+use content::{build_meta_line, format_mime, paint_path_line, truncate_path_for_overlay};
+
 #[cfg(test)]
 use geometry::ImagePlacement;
 use geometry::{
@@ -66,7 +65,7 @@ fn render_image_overlay_inner(
     }
 
     let theme = crate::theme::Theme::current();
-    let protocol = terminal_image::detect_graphics_protocol();
+    let protocol = terminal_image::prompt_preview_graphics_protocol();
     let plan = plan_image_preview(image, protocol);
     let min_height = if plan.show_pixels {
         MIN_PIXEL_BOX_HEIGHT
@@ -157,7 +156,7 @@ fn render_image_overlay_inner(
             None
         };
         lines.push(Line::from(status.map(str::to_owned).unwrap_or_else(|| {
-            format!("Size: {}", format_bytes(image.byte_len))
+            format!("Size: {}", format_bytes(image.byte_len as u64))
         })));
         // Short boxes need the path in the body because no footer fits.
         if path_footer.is_none()

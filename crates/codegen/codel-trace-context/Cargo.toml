@@ -1,0 +1,31 @@
+[package]
+license = "Apache-2.0"
+name = "codel-trace-context"
+version = "0.1.0"
+edition.workspace = true
+description = "W3C trace-context propagation and shared redaction helpers. Installs no exporter and sends nothing off-box."
+authors = ["Codel"]
+
+[features]
+default-bazel = []
+env = ["dep:codel-env"]
+
+[dependencies]
+http = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+url = { workspace = true }
+codel-env = { workspace = true, optional = true }
+codel-secrets = { workspace = true }
+
+[dev-dependencies]
+# `InMemorySpanExporter` backs the trace-context unit tests; nothing is exported in production.
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

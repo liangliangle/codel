@@ -3,7 +3,7 @@ use std::time::Duration;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 
-use crate::render::color::blend_color;
+use crate::appearance::AppearanceConfig;
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{AccentStyle, BlockContext, BlockOutput, DisplayMode};
 use crate::theme::Theme;
@@ -144,10 +144,7 @@ impl BlockContent for WorkflowBlock {
         match &self.status {
             WorkflowBlockStatus::Running => {
                 if ctx.is_running {
-                    let dim = ctx.appearance.scrollback.display.dim_accent;
-                    let dimmed = blend_color(theme.bg_base, theme.accent_running, dim)
-                        .unwrap_or(theme.accent_running);
-                    Some(AccentStyle::animated(dimmed))
+                    Some(AccentStyle::animated_running(ctx, &theme))
                 } else {
                     None
                 }
@@ -165,7 +162,7 @@ impl BlockContent for WorkflowBlock {
         }
     }
 
-    fn has_vpad(&self, _ctx: &BlockContext) -> bool {
+    fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         false
     }
 
@@ -233,8 +230,11 @@ mod tests {
     }
 
     fn line_text(block: &WorkflowBlock) -> String {
-        block.output(&test_ctx()).lines[0]
-            .content
+        let output = block.output(&test_ctx());
+        let Some(line) = output.lines.first() else {
+            panic!("expected at least one line");
+        };
+        line.content
             .spans
             .iter()
             .map(|s| s.content.as_ref())

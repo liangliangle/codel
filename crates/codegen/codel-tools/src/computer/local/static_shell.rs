@@ -11,7 +11,6 @@
 
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use command_fds::FdMapping;
@@ -52,7 +51,10 @@ impl StaticShellSnapshot {
     /// Source the rc once in a login shell and capture alias and function
     /// definitions between SOH markers. Returns an empty snapshot on any
     /// failure or timeout, degrading to a plain shell.
-    pub async fn init(cwd: &Path) -> Self {
+    pub async fn init(
+        cwd: &Path,
+        sandbox_hook: Option<&dyn crate::sandbox_launch::SandboxLaunch>,
+    ) -> Self {
         let shell = codel_config::shell::detect_unix_shell_kind();
 
         let capture = match shell {
@@ -70,14 +72,16 @@ impl StaticShellSnapshot {
 
         let result = tokio::time::timeout(INIT_TIMEOUT, async {
             let mut cmd = tokio::process::Command::new(shell_binary(shell));
-            cmd.args(["-lc", &script])
-                .current_dir(cwd)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .kill_on_drop(true);
-            crate::util::detach_command(&mut cmd);
+            cmd.args(["-lc", &script]).current_dir(cwd);
             cmd.envs(crate::util::pager_env());
+            let call = crate::sandbox_launch::CallId::shell_init("static-shell");
+            crate::sandbox_launch::prepare(sandbox_hook, &mut cmd, &call)
+                .map_err(|reason| {
+                    tracing::warn!(%reason, "static shell capture refused by the sandbox hook")
+                })
+                .ok()?;
+            crate::sandbox_launch::wire_prepared(&mut cmd, codel_tty_utils::null_stdio());
+            #[allow(clippy::disallowed_methods)] // probe killed on drop
             let mut child = cmd.spawn().ok()?;
 
             let mut stdout_buf = Vec::new();
@@ -113,10 +117,9 @@ impl StaticShellSnapshot {
         Self { snapshot, shell }
     }
 
-    /// Build the replay wrapper: read the snapshot from fd 3, eval it (alias
-    /// and function definitions), then eval the user command; the shell exits
-    /// with the user command's status. A failing snapshot replay does not
-    /// abort the command.
+    /// Build the replay wrapper: read the snapshot from fd 3, eval it (alias and function
+    /// definitions), then eval the user command; the shell exits with the user command's status. A
+    /// failing snapshot replay does not abort the command.
     pub fn prepare_command(
         &self,
         user_command: &str,
@@ -128,6 +131,9 @@ impl StaticShellSnapshot {
         let (state_in_read, state_in_write) = os_pipe()?;
         set_cloexec(&state_in_write)?;
 
+        // Copy $1 into a plain variable and clear the positional parameters (`builtin set --`) BEFORE eval'ing the user command: `source <script>`
+        // with no arguments makes the sourced script inherit the caller's positional parameters, so e.g. conda's `bin/activate` (which forwards "$@"
+        // to `conda activate`) would receive the entire wrapped command string as an environment name.
         let wrapper = match self.shell {
             UnixShellKind::Bash => format!(
                 "snap=$(command cat <&3); builtin shopt -s extglob 2>/dev/null; \
@@ -135,7 +141,8 @@ impl StaticShellSnapshot {
                  builtin eval -- \"$snap\"; \
                  builtin export CODEL_AGENT=1; \
                  builtin export PWD=\"$(builtin pwd)\"; {sudo_inject}{search_inject}\
-                 builtin eval \"$1\" 2>&1"
+                 __codel_user_cmd=\"$1\"; builtin declare +x __codel_user_cmd 2>/dev/null; builtin set --; \
+                 builtin eval \"$__codel_user_cmd\" 2>&1"
             ),
             UnixShellKind::Zsh => format!(
                 "snap=$(command cat <&3); \
@@ -144,7 +151,8 @@ impl StaticShellSnapshot {
                  builtin export CODEL_AGENT=1; \
                  builtin export PWD=\"$(builtin pwd)\"; \
                  builtin setopt aliases 2>/dev/null; {sudo_inject}{search_inject}\
-                 builtin eval \"$1\" 2>&1"
+                 __codel_user_cmd=\"$1\"; builtin typeset +x __codel_user_cmd 2>/dev/null; builtin set --; \
+                 builtin eval \"$__codel_user_cmd\" 2>&1"
             ),
         };
 
@@ -226,10 +234,15 @@ fn set_cloexec(fd: &OwnedFd) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "static_shell_cli_facing_unchanged_tests.rs"]
+mod cli_facing_unchanged_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use command_fds::CommandFdExt;
+    use std::process::Stdio;
 
     fn bash_available() -> bool {
         std::path::Path::new("/bin/bash").exists()
@@ -254,6 +267,7 @@ mod tests {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         cmd.fd_mappings(prep.fd_mappings).unwrap();
+        #[allow(clippy::disallowed_methods)] // test fixture; the test reaps it
         let child = cmd.spawn().unwrap();
         drop(cmd);
 
@@ -307,5 +321,31 @@ mod tests {
             String::from_utf8_lossy(&output.stdout).contains("PLAIN_OK"),
             "empty snapshot must degrade to a plain shell"
         );
+    }
+
+    /// Regression test: a script sourced WITHOUT arguments by the user command must not see the wrapper's positional parameters ($1 = the whole
+    /// command string). Conda's `bin/activate` forwards "$@" to `conda activate`, so a leak makes every `activate_conda`-prefixed command fail with
+    /// `EnvironmentLocationNotFound: Not a conda environment: <cwd>/<the entire command string>`.
+    #[tokio::test]
+    async fn sourced_script_does_not_inherit_wrapper_positional_args() {
+        if !bash_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("activate_probe.sh");
+        std::fs::write(&probe, "echo \"SOURCED_ARGC=$#\"\n").unwrap();
+
+        let output = run_static(
+            "",
+            &format!("source {} && echo AFTER_SOURCE_OK", probe.display()),
+        )
+        .await;
+        assert!(output.status.success(), "command failed: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("SOURCED_ARGC=0"),
+            "sourced script must see zero positional args, got: {stdout:?}"
+        );
+        assert!(stdout.contains("AFTER_SOURCE_OK"), "got: {stdout:?}");
     }
 }

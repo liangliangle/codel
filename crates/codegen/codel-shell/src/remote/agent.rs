@@ -1,13 +1,10 @@
-//! Remote sandbox client for cli-chat-proxy.
-//!
-//! This module provides an HTTP client to interact with cli-chat-proxy
-//! for managing sandbox sessions and environments via REST API.
+//! HTTP client for managing sandbox sessions and environments via the cli-chat-proxy REST API.
 
 use std::sync::Arc;
 
-use crate::auth::{AuthManager, CodelComConfig};
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
+use codel_login::{AuthManager, CodelComConfig};
 
 // Re-export sandbox API types from cli-chat-proxy-types for convenience.
 // Sorted alphabetically; see sandbox_types.rs for logical grouping.
@@ -26,12 +23,8 @@ pub use prod_mc_cli_chat_proxy_types::{
 // Sandbox Client
 // ============================================================================
 
-/// HTTP client for interacting with the sandbox API via cli-chat-proxy.
-///
-/// Path parameters (`session_id`, `environment_id`) are interpolated directly
-/// into URLs without percent-encoding. This is safe because these IDs are
-/// UUIDs in practice. If ID formats ever change to include URL-unsafe
-/// characters, the `format!()` calls should be updated to use percent-encoding.
+/// HTTP client for interacting with the sandbox API via cli-chat-proxy. Path parameters (`session_id`, `environment_id`) are interpolated directly into URLs without percent-encoding.
+/// This is safe because these IDs are UUIDs in practice. If ID formats ever change to include URL-unsafe characters, the `format!()` calls should be updated to use percent-encoding.
 pub struct SandboxClient {
     client: reqwest::Client,
     base_url: String,
@@ -47,12 +40,11 @@ impl SandboxClient {
         }
     }
 
-    /// Returns the base URL.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
-    // Do not set Content-Type — callers use .json() and reqwest .header() appends.
+    // Do not set Content-Type: callers use .json() and reqwest .header() appends
     async fn auth_headers(
         &self,
         builder: reqwest::RequestBuilder,
@@ -64,7 +56,7 @@ impl SandboxClient {
             .context("failed to resolve sandbox auth")?;
         let mut builder = builder
             .header("Authorization", format!("Bearer {}", &auth.key))
-            .header("X-Codel-Token-Auth", CodelComConfig::default().token_header)
+            .header("X-CODEL-Token-Auth", CodelComConfig::default().token_header)
             .header("x-userid", &auth.user_id)
             .header("x-codel-client-version", codel_version::VERSION);
 
@@ -72,12 +64,17 @@ impl SandboxClient {
             builder = builder.header("x-email", email);
         }
 
-        builder = builder.header(
-            "x-codel-client-identifier",
-            crate::http::process_client_identifier(),
-        );
+        builder = builder
+            .header(
+                "x-codel-client-identifier",
+                crate::http::process_client_identifier(),
+            )
+            .header(
+                crate::http::CLIENT_MODE_HEADER,
+                crate::http::process_client_mode(),
+            );
 
-        Ok(codel_file_utils::trace_context::inject_trace_context_into_request(builder))
+        Ok(codel_trace_context::inject_trace_context_into_request(builder))
     }
 
     /// Check an HTTP response for errors, then deserialize the JSON body.
@@ -106,7 +103,6 @@ impl SandboxClient {
         Ok(())
     }
 
-    /// Fork an existing sandbox session.
     pub async fn fork_session(&self, request: &SandboxForkRequest) -> Result<SandboxForkResponse> {
         let url = format!("{}/sandbox/sessions/fork", self.base_url);
         let response = self
@@ -119,8 +115,7 @@ impl SandboxClient {
         Self::parse_response(response, "fork session").await
     }
 
-    /// Terminate a sandbox session.
-    pub async fn terminate_session(
+    pub(crate) async fn terminate_session(
         &self,
         session_id: &str,
         request: &SandboxTerminateRequest,
@@ -147,83 +142,10 @@ impl SandboxClient {
     // Session Lifecycle
     // ========================================================================
 
-    /// Start a sandbox session (non-TUI).
-    pub async fn start_session(
-        &self,
-        request: &SandboxStartRequest,
-    ) -> Result<SandboxStartResponse> {
-        let url = format!("{}/sandbox/sessions/start", self.base_url);
-        let response = self
-            .auth_headers(self.client.post(&url))
-            .await?
-            .json(request)
-            .send()
-            .await
-            .context("failed to send start session request")?;
-        Self::parse_response(response, "start session").await
-    }
-
-    /// Get sandbox session status.
-    pub async fn get_session_status(&self, session_id: &str) -> Result<SandboxStatusResponse> {
-        let url = format!("{}/sandbox/sessions/{}/status", self.base_url, session_id);
-        let response = self
-            .auth_headers(self.client.get(&url))
-            .await?
-            .send()
-            .await
-            .context("failed to send get session status request")?;
-        Self::parse_response(response, "get session status").await
-    }
-
-    /// Get sandbox session logs.
-    pub async fn get_session_logs(&self, session_id: &str) -> Result<SandboxLogsResponse> {
-        let url = format!("{}/sandbox/sessions/{}/logs", self.base_url, session_id);
-        let response = self
-            .auth_headers(self.client.get(&url))
-            .await?
-            .send()
-            .await
-            .context("failed to send get session logs request")?;
-        Self::parse_response(response, "get session logs").await
-    }
-
-    /// Hibernate a sandbox session (snapshot rootfs to GCS and terminate).
-    pub async fn hibernate_session(&self, session_id: &str) -> Result<SandboxHibernateResponse> {
-        let url = format!(
-            "{}/sandbox/sessions/{}/hibernate",
-            self.base_url, session_id
-        );
-        let response = self
-            .auth_headers(self.client.post(&url))
-            .await?
-            .send()
-            .await
-            .context("failed to send hibernate session request")?;
-        Self::parse_response(response, "hibernate session").await
-    }
-
-    /// Restore a previously hibernated sandbox session from its snapshot.
-    pub async fn restore_session(
-        &self,
-        session_id: &str,
-        request: &SandboxRestoreRequest,
-    ) -> Result<SandboxRestoreResponse> {
-        let url = format!("{}/sandbox/sessions/{}/restore", self.base_url, session_id);
-        let response = self
-            .auth_headers(self.client.post(&url))
-            .await?
-            .json(request)
-            .send()
-            .await
-            .context("failed to send restore session request")?;
-        Self::parse_response(response, "restore session").await
-    }
-
     // ========================================================================
     // Environment CRUD
     // ========================================================================
 
-    /// List sandbox environments.
     pub async fn list_environments(
         &self,
         request: &SandboxListEnvironmentsRequest,
@@ -243,8 +165,7 @@ impl SandboxClient {
         Self::parse_response(response, "list environments").await
     }
 
-    /// Create a new sandbox environment.
-    pub async fn create_environment(
+    pub(crate) async fn create_environment(
         &self,
         request: &SandboxCreateEnvironmentRequest,
     ) -> Result<SandboxEnvironmentResponse> {
@@ -259,23 +180,7 @@ impl SandboxClient {
         Self::parse_response(response, "create environment").await
     }
 
-    /// Get a sandbox environment by ID.
-    pub async fn get_environment(
-        &self,
-        environment_id: &str,
-    ) -> Result<SandboxEnvironmentResponse> {
-        let url = format!("{}/sandbox/environments/{}", self.base_url, environment_id);
-        let response = self
-            .auth_headers(self.client.get(&url))
-            .await?
-            .send()
-            .await
-            .context("failed to send get environment request")?;
-        Self::parse_response(response, "get environment").await
-    }
-
-    /// Update a sandbox environment.
-    pub async fn update_environment(
+    pub(crate) async fn update_environment(
         &self,
         environment_id: &str,
         request: &SandboxUpdateEnvironmentRequest,
@@ -291,8 +196,7 @@ impl SandboxClient {
         Self::parse_response(response, "update environment").await
     }
 
-    /// Delete a sandbox environment.
-    pub async fn delete_environment(&self, environment_id: &str) -> Result<()> {
+    pub(crate) async fn delete_environment(&self, environment_id: &str) -> Result<()> {
         let url = format!("{}/sandbox/environments/{}", self.base_url, environment_id);
         let response = self
             .auth_headers(self.client.delete(&url))
@@ -301,22 +205,5 @@ impl SandboxClient {
             .await
             .context("failed to send delete environment request")?;
         Self::check_response(response, "delete environment").await
-    }
-
-    /// List preinstalled packages available for sandbox environments.
-    pub async fn list_preinstalled_packages(
-        &self,
-    ) -> Result<SandboxListPreinstalledPackagesResponse> {
-        let url = format!(
-            "{}/sandbox/environments/preinstalled-packages",
-            self.base_url
-        );
-        let response = self
-            .auth_headers(self.client.get(&url))
-            .await?
-            .send()
-            .await
-            .context("failed to send list preinstalled packages request")?;
-        Self::parse_response(response, "list preinstalled packages").await
     }
 }

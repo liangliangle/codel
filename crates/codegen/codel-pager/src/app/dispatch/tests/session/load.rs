@@ -1,29 +1,15 @@
 //! Tests for session loading, restore, pickers, and deep search.
 use super::*;
-use codel_shell::session::unified_list::ListScope;
-#[test]
-fn follow_up_chip_bypasses_project_picker() {
-    let mut app = test_app_with_agent();
-    let id = AgentId(0);
-    app.cwd = PathBuf::from("/tmp");
-    app.project_picker_shown = false;
-    assert!(
-        app.needs_project_picker(),
-        "precondition: the picker would fire for a typed prompt here"
-    );
-    let effects = dispatch(Action::SubmitFollowUp("Summarize this".into()), &mut app);
-    assert!(
-        app.agents[&id].question_view.is_none(),
-        "a literal chip must not open the project question"
-    );
-    assert!(
-        matches!(&effects[..], [Effect::SendPrompt { text, .. }] if text == "Summarize this"),
-        "chip text must be sent literally, not swallowed, got {effects:?}"
-    );
+fn expect_agent(app: &AppView, id: AgentId) -> &AgentView {
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    agent
 }
-/// Opening the cancel-turn picker while scrollback is focused must
-/// hand keyboard focus to the picker — otherwise up/down keys go
-/// to scrollback and the modal is only navigable via mouse.
+use crate::views::modal::ActiveModal;
+use codel_shell::session::unified_list::ListScope;
+/// Opening the cancel-turn picker while scrollback is focused must hand keyboard focus to the picker.
+/// Otherwise up/down keys go to scrollback and the modal is only navigable via mouse.
 #[test]
 fn cancel_turn_picker_grabs_focus_from_scrollback() {
     let mut app = test_app_with_agent();
@@ -38,479 +24,11 @@ fn cancel_turn_picker_grabs_focus_from_scrollback() {
     }
     let effects = dispatch(Action::CancelTurn, &mut app);
     assert!(effects.is_empty());
-    assert!(app.agents[&id].cancel_turn_view.is_some());
+    assert!(expect_agent(&app, id).cancel_turn_view.is_some());
     assert_eq!(
-        app.agents[&id].active_pane,
+        expect_agent(&app, id).active_pane,
         ActivePane::Prompt,
         "picker should steal focus from scrollback so keyboard navigation works"
-    );
-}
-#[test]
-fn session_loaded_with_restore_shows_summary_in_scrollback() {
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-restore".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-restore"),
-            models: None,
-            code_restored: true,
-            restore_summary: Some(
-                "checked out abc12345, staged: true, unstaged: false, untracked: 3".into(),
-            ),
-            restore_degree: Some(codel_workspace::session::git::RestoreDegree::Full),
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::HydrateSessionTitleFromDisk { .. }))
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::FetchPromptHistory { .. }))
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::RegisterActiveSession { .. }))
-    );
-    let has_restore_msg = app.agents[&id]
-        .scrollback
-        .entries_in_range(0..app.agents[&id].scrollback.len())
-        .iter()
-        .any(|e| matches!(&e.block, RenderBlock::System(s) if s.text.contains("Code restored")));
-    assert!(has_restore_msg, "expected restore summary in scrollback");
-    assert_eq!(
-        app.agents[&id].session.restore_degree,
-        Some(codel_workspace::session::git::RestoreDegree::Full),
-        "SessionLoaded must store restore_degree on the session"
-    );
-}
-/// Title hydration for an auto-generated title keeps today's behavior:
-/// only `generated_session_title` is set, never `display_name` (no
-/// border title).
-#[test]
-fn session_title_hydration_auto_leaves_display_name_none() {
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-title".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionTitleFromDisk {
-            agent_id: id,
-            title: Some(("Auto Title".into(), false)),
-        }),
-        &mut app,
-    );
-    let agent = &app.agents[&id];
-    assert_eq!(agent.generated_session_title.as_deref(), Some("Auto Title"));
-    assert!(
-        agent.display_name.is_none(),
-        "auto titles must not restore the manual-rename border title"
-    );
-}
-/// A manual title restores `display_name` (the prompt-border title) — but
-/// cold-cache only: a rename made while the disk read was in flight must
-/// never be clobbered by the stale on-disk title.
-#[test]
-fn session_title_hydration_manual_restores_display_name_cold_cache_only() {
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-title".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionTitleFromDisk {
-            agent_id: id,
-            title: Some(("Disk Title".into(), true)),
-        }),
-        &mut app,
-    );
-    {
-        let agent = &app.agents[&id];
-        assert_eq!(agent.display_name.as_deref(), Some("Disk Title"));
-        assert_eq!(agent.generated_session_title.as_deref(), Some("Disk Title"));
-    }
-    app.agents.get_mut(&id).unwrap().display_name = Some("Fresh Rename".into());
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionTitleFromDisk {
-            agent_id: id,
-            title: Some(("Stale Disk Title".into(), true)),
-        }),
-        &mut app,
-    );
-    assert_eq!(
-        app.agents[&id].display_name.as_deref(),
-        Some("Fresh Rename"),
-        "hydration is a cold-cache fallback, never an overwrite"
-    );
-}
-/// Whitespace-only titles from disk are ignored entirely, manual or not.
-#[test]
-fn session_title_hydration_ignores_blank_title() {
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-title".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionTitleFromDisk {
-            agent_id: id,
-            title: Some(("   ".into(), true)),
-        }),
-        &mut app,
-    );
-    let agent = &app.agents[&id];
-    assert!(agent.display_name.is_none());
-    assert!(agent.generated_session_title.is_none());
-}
-/// A resumed session whose replay left entries marked running (bg tasks,
-/// scheduler runs, tools cut off when the previous process died) must
-/// sweep them once the load lands without a live turn to adopt — a stuck
-/// running entry otherwise holds `needs_animation()` open forever
-/// (permanent ~30fps tick+redraw loop on an idle TUI).
-#[test]
-fn session_loaded_without_adoption_finishes_replayed_running_entries() {
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-stuck".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    {
-        let agent = app.agents.get_mut(&id).unwrap();
-        agent
-            .scrollback
-            .push_block(RenderBlock::tool_call("Run something", "info", true));
-        agent.scrollback.set_last_running(true);
-        assert!(agent.scrollback.needs_animation());
-    }
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-stuck"),
-            models: None,
-            code_restored: false,
-            restore_summary: None,
-            restore_degree: None,
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    let agent = app.agents.get(&id).unwrap();
-    assert!(
-        !agent.scrollback.has_running_entries(),
-        "replayed running entries must be finished when no turn is adopted"
-    );
-}
-/// Cross-cwd resume anchors the agent cwd to the resolved origin cwd.
-#[test]
-fn load_session_anchors_agent_cwd_to_resolved_session_cwd() {
-    let mut app = test_app();
-    let process_cwd = app.cwd.clone();
-    let origin_cwd = PathBuf::from("/some/other/origin-cwd");
-    assert_ne!(origin_cwd, process_cwd, "test precondition");
-    dispatch(
-        Action::LoadSession("sess-xcwd".into(), Some(origin_cwd.clone()), false),
-        &mut app,
-    );
-    assert_eq!(
-        app.agents[&AgentId(0)].session.cwd,
-        origin_cwd,
-        "cross-cwd resume must anchor the agent cwd to the session's origin cwd"
-    );
-}
-/// With no resolved cwd (`None`), the agent cwd stays the process cwd.
-#[test]
-fn load_session_falls_back_to_process_cwd_when_no_session_cwd() {
-    let mut app = test_app();
-    let process_cwd = app.cwd.clone();
-    dispatch(
-        Action::LoadSession("sess-samecwd".into(), None, false),
-        &mut app,
-    );
-    assert_eq!(
-        app.agents[&AgentId(0)].session.cwd,
-        process_cwd,
-        "same-cwd resume must keep the agent cwd at the process cwd"
-    );
-}
-/// A stale fresh-view load resolving inside an open reconnect reload
-/// window must not close the window: flipping `loading_replay` would make
-/// the replay gate drop the rest of the reconnect replay (a truncated
-/// transcript reported as a successful restore).
-/// The original purge site: completing a session load (no reload
-/// window open) drops the replay transient and must purge exactly once.
-#[test]
-fn session_loaded_purges_replay_transient() {
-    use crate::memory_release::test_support;
-    test_support::install_counting_hook();
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-purge".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    let before = test_support::calls();
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-purge"),
-            models: None,
-            code_restored: false,
-            restore_summary: None,
-            restore_degree: None,
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    assert_eq!(
-        test_support::calls(),
-        before + 1,
-        "load completion must purge the dropped replay transient exactly once"
-    );
-}
-#[test]
-fn session_loaded_during_open_reload_window_defers_to_window() {
-    let mut app = test_app();
-    dispatch(Action::LoadSession("sess-w".into(), None, false), &mut app);
-    let id = AgentId(0);
-    app.agents.get_mut(&id).unwrap().begin_session_reload(1);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-w"),
-            models: None,
-            code_restored: false,
-            restore_summary: None,
-            restore_degree: None,
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "a load result mid-window must produce no effects (no queue drain)"
-    );
-    let agent = app.agents.get(&id).unwrap();
-    assert!(agent.session_reload.is_some(), "the window stays open");
-    assert!(agent.session.loading_replay, "the replay gate stays open");
-}
-/// Failure variant of the above: no `TurnFailed` block may be pushed into
-/// the staging state.
-#[test]
-fn session_load_failed_during_open_reload_window_defers_to_window() {
-    let mut app = test_app();
-    dispatch(Action::LoadSession("sess-w".into(), None, false), &mut app);
-    let id = AgentId(0);
-    app.agents.get_mut(&id).unwrap().begin_session_reload(1);
-    let staging_len = app.agents[&id].scrollback.len();
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionLoadFailed {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-w"),
-            error: "boom".into(),
-        }),
-        &mut app,
-    );
-    assert!(effects.is_empty());
-    let agent = app.agents.get(&id).unwrap();
-    assert!(agent.session_reload.is_some(), "the window stays open");
-    assert!(agent.session.loading_replay);
-    assert_eq!(
-        agent.scrollback.len(),
-        staging_len,
-        "no failure block was pushed into staging"
-    );
-}
-/// `SessionRestoreFailed` variant of the defer guard: no `TurnFailed`
-/// block may be pushed into staging and the window must stay open.
-#[test]
-fn session_restore_failed_during_open_reload_window_defers_to_window() {
-    let mut app = test_app();
-    dispatch(Action::LoadSession("sess-w".into(), None, false), &mut app);
-    let id = AgentId(0);
-    app.agents.get_mut(&id).unwrap().begin_session_reload(1);
-    let staging_len = app.agents[&id].scrollback.len();
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionRestoreFailed {
-            agent_id: id,
-            error: "boom".into(),
-        }),
-        &mut app,
-    );
-    assert!(effects.is_empty());
-    let agent = app.agents.get(&id).unwrap();
-    assert!(agent.session_reload.is_some(), "the window stays open");
-    assert!(agent.session.loading_replay);
-    assert_eq!(
-        agent.scrollback.len(),
-        staging_len,
-        "no failure block was pushed into staging"
-    );
-}
-/// `SessionRestoreProgress` variant of the defer guard: no progress block
-/// may be pushed into staging.
-#[test]
-fn session_restore_progress_during_open_reload_window_defers_to_window() {
-    let mut app = test_app();
-    dispatch(Action::LoadSession("sess-w".into(), None, false), &mut app);
-    let id = AgentId(0);
-    app.agents.get_mut(&id).unwrap().begin_session_reload(1);
-    let staging_len = app.agents[&id].scrollback.len();
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionRestoreProgress {
-            agent_id: id,
-            message: "Downloading...".into(),
-        }),
-        &mut app,
-    );
-    let agent = app.agents.get(&id).unwrap();
-    assert!(agent.session_reload.is_some(), "the window stays open");
-    assert_eq!(
-        agent.scrollback.len(),
-        staging_len,
-        "no progress block was pushed into staging"
-    );
-}
-/// SessionLoaded path also surfaces a warning banner when the server
-/// reported `code_restored: false` with a summary.
-#[test]
-fn session_loaded_with_restore_failure_shows_warning_banner() {
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-fail".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-fail"),
-            models: None,
-            code_restored: false,
-            restore_summary: Some(
-                "restore aborted (checkout failed); stash skipped: MERGE_HEAD present".into(),
-            ),
-            restore_degree: None,
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    let entries = app.agents[&id]
-        .scrollback
-        .entries_in_range(0..app.agents[&id].scrollback.len());
-    let warn = entries.iter().find_map(|e| match &e.block {
-        RenderBlock::System(s) if s.text.contains("Code restore failed") => Some(&s.text),
-        _ => None,
-    });
-    let text = warn.expect("warning banner missing").as_str();
-    assert!(
-        text.starts_with('\u{26A0}'),
-        "expected ⚠ prefix, got: {text}"
-    );
-    assert!(text.contains("MERGE_HEAD present"));
-    assert!(
-        !entries.iter().any(|e| matches!(
-            &e.block,
-            RenderBlock::System(s) if s.text.contains("Code restored")
-        )),
-        "success banner must not appear on failure"
-    );
-}
-#[test]
-fn session_loaded_without_restore_no_summary() {
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-plain".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-plain"),
-            models: None,
-            code_restored: false,
-            restore_summary: None,
-            restore_degree: None,
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::HydrateSessionTitleFromDisk { .. }))
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::FetchPromptHistory { .. }))
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::RegisterActiveSession { .. }))
-    );
-    let has_restore_msg = app.agents[&id]
-        .scrollback
-        .entries_in_range(0..app.agents[&id].scrollback.len())
-        .iter()
-        .any(|e| matches!(&e.block, RenderBlock::System(s) if s.text.contains("Code restored")));
-    assert!(!has_restore_msg, "should not have restore summary");
-}
-/// A second `SessionLoaded` without a restore must reset
-/// `restore_degree` to `None`, not keep a stale `Some(Full)` from a
-/// previous load.
-#[test]
-fn session_loaded_without_restore_resets_restore_degree() {
-    let mut app = test_app();
-    dispatch(Action::LoadSession("sess-r2".into(), None, false), &mut app);
-    let id = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-r2"),
-            models: None,
-            code_restored: true,
-            restore_summary: Some("checked out abc".into()),
-            restore_degree: Some(codel_workspace::session::git::RestoreDegree::Full),
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    assert_eq!(
-        app.agents[&id].session.restore_degree,
-        Some(codel_workspace::session::git::RestoreDegree::Full)
-    );
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-r2"),
-            models: None,
-            code_restored: false,
-            restore_summary: None,
-            restore_degree: None,
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    assert!(
-        app.agents[&id].session.restore_degree.is_none(),
-        "second load without restore must clear stale degree"
     );
 }
 #[test]
@@ -529,6 +47,7 @@ fn session_loaded_with_flag_emits_five_fetches_and_clears_flag() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            modes: None,
             code_restored: false,
             restore_summary: None,
             restore_degree: None,
@@ -542,7 +61,7 @@ fn session_loaded_with_flag_emits_five_fetches_and_clears_flag() {
             .iter()
             .any(|e| matches!(e, Effect::FetchMcpsList { cache: true, .. }))
     );
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(!expect_agent(&app, id).pending_extensions_fetch);
 }
 #[test]
 fn session_restored_does_not_consume_flag_and_defers_to_load() {
@@ -563,7 +82,7 @@ fn session_restored_does_not_consume_flag_and_defers_to_load() {
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 0);
-    assert!(app.agents[&id].pending_extensions_fetch);
+    assert!(expect_agent(&app, id).pending_extensions_fetch);
     assert!(
         effects
             .iter()
@@ -589,50 +108,9 @@ fn session_load_failed_clears_flag_no_fetches() {
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 0);
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(!expect_agent(&app, id).pending_extensions_fetch);
 }
-#[test]
-fn load_session_seeds_available_commands_from_bootstrap() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![acp::AvailableCommand::new(
-        "session-info".to_string(),
-        "Show session info".to_string(),
-    )];
-    dispatch(
-        Action::LoadSession("sess-123".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    assert_eq!(app.agents[&id].session.available_commands.len(), 1);
-    assert_eq!(
-        app.agents[&id].session.available_commands[0].name,
-        "session-info"
-    );
-    assert_eq!(app.agents[&id].session.available_commands_generation, 1);
-}
-/// Known session id resume always emits LoadSession, never CreateSession.
-#[test]
-fn resume_known_session_id_loads_not_creates() {
-    let mut app = test_app();
-    let effects = dispatch(
-        Action::LoadSession("resume-known-id".into(), None, false),
-        &mut app,
-    );
-    assert!(
-            effects
-                .iter()
-                .any(|e| matches!(e, Effect::LoadSession { session_id, .. } if session_id == "resume-known-id")),
-            "expected LoadSession, got {effects:?}"
-        );
-    assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::CreateSession { .. })),
-        "resume must never CreateSession"
-    );
-}
-/// `SessionRestored` under `--chat` refuses a non-conversation local Build row
-/// (no LoadSession; agent torn down).
+/// `SessionRestored` under `--chat` refuses a non-conversation local Build row (no LoadSession; agent torn down).
 #[test]
 fn session_restored_refuses_local_build_under_chat_mode() {
     let mut app = test_app_with_agent();
@@ -658,10 +136,10 @@ fn session_restored_refuses_local_build_under_chat_mode() {
         "placeholder agent must be removed on refuse"
     );
 }
-/// `SessionRestored` never carries a conversation-entry bit: the follow-up
-/// LoadSession stays `chat_kind: false`; the agent UI bit is sticky `--chat`.
+/// The `SessionRestored` follow-up LoadSession stays `chat_kind: false` (not a picker conversation entry).
+/// Sticky `--chat` with no local disk still opens as chat, so `conversation_entry` and the rename kind are Chat.
 #[test]
-fn session_restored_load_never_sets_conversation_entry_bit() {
+fn session_restored_sticky_chat_sets_conversation_entry() {
     let mut app = test_app_with_agent();
     let id = *app.agents.keys().next().unwrap();
     app.chat_mode = true;
@@ -673,7 +151,7 @@ fn session_restored_load_never_sets_conversation_entry_bit() {
         &mut app,
     );
     assert!(matches!(
-        &effects[..],
+        effects.as_slice(),
         [Effect::LoadSession {
             session_id,
             chat_kind: false,
@@ -682,25 +160,14 @@ fn session_restored_load_never_sets_conversation_entry_bit() {
     ));
     let agent = app.agents.get(&id).expect("agent kept");
     assert!(agent.chat_kind, "agent UI bit comes from sticky --chat");
-}
-/// Completing a mid-session login restores the agent view instead of
-/// running the startup load-session flow.
-#[test]
-fn auth_complete_restores_view_after_mid_session_login() {
-    let mut app = test_app_with_agent();
-    dispatch(Action::Login, &mut app);
-    let seq = authenticating_seq(&app);
-    assert_eq!(app.active_view, ActiveView::Welcome);
-    dispatch(
-        Action::TaskComplete(TaskResult::AuthComplete {
-            request_seq: seq,
-            meta: None,
-        }),
-        &mut app,
+    assert!(
+        agent.conversation_entry,
+        "sticky --chat restore with no local disk opens as chat (rename kind)"
     );
-    assert_eq!(app.active_view, ActiveView::Agent(AgentId(0)));
-    assert_eq!(app.auth_return_view, None);
-    assert!(matches!(app.auth_state, AuthState::Done));
+    assert_eq!(
+        agent.rename_kind(),
+        codel_shell::session::unified_list::SessionKind::Chat
+    );
 }
 #[test]
 fn session_loaded_drains_pending_first_prompt_to_front() {
@@ -721,6 +188,7 @@ fn session_loaded_drains_pending_first_prompt_to_front() {
             agent_id: new_id,
             session_id: "new-fork-sid".into(),
             models: None,
+            modes: None,
             code_restored: false,
             restore_summary: None,
             restore_degree: None,
@@ -728,7 +196,7 @@ fn session_loaded_drains_pending_first_prompt_to_front() {
         }),
         &mut app,
     );
-    let queue: Vec<_> = app.agents[&new_id]
+    let queue: Vec<_> = expect_agent(&app, new_id)
         .session
         .pending_prompts
         .iter()
@@ -736,7 +204,7 @@ fn session_loaded_drains_pending_first_prompt_to_front() {
         .collect();
     assert_eq!(queue, vec!["user-typed prompt".to_string()]);
     assert!(
-        app.agents[&new_id].pending_first_prompt.is_none(),
+        expect_agent(&app, new_id).pending_first_prompt.is_none(),
         "drained prompt must be cleared"
     );
 }
@@ -744,12 +212,13 @@ fn session_loaded_drains_pending_first_prompt_to_front() {
 fn session_loaded_with_no_pending_first_prompt_does_not_enqueue() {
     let mut app = fork_test_app();
     let id = AgentId(0);
-    let queue_before = app.agents[&id].session.pending_prompts.len();
+    let queue_before = expect_agent(&app, id).session.pending_prompts.len();
     dispatch(
         Action::TaskComplete(TaskResult::SessionLoaded {
             agent_id: id,
             session_id: "test-session".into(),
             models: None,
+            modes: None,
             code_restored: false,
             restore_summary: None,
             restore_degree: None,
@@ -758,7 +227,7 @@ fn session_loaded_with_no_pending_first_prompt_does_not_enqueue() {
         &mut app,
     );
     assert_eq!(
-        app.agents[&id].session.pending_prompts.len(),
+        expect_agent(&app, id).session.pending_prompts.len(),
         queue_before,
         "no enqueue when pending_first_prompt is None"
     );
@@ -777,7 +246,7 @@ fn session_load_failed_clears_pending_first_prompt() {
         &mut app,
     );
     assert!(
-        app.agents[&id].pending_first_prompt.is_none(),
+        expect_agent(&app, id).pending_first_prompt.is_none(),
         "load failure must drop the directive"
     );
 }
@@ -805,680 +274,10 @@ fn entry_title_loading_when_no_session_id() {
     if let Some(a) = app.agents.get_mut(&AgentId(0)) {
         a.session.session_id = None;
     }
-    let title = entry_title(&app.agents[&AgentId(0)]);
+    let title = entry_title(expect_agent(&app, AgentId(0)));
     assert_eq!(title, "loading...");
 }
-/// Regression: SessionLoaded must clear stale running entries from replay.
-/// Without the finish_turn call, Execute blocks that were InProgress when the
-/// session was last active stay orphaned as "running" forever.
-#[test]
-fn session_loaded_clears_stale_running_entries() {
-    use crate::acp::meta::NotificationMeta;
-    use std::sync::Arc;
-    let mut app = test_app();
-    dispatch(
-        Action::LoadSession("sess-stale".into(), None, false),
-        &mut app,
-    );
-    let id = AgentId(0);
-    let agent = app.agents.get_mut(&id).unwrap();
-    let meta = NotificationMeta::default();
-    agent.session.handle_update(
-        acp::SessionUpdate::ToolCall(
-            acp::ToolCall::new(
-                acp::ToolCallId::new(Arc::from("tc-stale")),
-                "Execute `sleep 999`".to_string(),
-            )
-            .kind(acp::ToolKind::Execute)
-            .status(acp::ToolCallStatus::Pending)
-            .content(vec![])
-            .locations(vec![]),
-        ),
-        &meta,
-        &mut agent.scrollback,
-    );
-    agent.session.handle_update(
-        acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
-            acp::ToolCallId::new(Arc::from("tc-stale")),
-            acp::ToolCallUpdateFields::new().status(Some(acp::ToolCallStatus::InProgress)),
-        )),
-        &meta,
-        &mut agent.scrollback,
-    );
-    assert!(!agent.scrollback.is_empty());
-    assert!(
-        agent.scrollback.needs_animation(),
-        "scrollback should have running entries before SessionLoaded",
-    );
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionLoaded {
-            agent_id: id,
-            session_id: acp::SessionId::new("sess-stale"),
-            models: None,
-            code_restored: false,
-            restore_summary: None,
-            restore_degree: None,
-            running_prompt_id: None,
-        }),
-        &mut app,
-    );
-    assert!(
-        !app.agents[&id].scrollback.needs_animation(),
-        "no entries should be animating after SessionLoaded",
-    );
-}
-#[test]
-fn session_restore_failed_clears_prompt_history_loading() {
-    let mut app = test_app();
-    let effects = dispatch_load_session_with_restore(&mut app, "remote-sess".into(), "/tmp".into());
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::RestoreAndLoadSession { .. }]
-    ));
-    let id = AgentId(0);
-    assert!(app.agents[&id].session.prompt_history_loading);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionRestoreFailed {
-            agent_id: id,
-            error: "boom".into(),
-        }),
-        &mut app,
-    );
-    assert!(effects.is_empty());
-    assert!(!app.agents[&id].session.prompt_history_loading);
-    assert!(!app.agents[&id].session.loading_replay);
-}
-#[test]
-fn resume_focuses_existing_agent_for_open_session() {
-    let mut app = test_app();
-    dispatch(Action::NewSession, &mut app);
-    let agent_0 = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_0,
-            session_id: "wt-sess-1".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    {
-        let agent = app.agents.get_mut(&agent_0).unwrap();
-        agent
-            .subagent_sessions
-            .insert("child-1".into(), make_test_subagent("child-1", "sa-1"));
-        agent.active_subagent = Some("child-1".into());
-    }
-    dispatch(Action::NewSession, &mut app);
-    let agent_1 = AgentId(1);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_1,
-            session_id: "new-sess-2".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    let count_before = app.agents.len();
-    let effects = dispatch(
-        Action::LoadSession("wt-sess-1".into(), None, false),
-        &mut app,
-    );
-    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == agent_0));
-    assert_eq!(app.agents.len(), count_before);
-    assert!(effects.is_empty());
-    assert!(app.agents[&agent_0].active_subagent.is_none());
-    assert_eq!(
-        app.agents[&agent_0].session.session_id,
-        Some(acp::SessionId::new("wt-sess-1"))
-    );
-    assert_eq!(
-        app.agents[&agent_1].session.session_id,
-        Some(acp::SessionId::new("new-sess-2"))
-    );
-}
-#[test]
-fn resume_unknown_session_still_creates_new_agent() {
-    let mut app = test_app();
-    dispatch(Action::NewSession, &mut app);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: AgentId(0),
-            session_id: "sess-aaa".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    let effects = dispatch(
-        Action::LoadSession("sess-never-open".into(), None, false),
-        &mut app,
-    );
-    let new_id = AgentId(1);
-    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == new_id));
-    assert_eq!(app.agents.len(), 2);
-    assert!(effects.iter().any(|e| matches!(
-        e,
-        Effect::LoadSession {
-            agent_id,
-            session_id,
-            ..
-        } if *agent_id == new_id && session_id == "sess-never-open"
-    )));
-}
-/// Stale `attached_agent` (not equal to visible agent) must not re-arm overlay.
-#[test]
-fn resume_open_session_does_not_rearm_stale_overlay() {
-    let mut app = test_app();
-    dispatch(Action::NewSession, &mut app);
-    let agent_0 = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_0,
-            session_id: "sess-a".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    dispatch(Action::NewSession, &mut app);
-    let agent_1 = AgentId(1);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_1,
-            session_id: "sess-b".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    ensure_dashboard_state(&mut app);
-    app.active_view = ActiveView::Agent(agent_1);
-    app.dashboard.as_mut().unwrap().attached_agent = Some(agent_0);
-    let effects = dispatch(Action::LoadSession("sess-b".into(), None, false), &mut app);
-    assert!(effects.is_empty());
-    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == agent_1));
-    assert_eq!(
-        app.dashboard.as_ref().unwrap().attached_agent,
-        Some(agent_0)
-    );
-}
-/// Conversation resume must not focus a Build agent that shares the same id.
-#[test]
-fn resume_conversation_does_not_focus_build_id_collision() {
-    let mut app = test_app();
-    dispatch(Action::NewSession, &mut app);
-    let agent_0 = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_0,
-            session_id: "shared-id".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    assert!(!app.agents[&agent_0].chat_kind);
-    let count_before = app.agents.len();
-    let effects = dispatch(
-        Action::LoadSession("shared-id".into(), None, true),
-        &mut app,
-    );
-    assert_eq!(app.agents.len(), count_before + 1);
-    assert!(effects.iter().any(|e| matches!(
-        e,
-        Effect::LoadSession {
-            session_id,
-            chat_kind: true,
-            ..
-        } if session_id == "shared-id"
-    )));
-    assert!(!app.agents[&agent_0].chat_kind);
-}
-#[test]
-fn duplicate_load_unbind_invalidates_old_minimal_btw_response() {
-    let mut app = test_app();
-    app.screen_mode = crate::app::ScreenMode::Minimal;
-    dispatch(Action::NewSession, &mut app);
-    let old_owner = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: old_owner,
-            session_id: "shared-id".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    let request_id = match dispatch(Action::SendBtw("old question".into()), &mut app).as_slice() {
-        [
-            Effect::SendBtw {
-                minimal_request_id: Some(id),
-                ..
-            },
-        ] => *id,
-        other => panic!("expected correlated minimal /btw effect, got {other:?}"),
-    };
-    dispatch(
-        Action::LoadSession("shared-id".into(), None, true),
-        &mut app,
-    );
-    assert!(app.agents[&old_owner].session.session_id.is_none());
-    assert!(app.agents[&old_owner].btw_state.is_none());
-    assert!(app.agents[&old_owner].minimal_btw_lifecycle.is_none());
-    dispatch(
-        Action::TaskComplete(TaskResult::BtwResponse {
-            agent_id: old_owner,
-            result: Ok("old answer".into()),
-            minimal_request_id: Some(request_id),
-        }),
-        &mut app,
-    );
-    assert!(app.agents[&old_owner].btw_state.is_none());
-    assert!(app.agents[&old_owner].minimal_btw_lifecycle.is_none());
-}
-/// Under sticky `--chat`, agents stamp `chat_kind=true` even for build loads;
-/// resume with conversation-entry false must still focus the open agent.
-#[test]
-fn resume_under_chat_mode_focuses_despite_entry_false() {
-    let mut app = test_app();
-    app.chat_mode = true;
-    dispatch(Action::NewSession, &mut app);
-    let agent_0 = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_0,
-            session_id: "chat-mode-sess".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    app.agents.get_mut(&agent_0).unwrap().chat_kind = true;
-    dispatch(Action::NewSession, &mut app);
-    let agent_1 = AgentId(1);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_1,
-            session_id: "other".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    app.agents.get_mut(&agent_1).unwrap().chat_kind = true;
-    let count_before = app.agents.len();
-    let effects = dispatch(
-        Action::LoadSession("chat-mode-sess".into(), None, false),
-        &mut app,
-    );
-    assert!(effects.is_empty());
-    assert_eq!(app.agents.len(), count_before);
-    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == agent_0));
-}
-/// Resuming the agent that `attached_agent` already points at must focus_row.
-#[test]
-fn resume_stale_attached_target_focuses_dashboard_row() {
-    use crate::views::dashboard::DashboardRowId;
-    let mut app = test_app();
-    dispatch(Action::NewSession, &mut app);
-    let agent_0 = AgentId(0);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_0,
-            session_id: "sess-a".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    dispatch(Action::NewSession, &mut app);
-    let agent_1 = AgentId(1);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: agent_1,
-            session_id: "sess-b".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    ensure_dashboard_state(&mut app);
-    app.active_view = ActiveView::Agent(agent_1);
-    app.dashboard.as_mut().unwrap().attached_agent = Some(agent_0);
-    app.dashboard
-        .as_mut()
-        .unwrap()
-        .focus_row(DashboardRowId::TopLevel(agent_1));
-    let effects = dispatch(Action::LoadSession("sess-a".into(), None, false), &mut app);
-    assert!(effects.is_empty());
-    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == agent_0));
-    assert_eq!(
-        app.dashboard.as_ref().unwrap().attached_agent,
-        Some(agent_0)
-    );
-    assert_eq!(
-        app.dashboard.as_ref().unwrap().selected,
-        Some(DashboardRowId::TopLevel(agent_0))
-    );
-}
-/// After SessionLoadFailed, retrying resume must reissue LoadSession.
-#[test]
-fn resume_after_load_failed_reissues_load() {
-    let mut app = test_app();
-    let effects = dispatch(
-        Action::LoadSession("fail-then-retry".into(), None, false),
-        &mut app,
-    );
-    let agent_0 = AgentId(0);
-    assert!(effects.iter().any(|e| matches!(
-        e,
-        Effect::LoadSession { agent_id, .. } if *agent_id == agent_0
-    )));
-    assert!(app.agents[&agent_0].loading_placeholder_id.is_some());
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionLoadFailed {
-            agent_id: agent_0,
-            session_id: acp::SessionId::new("fail-then-retry"),
-            error: "transient".into(),
-        }),
-        &mut app,
-    );
-    assert!(!app.agents[&agent_0].session.loading_replay);
-    assert!(app.agents[&agent_0].loading_placeholder_id.is_some());
-    let count_before = app.agents.len();
-    let effects = dispatch(
-        Action::LoadSession("fail-then-retry".into(), None, false),
-        &mut app,
-    );
-    assert!(
-        effects.iter().any(|e| matches!(
-            e,
-            Effect::LoadSession {
-                agent_id,
-                session_id,
-                ..
-            } if *agent_id != agent_0 && session_id == "fail-then-retry"
-        )),
-        "retry after failure must emit LoadSession for a new agent, got {effects:?}"
-    );
-    assert_eq!(app.agents.len(), count_before + 1);
-}
-#[test]
-fn session_restored_clears_stale_session_id() {
-    let mut app = test_app();
-    dispatch(Action::NewSession, &mut app);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionCreated {
-            agent_id: AgentId(0),
-            session_id: "remote-sess".into(),
-            models: None,
-        }),
-        &mut app,
-    );
-    dispatch(Action::NewSession, &mut app);
-    dispatch(
-        Action::TaskComplete(TaskResult::SessionRestored {
-            agent_id: AgentId(1),
-            local_session_id: "remote-sess".into(),
-        }),
-        &mut app,
-    );
-    assert_eq!(app.agents[&AgentId(0)].session.session_id, None);
-    assert_eq!(
-        app.agents[&AgentId(1)].session.session_id,
-        Some(acp::SessionId::new("remote-sess"))
-    );
-}
-#[test]
-fn project_picker_skip_falls_back_to_original_cwd() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    let qv = QuestionViewState::new("test".into(), vec![], StashedPrompt::default());
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![PathBuf::from("/projects/a")],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 1,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, true);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            stashed_prompt,
-            disable_picker,
-        }) => {
-            assert_eq!(path, PathBuf::from("/home/user"));
-            assert_eq!(stashed_prompt, "hello");
-            assert!(!disable_picker);
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[test]
-fn project_picker_freeform_path_used_when_no_option_selected() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
-    let q = Question {
-        question: "Pick".into(),
-        id: None,
-        options: vec![QuestionOption {
-            label: "A".into(),
-            description: String::new(),
-            preview: None,
-            id: None,
-        }],
-        multi_select: Some(false),
-    };
-    let mut qv = QuestionViewState::new("test".into(), vec![q], StashedPrompt::default());
-    qv.per_question_freeform[0] = "~/my-project".into();
-    qv.per_question_freeform_selected[0] = true;
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![PathBuf::from("/fallback")],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 1,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, false);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            disable_picker,
-            ..
-        }) => {
-            let expanded = shellexpand::tilde("~/my-project");
-            assert_eq!(path, PathBuf::from(expanded.as_ref()));
-            assert!(!disable_picker, "freeform selection must not opt out");
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[test]
-fn project_picker_freeform_overrides_dont_ask() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionSelection, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
-    let opt = |label: &str| QuestionOption {
-        label: label.into(),
-        description: String::new(),
-        preview: None,
-        id: None,
-    };
-    let q = Question {
-        question: "Pick".into(),
-        id: None,
-        options: vec![opt("a (current)"), opt("Don't ask me again")],
-        multi_select: Some(false),
-    };
-    let mut qv = QuestionViewState::new("test".into(), vec![q], StashedPrompt::default());
-    qv.selections[0] = QuestionSelection::Single(Some(1));
-    qv.per_question_freeform[0] = "~/my-project".into();
-    qv.per_question_freeform_selected[0] = true;
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![PathBuf::from("/home/user")],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 1,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, false);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            disable_picker,
-            ..
-        }) => {
-            let expanded = shellexpand::tilde("~/my-project");
-            assert_eq!(path, PathBuf::from(expanded.as_ref()));
-            assert!(
-                !disable_picker,
-                "freeform must take precedence over dont-ask"
-            );
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[test]
-fn needs_project_picker_false_when_disabled() {
-    let mut app = project_picker_app();
-    assert!(
-        app.needs_project_picker(),
-        "baseline: non-project dir, not yet shown"
-    );
-    app.project_picker_disabled = true;
-    assert!(
-        !app.needs_project_picker(),
-        "opt-out must suppress the picker before the cwd check"
-    );
-}
-#[test]
-fn project_picker_dont_ask_again_sets_disable_flag() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionSelection, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
-    let opt = |label: &str| QuestionOption {
-        label: label.into(),
-        description: String::new(),
-        preview: None,
-        id: None,
-    };
-    let q = Question {
-        question: "Pick".into(),
-        id: None,
-        options: vec![opt("a (current)"), opt("Don't ask me again")],
-        multi_select: Some(false),
-    };
-    let mut qv = QuestionViewState::new("test".into(), vec![q], StashedPrompt::default());
-    qv.selections[0] = QuestionSelection::Single(Some(1));
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![PathBuf::from("/home/user")],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 1,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, false);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            disable_picker,
-            ..
-        }) => {
-            assert_eq!(path, PathBuf::from("/home/user"));
-            assert!(disable_picker, "don't-ask option must set disable_picker");
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[test]
-fn project_picker_recent_project_selection_uses_that_path() {
-    use crate::views::prompt_widget::StashedPrompt;
-    use crate::views::question_view::{LocalQuestionKind, QuestionSelection, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
-    let opt = |label: &str| QuestionOption {
-        label: label.into(),
-        description: String::new(),
-        preview: None,
-        id: None,
-    };
-    let q = Question {
-        question: "Pick".into(),
-        id: None,
-        options: vec![
-            opt("home (current)"),
-            opt("alpha"),
-            opt("Don't ask me again"),
-        ],
-        multi_select: Some(false),
-    };
-    let mut qv = QuestionViewState::new("test".into(), vec![q], StashedPrompt::default());
-    qv.selections[0] = QuestionSelection::Single(Some(1));
-    let kind = LocalQuestionKind::ProjectSelect {
-        resolved_paths: vec![
-            PathBuf::from("/home/user"),
-            PathBuf::from("/projects/alpha"),
-        ],
-        original_cwd: PathBuf::from("/home/user"),
-        stashed_prompt: "hello".into(),
-        dont_ask_index: 2,
-    };
-    let outcome = crate::app::agent_view::translate_local_submit_for_test(&qv, kind, false);
-    match outcome {
-        crate::app::app_view::InputOutcome::Action(Action::ProjectSelected {
-            path,
-            disable_picker,
-            ..
-        }) => {
-            assert_eq!(path, PathBuf::from("/projects/alpha"));
-            assert!(
-                !disable_picker,
-                "picking a recent project must not disable the picker"
-            );
-        }
-        other => panic!("expected ProjectSelected, got {other:?}"),
-    }
-}
-#[tokio::test]
-async fn dispatch_project_selected_disable_picker_persists() {
-    let mut app = project_picker_app();
-    dispatch(Action::NewSession, &mut app);
-    let dir = std::env::temp_dir();
-    let selected = dunce::canonicalize(&dir).unwrap_or(dir);
-    let effects = dispatch(
-        Action::ProjectSelected {
-            path: selected,
-            stashed_prompt: "hello".into(),
-            disable_picker: true,
-        },
-        &mut app,
-    );
-    assert!(app.project_picker_disabled, "in-memory flag must be set");
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistProjectPickerDisabled { disabled: true })),
-        "must emit a persist effect for the opt-out",
-    );
-}
-#[test]
-fn minimal_new_session_queues_welcome_card() {
-    let mut app = test_app();
-    app.screen_mode = crate::app::ScreenMode::Minimal;
-    let _ = dispatch(Action::NewSession, &mut app);
-    assert!(
-        app.minimal_state.welcome_pending,
-        "a fresh minimal session should queue the welcome card"
-    );
-}
-#[test]
-fn non_minimal_new_session_does_not_queue_welcome_card() {
-    let mut app = test_app();
-    app.screen_mode = crate::app::ScreenMode::Inline;
-    let _ = dispatch(Action::NewSession, &mut app);
-    assert!(
-        !app.minimal_state.welcome_pending,
-        "the welcome card is minimal-only"
-    );
-}
-/// Picking a conversation row dispatches a direct chat load — never local
-/// resolution or GCS restore.
+/// Picking a conversation row dispatches a direct chat load, never local resolution or GCS restore.
 #[test]
 fn pick_conversation_row_dispatches_direct_chat_load() {
     let mut app = test_app_with_agent();
@@ -1486,32 +285,13 @@ fn pick_conversation_row_dispatches_direct_chat_load() {
     let effects = dispatch(Action::PickSession(0), &mut app);
     assert!(
         matches!(
-            &effects[..],
+            effects.as_slice(),
             [Effect::LoadSession {
                 session_id,
                 session_cwd: None,
                 chat_kind: true,
                 ..
             }] if session_id == "conv-pick-1"
-        ),
-        "expected a direct chat LoadSession, got {effects:?}"
-    );
-}
-/// Welcome-screen variant of the conversation-row pick.
-#[test]
-fn pick_conversation_row_from_welcome_dispatches_direct_chat_load() {
-    let mut app = test_app();
-    app.session_picker_entries = Some(vec![make_conversation_entry("conv-pick-2")]);
-    let effects = dispatch(Action::PickSession(0), &mut app);
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::LoadSession {
-                session_id,
-                session_cwd: None,
-                chat_kind: true,
-                ..
-            }] if session_id == "conv-pick-2"
         ),
         "expected a direct chat LoadSession, got {effects:?}"
     );
@@ -1527,14 +307,13 @@ fn pick_remote_build_row_still_restores() {
     let effects = dispatch(Action::PickSession(0), &mut app);
     assert!(
         matches!(
-            &effects[..],
+            effects.as_slice(),
             [Effect::RestoreAndLoadSession { session_id, .. }] if *session_id == id
         ),
         "expected RestoreAndLoadSession, got {effects:?}"
     );
 }
-/// A content-search hit matching a co-displayed conversation row also
-/// dispatches the direct chat load.
+/// A content-search hit that matches a conversation row shown in the same picker also dispatches the direct chat load.
 #[test]
 fn pick_content_session_conversation_row_dispatches_direct_chat_load() {
     let mut app = test_app_with_agent();
@@ -1548,7 +327,7 @@ fn pick_content_session_conversation_row_dispatches_direct_chat_load() {
     );
     assert!(
         matches!(
-            &effects[..],
+            effects.as_slice(),
             [Effect::LoadSession {
                 session_id,
                 session_cwd: None,
@@ -1559,8 +338,7 @@ fn pick_content_session_conversation_row_dispatches_direct_chat_load() {
         "expected a direct chat LoadSession, got {effects:?}"
     );
 }
-/// Worktree resume is refused for conversation rows (no cwd to check out);
-/// the refusal must not set the one-shot chat bit.
+/// Worktree resume is refused for conversation rows (no cwd to check out); the refusal must not set the one-shot chat bit.
 #[test]
 fn pick_session_in_worktree_refuses_conversation_row() {
     let mut app = test_app_with_agent();
@@ -1573,178 +351,7 @@ fn pick_session_in_worktree_refuses_conversation_row() {
     );
     assert!(read_toast(&app).contains("worktree"));
 }
-/// Chat mode replaces the local FTS5 deep search with a debounced
-/// server-side list refetch; Build mode keeps the deep search untouched.
-#[test]
-fn chat_mode_query_change_schedules_debounced_search() {
-    let mut app = test_app();
-    app.session_picker_entries = Some(vec![make_conversation_entry("conv-ds-1")]);
-    app.session_picker_state.set_query("abc");
-    app.chat_mode = true;
-    let effects = dispatch(Action::TriggerDeepSearch, &mut app);
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::DebounceSessionSearch { query, seq: 1 }] if query == "abc"
-        ),
-        "chat-mode query change must arm the search debounce, got {effects:?}"
-    );
-    assert_eq!(app.session_picker_list_seq, 1, "trigger must bump the seq");
-    assert!(
-        app.session_picker_content_loading,
-        "arming the search must raise the in-flight indicator"
-    );
-    app.chat_mode = false;
-    let effects = dispatch(Action::ForceDeepSearch, &mut app);
-    assert!(
-        matches!(&effects[..], [Effect::DeepSearchSessions { .. }]),
-        "Build-mode deep search unchanged, got {effects:?}"
-    );
-    assert_eq!(
-        app.session_picker_list_seq, 1,
-        "Build-mode search must not bump the list seq"
-    );
-}
-/// A current-seq debounce expiry issues the fetch with the query; a
-/// stale one (superseded by newer typing) is dropped.
-#[test]
-fn chat_mode_debounce_expiry_fetches_current_and_drops_stale() {
-    let mut app = test_app();
-    app.chat_mode = true;
-    app.session_picker_state.set_query("abc");
-    let _ = dispatch(Action::TriggerDeepSearch, &mut app);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionSearchDebounceExpired {
-            query: "abc".into(),
-            seq: 1,
-        }),
-        &mut app,
-    );
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::FetchSessionList { query: Some(q), seq: 1 }] if q == "abc"
-        ),
-        "current debounce expiry must fetch with the query, got {effects:?}"
-    );
-    app.session_picker_state.set_query("abcd");
-    let _ = dispatch(Action::TriggerDeepSearch, &mut app);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionSearchDebounceExpired {
-            query: "abc".into(),
-            seq: 1,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "stale debounce expiry must not fetch, got {effects:?}"
-    );
-}
-/// Build mode: any 2+ char query arms the deep-search debounce — abundant
-/// title matches must not suppress the content search (users read that as
-/// "content search doesn't exist"); Ctrl+/ still searches immediately.
-#[test]
-fn build_mode_query_arms_debounce_despite_title_hits_and_force_skips_it() {
-    let mut app = test_app();
-    assert!(!app.chat_mode);
-    app.session_picker_entries = Some(vec![
-        make_picker_entry("prost-1", "/r"),
-        make_picker_entry("prost-2", "/r"),
-        make_picker_entry("prost-3", "/r"),
-    ]);
-    app.session_picker_state.set_query("prost");
-    let effects = dispatch(Action::TriggerDeepSearch, &mut app);
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::DebounceSessionSearch { query, seq: 1 }] if query == "prost"
-        ),
-        "unforced query must arm the debounce even with 3+ title hits, got {effects:?}"
-    );
-    assert!(
-        app.session_picker_content_loading,
-        "arming the debounce must raise the in-flight indicator"
-    );
-    assert_eq!(
-        app.session_picker_list_seq, 0,
-        "Build-mode search must not touch the chat list seq"
-    );
-    let effects = dispatch(Action::ForceDeepSearch, &mut app);
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::DeepSearchSessions { query, seq: 2 }] if query == "prost"
-        ),
-        "forced search must skip the debounce, got {effects:?}"
-    );
-}
-/// Build mode: a sub-2-char query clears the content results AND
-/// invalidates the previously armed debounce, so its late expiry can't
-/// resurrect the search.
-#[test]
-fn build_mode_short_query_clears_results_and_invalidates_armed_debounce() {
-    let mut app = test_app();
-    app.session_picker_content_results = Some(vec![]);
-    app.session_picker_state.set_query("ab");
-    let _ = dispatch(Action::TriggerDeepSearch, &mut app);
-    app.session_picker_state.set_query("a");
-    let effects = dispatch(Action::TriggerDeepSearch, &mut app);
-    assert!(
-        effects.is_empty(),
-        "short query emits nothing, got {effects:?}"
-    );
-    assert!(app.session_picker_content_results.is_none());
-    assert!(!app.session_picker_content_loading);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionSearchDebounceExpired {
-            query: "ab".into(),
-            seq: 1,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "expiry armed before the clear must not search, got {effects:?}"
-    );
-}
-/// Build mode: a current-seq debounce expiry dispatches the deep search; one
-/// superseded by newer typing is dropped.
-#[test]
-fn build_mode_debounce_expiry_searches_current_and_drops_stale() {
-    let mut app = test_app();
-    app.session_picker_state.set_query("abc");
-    let _ = dispatch(Action::TriggerDeepSearch, &mut app);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionSearchDebounceExpired {
-            query: "abc".into(),
-            seq: 1,
-        }),
-        &mut app,
-    );
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::DeepSearchSessions { query, seq: 1 }] if query == "abc"
-        ),
-        "current expiry must dispatch the deep search, got {effects:?}"
-    );
-    app.session_picker_state.set_query("abcd");
-    let _ = dispatch(Action::TriggerDeepSearch, &mut app);
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionSearchDebounceExpired {
-            query: "abc".into(),
-            seq: 1,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "stale expiry must be dropped, got {effects:?}"
-    );
-}
-/// Modal `/resume` surface: the debounce expiry validates against the
-/// MODAL's deep-search seq (the welcome counter still sits at 0 here).
+/// Modal `/resume` surface: the debounce expiry validates against the MODAL's deep-search seq (the welcome counter still sits at 0 here).
 #[test]
 fn build_mode_modal_debounce_expiry_validates_modal_seq() {
     use crate::views::modal::ActiveModal;
@@ -1759,11 +366,16 @@ fn build_mode_modal_debounce_expiry_validates_modal_seq() {
     }
     let effects = dispatch(Action::TriggerDeepSearch, &mut app);
     assert!(
-        matches!(&effects[..], [Effect::DebounceSessionSearch { seq: 1, .. }]),
+        matches!(
+            effects.as_slice(),
+            [Effect::DebounceSessionSearch { seq: 1, .. }]
+        ),
         "modal query must arm the debounce, got {effects:?}"
     );
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionSearchDebounceExpired {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             query: "abc".into(),
             seq: 1,
         }),
@@ -1771,41 +383,15 @@ fn build_mode_modal_debounce_expiry_validates_modal_seq() {
     );
     assert!(
         matches!(
-            &effects[..],
-            [Effect::DeepSearchSessions { query, seq: 1 }] if query == "abc"
+            effects.as_slice(),
+            [Effect::DeepSearchSessions { query, seq: 1, .. }] if query == "abc"
         ),
         "expiry must validate against the modal seq, got {effects:?}"
     );
 }
-/// Dismissing the welcome picker invalidates an armed deep-search debounce:
-/// its late expiry must not search a picker that no longer exists, and the
-/// spinner flag armed with it must drop (it drives fast ticking).
-#[test]
-fn build_mode_picker_close_invalidates_armed_debounce() {
-    let mut app = test_app();
-    app.session_picker_state.set_query("abc");
-    let _ = dispatch(Action::TriggerDeepSearch, &mut app);
-    assert!(app.session_picker_content_loading);
-    let _ = dispatch(Action::SessionPickerClosed, &mut app);
-    assert!(
-        !app.session_picker_content_loading,
-        "dismissal must drop the armed spinner flag"
-    );
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::SessionSearchDebounceExpired {
-            query: "abc".into(),
-            seq: 1,
-        }),
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "expiry armed before the close must not search, got {effects:?}"
-    );
-}
-/// Modal-armed debounce + modal close: the dismissal bump lands on the
-/// WELCOME counter and collides with the carried modal seq (both 1 here) —
-/// the expiry must still be dropped because no picker surface is live.
+/// The modal arms a debounce, then closes.
+/// The dismissal bump lands on the WELCOME counter and collides with the carried modal seq (both 1 here).
+/// The expiry must still be dropped because no picker surface is live.
 #[test]
 fn build_mode_modal_close_drops_armed_debounce_despite_seq_collision() {
     use crate::views::modal::ActiveModal;
@@ -1823,6 +409,7 @@ fn build_mode_modal_close_drops_armed_debounce_despite_seq_collision() {
         app.session_picker_deep_search_seq, 0,
         "modal arm must not touch the welcome counter"
     );
+    let armed_generation = modal_picker_generation(&app);
     get_active_agent_mut(&mut app)
         .expect("active agent")
         .active_modal = None;
@@ -1833,6 +420,8 @@ fn build_mode_modal_close_drops_armed_debounce_despite_seq_collision() {
     );
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionSearchDebounceExpired {
+            host: SessionPickerHost::AgentModal,
+            generation: armed_generation,
             query: "abc".into(),
             seq: 1,
         }),
@@ -1843,45 +432,7 @@ fn build_mode_modal_close_drops_armed_debounce_despite_seq_collision() {
         "modal-armed expiry must not search after the modal closed, got {effects:?}"
     );
 }
-/// Ctrl+/ (forced search) skips the debounce; clearing the query
-/// immediately refetches the unfiltered list (`query: None`) — restoring
-/// the recent list must not wait out a debounce.
-#[test]
-fn chat_mode_force_search_fetches_immediately_and_empty_query_unfilters() {
-    let mut app = test_app();
-    app.chat_mode = true;
-    app.session_picker_state.set_query("abc");
-    let effects = dispatch(Action::ForceDeepSearch, &mut app);
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::FetchSessionList { query: Some(q), seq: 1 }] if q == "abc"
-        ),
-        "forced search must fetch without debouncing, got {effects:?}"
-    );
-    assert!(
-        app.session_picker_content_loading,
-        "search fetch must raise the in-flight indicator"
-    );
-    app.session_picker_state.set_query("");
-    let effects = dispatch(Action::TriggerDeepSearch, &mut app);
-    assert!(
-        matches!(
-            &effects[..],
-            [Effect::FetchSessionList {
-                query: None,
-                seq: 2
-            }]
-        ),
-        "cleared query must refetch the unfiltered list immediately (no debounce), got {effects:?}"
-    );
-    assert!(
-        !app.session_picker_content_loading,
-        "unfiltered refetch is not a search — indicator must drop"
-    );
-}
-/// The modal `/resume` picker's query (not the welcome picker's) drives
-/// the chat-mode search when a modal is open.
+/// The modal `/resume` picker's query (not the welcome picker's) drives the chat-mode search when a modal is open.
 #[test]
 fn chat_mode_search_reads_modal_query_first() {
     use crate::views::modal::ActiveModal;
@@ -1899,14 +450,13 @@ fn chat_mode_search_reads_modal_query_first() {
     let effects = dispatch(Action::ForceDeepSearch, &mut app);
     assert!(
         matches!(
-            &effects[..],
+            effects.as_slice(),
             [Effect::FetchSessionList { query: Some(q), .. }] if q == "modal-query"
         ),
         "modal query must win over the welcome picker's, got {effects:?}"
     );
 }
-/// Out-of-order list completions: only the response for the current seq
-/// lands; stale successes and failures are both dropped.
+/// Out-of-order list completions: only the response for the current seq lands; stale successes and failures are both dropped.
 #[test]
 fn stale_session_list_responses_are_dropped() {
     let mut app = test_app_with_agent();
@@ -1917,6 +467,8 @@ fn stale_session_list_responses_are_dropped() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-stale-1")],
             partial: None,
@@ -1931,6 +483,8 @@ fn stale_session_list_responses_are_dropped() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListFailed {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             error: "boom".into(),
             seq: 1,
             query: Some("abc".into()),
@@ -1938,11 +492,13 @@ fn stale_session_list_responses_are_dropped() {
         &mut app,
     );
     assert!(
-        app.agents[&AgentId(0)].toast.is_none(),
+        expect_agent(&app, AgentId(0)).toast.is_none(),
         "stale list failure must not toast"
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-fresh-2")],
             partial: None,
@@ -1969,9 +525,8 @@ fn stale_session_list_responses_are_dropped() {
         "landing the search must drop the in-flight indicator"
     );
 }
-/// Modal `/resume` surface: a current-seq search response replaces the
-/// modal's entries (query-stamped, cursor re-anchored); a stale one
-/// leaves them untouched.
+/// Modal `/resume` surface: a current-seq search response replaces the modal's entries (query-stamped, cursor re-anchored).
+/// A stale one leaves them untouched.
 #[test]
 fn modal_search_response_lands_and_stale_is_dropped() {
     use crate::views::modal::ActiveModal;
@@ -1989,6 +544,8 @@ fn modal_search_response_lands_and_stale_is_dropped() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-hit-1")],
             partial: None,
@@ -2009,7 +566,11 @@ fn modal_search_response_lands_and_stale_is_dropped() {
         else {
             panic!("expected SessionPicker modal with entries");
         };
-        assert_eq!(list[0].id, "conv-hit-1", "search results land in the modal");
+        assert_eq!(
+            list.first().map(|e| e.id.as_str()),
+            Some("conv-hit-1"),
+            "search results land in the modal"
+        );
         assert_eq!(
             entries_query.as_deref(),
             Some("hit"),
@@ -2028,6 +589,8 @@ fn modal_search_response_lands_and_stale_is_dropped() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-stale-m")],
             partial: None,
@@ -2046,7 +609,8 @@ fn modal_search_response_lands_and_stale_is_dropped() {
         panic!("expected SessionPicker modal with entries");
     };
     assert_eq!(
-        list[0].id, "conv-hit-1",
+        list.first().map(|e| e.id.as_str()),
+        Some("conv-hit-1"),
         "stale modal response must be dropped"
     );
     assert!(
@@ -2054,11 +618,9 @@ fn modal_search_response_lands_and_stale_is_dropped() {
         "stale response must not clear the newer search's indicator"
     );
 }
-/// Closing the modal picker invalidates its in-flight chat-mode search:
-/// with the modal gone the response would fall through to the WELCOME
-/// picker fields — whose search box never held the modal's query — leaving
-/// mismatched entries and a stale fetch-query stamp for the next resume
-/// view. The close must bump the seq so the late response is dropped.
+/// With the modal gone the response would fall through to the WELCOME picker fields, whose search box never held the modal's query.
+/// That would leave mismatched entries and a stale fetch-query stamp for the next resume view.
+/// The close must bump the seq so the late response is dropped.
 #[test]
 fn modal_close_drops_in_flight_search_response() {
     use crate::views::modal::ActiveModal;
@@ -2074,6 +636,7 @@ fn modal_close_drops_in_flight_search_response() {
     }
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let seq = app.session_picker_list_seq;
+    let generation = modal_picker_generation(&app);
     get_active_agent_mut(&mut app)
         .expect("active agent")
         .active_modal = None;
@@ -2084,6 +647,8 @@ fn modal_close_drops_in_flight_search_response() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation,
             scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-late-1")],
             partial: None,
@@ -2101,10 +666,8 @@ fn modal_close_drops_in_flight_search_response() {
         "no stale fetch-query stamp may leak to the welcome picker"
     );
 }
-/// Sibling of the close test: PICKING from the modal dismisses it too, so
-/// the same in-flight chat-mode search must be invalidated — otherwise its
-/// late response falls through to the WELCOME picker fields in
-/// `handle_session_list_loaded`'s fallback.
+/// Sibling of the close test: PICKING from the modal dismisses it too, so the same in-flight chat-mode search must be invalidated.
+/// Otherwise its late response falls through to the WELCOME picker fields in `handle_session_list_loaded`'s fallback.
 #[test]
 fn modal_pick_drops_in_flight_search_response() {
     use crate::views::modal::ActiveModal;
@@ -2120,9 +683,10 @@ fn modal_pick_drops_in_flight_search_response() {
     }
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let seq = app.session_picker_list_seq;
+    let generation = modal_picker_generation(&app);
     let effects = dispatch(Action::PickSession(0), &mut app);
     assert!(
-        matches!(&effects[..], [Effect::LoadSession { .. }]),
+        matches!(effects.as_slice(), [Effect::LoadSession { .. }]),
         "pick must still load the session, got {effects:?}"
     );
     assert!(
@@ -2131,6 +695,8 @@ fn modal_pick_drops_in_flight_search_response() {
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation,
             scope: ListScope::Cwd,
             sessions: vec![make_conversation_entry("conv-late-p")],
             partial: None,
@@ -2148,152 +714,131 @@ fn modal_pick_drops_in_flight_search_response() {
         "no stale fetch-query stamp may leak to the welcome picker"
     );
 }
-/// Welcome-screen sibling: Esc closes the picker and must invalidate the
-/// in-flight fetch — otherwise its response repopulates
-/// `session_picker_entries` and visually resurrects the picker the user
-/// just closed.
+/// Build mode: an Only-policy modal fetch completing after close and reopen is dropped by the host and incarnation routing.
+/// It cannot leak its rows or query stamp into the replacement Exclude-policy modal.
 #[test]
-fn welcome_esc_drops_in_flight_fetch_response() {
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    let mut app = test_app();
-    app.chat_mode = true;
-    app.session_picker_entries = Some(vec![make_conversation_entry("conv-w-esc")]);
-    let _ = dispatch(Action::TriggerDeepSearch, &mut app);
-    let seq = app.session_picker_list_seq;
-    let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    let out = app.handle_input(&esc);
-    assert!(
-        matches!(
-            out,
-            crate::app::app_view::InputOutcome::Action(Action::SessionPickerClosed)
-        ),
-        "welcome Esc must surface SessionPickerClosed, got {out:?}"
-    );
-    assert!(
-        app.session_picker_entries.is_none(),
-        "Esc clears the welcome picker"
-    );
-    let _ = dispatch(Action::SessionPickerClosed, &mut app);
-    let _ = dispatch(
-        Action::TaskComplete(TaskResult::SessionListLoaded {
-            scope: ListScope::Cwd,
-            sessions: vec![make_conversation_entry("conv-late-w")],
-            partial: None,
-            seq,
-            query: None,
-        }),
-        &mut app,
-    );
-    assert!(
-        app.session_picker_entries.is_none(),
-        "in-flight fetch must not repopulate the closed welcome picker"
-    );
-}
-/// Build-mode sibling of the chat Esc test, pinning Esc-during-load: with the
-/// fast foreign lane landed (hidden by the Codel default → CTA) and the native
-/// fetch still in flight, Esc must really dismiss the picker — drop the
-/// loading flag (a lingering flag holds `show_picker` in a spinner limbo that
-/// ignores input) and stale the fetch so its late response cannot resurrect
-/// the picker.
-#[test]
-fn build_welcome_esc_during_load_dismisses_without_resurrection() {
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    let mut app = test_app();
-    assert!(!app.chat_mode);
-    let _ = dispatch(Action::FetchSessionList, &mut app);
-    let seq = app.session_picker_list_seq;
-    assert!(app.session_picker_loading);
-    let mut foreign = make_picker_entry("claude-1", "/repo");
-    foreign.source = "claude".into();
-    app.session_picker_entries = Some(vec![foreign]);
-    let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    let out = app.handle_input(&esc);
-    assert!(
-        matches!(
-            out,
-            crate::app::app_view::InputOutcome::Action(Action::SessionPickerClosed)
-        ),
-        "welcome Esc must surface SessionPickerClosed, got {out:?}"
-    );
-    assert!(
-        app.session_picker_entries.is_none(),
-        "Esc clears the welcome picker"
-    );
-    let _ = dispatch(Action::SessionPickerClosed, &mut app);
-    assert!(
-        !app.session_picker_loading,
-        "dismissal must end the loading limbo (`show_picker` keys off it)"
-    );
-    let _ = dispatch(
-        Action::TaskComplete(TaskResult::SessionListLoaded {
-            scope: ListScope::Cwd,
-            sessions: vec![make_picker_entry("native-late", "/repo")],
-            partial: None,
-            seq,
-            query: None,
-        }),
-        &mut app,
-    );
-    assert!(
-        app.session_picker_entries.is_none(),
-        "late native response must not resurrect the closed picker"
-    );
-}
-/// The spinner-only loading picker (nothing landed yet) still owns Esc: it
-/// must dismiss the picker instead of dead-keying into the menu it covers.
-#[test]
-fn build_welcome_esc_dismisses_spinner_only_loading_picker() {
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    let mut app = test_app();
-    let _ = dispatch(Action::FetchSessionList, &mut app);
-    assert!(app.session_picker_loading);
-    assert!(app.session_picker_entries.is_none());
-    let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    let out = app.handle_input(&esc);
-    assert!(
-        matches!(
-            out,
-            crate::app::app_view::InputOutcome::Action(Action::SessionPickerClosed)
-        ),
-        "Esc on the loading picker must close it, got {out:?}"
-    );
-    let _ = dispatch(Action::SessionPickerClosed, &mut app);
-    assert!(!app.session_picker_loading, "picker fully dismissed");
-}
-/// Build-mode canary: modal close must not bump the list seq — an in-flight
-/// plain fetch keeps its pre-existing land-after-close behavior.
-#[test]
-fn build_mode_modal_close_does_not_invalidate_plain_fetch() {
+fn build_mode_close_and_reopen_drop_opposite_policy_response() {
+    use codel_shell::session::unified_list::HeadlessPolicy;
     let mut app = test_app_with_agent();
     assert!(!app.chat_mode);
-    open_session_picker_with(&mut app, vec![make_picker_entry("build-cl-1", "/tmp/repo")]);
-    let seq = app.session_picker_list_seq;
+    let _ = dispatch(Action::ShowSessionPicker, &mut app);
+    let old_generation = modal_picker_generation(&app);
+    let only_effects = dispatch(Action::CycleSessionSourceFilter, &mut app);
+    let [
+        Effect::FetchSessionList {
+            host: SessionPickerHost::AgentModal,
+            generation,
+            seq: only_seq,
+            headless_policy: HeadlessPolicy::Only,
+            ..
+        },
+    ] = only_effects.as_slice()
+    else {
+        panic!("expected modal Headless fetch, got {only_effects:?}");
+    };
+    assert_eq!(*generation, old_generation);
+    let only_seq = *only_seq;
     get_active_agent_mut(&mut app)
         .expect("active agent")
         .active_modal = None;
     let _ = dispatch(Action::SessionPickerClosed, &mut app);
-    assert_eq!(
-        app.session_picker_list_seq, seq,
-        "Build-mode close must not invalidate in-flight plain fetches"
-    );
-    let _ = dispatch(
+    let exclude_effects = dispatch(Action::ShowSessionPicker, &mut app);
+    let Some(Effect::FetchSessionList {
+        host: SessionPickerHost::AgentModal,
+        generation: new_generation,
+        seq: exclude_seq,
+        headless_policy,
+        ..
+    }) = exclude_effects.first()
+    else {
+        panic!("expected reopened picker fetch, got {exclude_effects:?}");
+    };
+    assert_eq!(*headless_policy, HeadlessPolicy::Exclude);
+    assert!(*new_generation > old_generation);
+    assert!(*exclude_seq > only_seq);
+    let new_generation = *new_generation;
+    let exclude_seq = *exclude_seq;
+    let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: old_generation,
             scope: ListScope::Cwd,
-            sessions: vec![make_picker_entry("build-late-1", "/tmp/repo")],
+            sessions: vec![make_picker_entry("stale-generation", "/tmp/repo")],
             partial: None,
-            seq,
+            seq: exclude_seq,
+            query: Some("modal-only".into()),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    let Some(ActiveModal::SessionPicker {
+        entries,
+        entries_query,
+        loading,
+        ..
+    }) = expect_agent(&app, AgentId(0)).active_modal.as_ref()
+    else {
+        panic!("reopened picker missing");
+    };
+    assert!(entries.is_none(), "stale incarnation rows must be dropped");
+    assert!(entries_query.is_none(), "stale query stamp must be dropped");
+    assert!(
+        *loading,
+        "the replacement modal keeps waiting for its fetch"
+    );
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: new_generation,
+            scope: ListScope::Cwd,
+            sessions: vec![make_picker_entry("stale-policy", "/tmp/repo")],
+            partial: None,
+            seq: only_seq,
             query: None,
         }),
         &mut app,
     );
+    assert!(effects.is_empty());
+    let Some(ActiveModal::SessionPicker {
+        entries, loading, ..
+    }) = expect_agent(&app, AgentId(0)).active_modal.as_ref()
+    else {
+        panic!("reopened picker missing");
+    };
     assert!(
-        app.session_picker_entries.is_some(),
-        "Build-mode plain response still lands after close (pre-existing behavior)"
+        entries.is_none(),
+        "obsolete Only-policy rows must be dropped"
     );
+    assert!(
+        *loading,
+        "the replacement modal keeps waiting for its fetch"
+    );
+    assert!(app.session_picker_entries.is_none());
+    assert!(app.session_picker_entries_query.is_none());
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: new_generation,
+            scope: ListScope::Cwd,
+            sessions: vec![make_picker_entry("current", "/tmp/repo")],
+            partial: None,
+            seq: exclude_seq,
+            query: None,
+        }),
+        &mut app,
+    );
+    let Some(ActiveModal::SessionPicker {
+        entries: Some(entries),
+        ..
+    }) = expect_agent(&app, AgentId(0)).active_modal.as_ref()
+    else {
+        panic!("reopened picker missing");
+    };
+    assert_eq!(entries.first().map(|e| e.id.as_str()), Some("current"));
 }
-/// Zero-hit search: a normal outcome — the picker shows an empty list,
-/// never the misleading "No sessions found for this directory" toast
-/// (which would fire on every keystroke). Plain fetches keep the toast.
+/// A zero-hit search is a normal outcome: the picker shows an empty list.
+/// It never shows the misleading "No sessions found for this directory" toast, which would fire on every keystroke.
+/// Plain fetches keep the toast.
 #[test]
 fn zero_hit_search_shows_empty_list_without_toast() {
     let mut app = test_app_with_agent();
@@ -2302,6 +847,8 @@ fn zero_hit_search_shows_empty_list_without_toast() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             scope: ListScope::Cwd,
             sessions: vec![],
             partial: None,
@@ -2317,13 +864,15 @@ fn zero_hit_search_shows_empty_list_without_toast() {
         "zero-hit search keeps an empty (not None) list"
     );
     assert!(
-        app.agents[&AgentId(0)].toast.is_none(),
+        expect_agent(&app, AgentId(0)).toast.is_none(),
         "zero-hit search must not toast"
     );
     assert!(!app.session_picker_content_loading);
     let _ = dispatch(Action::FetchSessionList, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             scope: ListScope::Cwd,
             sessions: vec![],
             partial: None,
@@ -2338,45 +887,8 @@ fn zero_hit_search_shows_empty_list_without_toast() {
         "plain empty fetch keeps the generic toast"
     );
 }
-/// Welcome-surface twin of the modal pick test: a content-only search hit
-/// must be pickable when the entries carry a matching fetch-query stamp.
-#[test]
-fn welcome_server_search_hit_with_unrelated_title_is_pickable() {
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let mut app = test_app();
-    app.chat_mode = true;
-    let mut e = make_conversation_entry("conv-content-w1");
-    e.summary = "Quarterly roadmap notes".into();
-    app.session_picker_entries = Some(vec![e.clone()]);
-    app.session_picker_state.set_query("hit");
-    app.session_picker_entries_query = Some("hit".into());
-    app.session_picker_state.selected = 0;
-    let out = app.handle_input(&enter);
-    assert!(
-        matches!(
-            out,
-            crate::app::app_view::InputOutcome::Action(Action::PickSession(0))
-        ),
-        "welcome content-only search hit must be pickable, got {out:?}"
-    );
-    let mut app = test_app();
-    app.chat_mode = true;
-    app.session_picker_entries = Some(vec![e]);
-    app.session_picker_state.set_query("hit");
-    app.session_picker_state.selected = 0;
-    let out = app.handle_input(&enter);
-    assert!(
-        !matches!(
-            out,
-            crate::app::app_view::InputOutcome::Action(Action::PickSession(_))
-        ),
-        "unstamped welcome entries must still be fuzzy-filtered, got {out:?}"
-    );
-}
-/// A current-seq FAILED search clears the in-flight indicator and the
-/// fuzzy-bypass stamp (a stuck "Searching…" or a stale stamp on the error
-/// state would outlive the entries it described) and surfaces the toast.
+/// A current-seq FAILED search clears the in-flight indicator and the fuzzy-bypass stamp, and shows the toast.
+/// A stuck "Searching…" or a stale stamp on the error state would outlive the entries it described.
 #[test]
 fn current_seq_failed_search_clears_indicator_and_stamp() {
     let mut app = test_app_with_agent();
@@ -2387,6 +899,8 @@ fn current_seq_failed_search_clears_indicator_and_stamp() {
     assert!(app.session_picker_content_loading);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListFailed {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             error: "boom".into(),
             seq: 1,
             query: Some("hit".into()),
@@ -2404,9 +918,8 @@ fn current_seq_failed_search_clears_indicator_and_stamp() {
     assert!(app.session_picker_entries.is_none());
     assert!(read_toast(&app).contains("Couldn't load sessions"));
 }
-/// Modal branch of the gated failure clear: a current-seq FAILED search
-/// clears the modal's indicator and stamp, while a plain (query-less)
-/// failure leaves the modal's deep-search spinner alone.
+/// Modal branch of the gated failure clear: a current-seq FAILED search clears the modal's indicator and stamp.
+/// A plain (query-less) failure leaves the modal's deep-search spinner alone.
 #[test]
 fn modal_failed_search_clears_indicator_and_plain_failure_preserves_spinner() {
     use crate::views::modal::ActiveModal;
@@ -2428,6 +941,8 @@ fn modal_failed_search_clears_indicator_and_plain_failure_preserves_spinner() {
     let _ = dispatch(Action::ForceDeepSearch, &mut app);
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListFailed {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             error: "boom".into(),
             seq: 1,
             query: Some("hit".into()),
@@ -2470,11 +985,13 @@ fn modal_failed_search_clears_indicator_and_plain_failure_preserves_spinner() {
     }
     let effects = dispatch(Action::ForceDeepSearch, &mut app);
     assert!(
-        matches!(&effects[..], [Effect::DeepSearchSessions { .. }]),
+        matches!(effects.as_slice(), [Effect::DeepSearchSessions { .. }]),
         "Build-mode modal deep search armed, got {effects:?}"
     );
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListFailed {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_picker_generation(&app),
             error: "boom".into(),
             seq: app.session_picker_list_seq,
             query: None,
@@ -2493,9 +1010,8 @@ fn modal_failed_search_clears_indicator_and_plain_failure_preserves_spinner() {
         "plain failure must not hide the modal deep-search spinner"
     );
 }
-/// Build-mode canary: `content_loading` belongs to the FTS5 deep search
-/// (guarded by `deep_search_seq`); a plain (query-less) list response or
-/// failure landing mid-deep-search must NOT hide its spinner.
+/// Build-mode canary: `content_loading` belongs to the FTS5 deep search (guarded by `deep_search_seq`).
+/// A plain (query-less) list response or failure landing while the deep search runs must NOT hide its spinner.
 #[test]
 fn build_mode_list_response_preserves_deep_search_spinner() {
     let mut app = test_app_with_agent();
@@ -2503,12 +1019,14 @@ fn build_mode_list_response_preserves_deep_search_spinner() {
     app.session_picker_state.set_query("abc");
     let effects = dispatch(Action::ForceDeepSearch, &mut app);
     assert!(
-        matches!(&effects[..], [Effect::DeepSearchSessions { .. }]),
+        matches!(effects.as_slice(), [Effect::DeepSearchSessions { .. }]),
         "Build-mode deep search armed, got {effects:?}"
     );
     assert!(app.session_picker_content_loading, "deep search in flight");
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             scope: ListScope::Cwd,
             sessions: vec![make_picker_entry("local-1", "/r")],
             partial: None,
@@ -2524,6 +1042,8 @@ fn build_mode_list_response_preserves_deep_search_spinner() {
     assert!(app.session_picker_entries.is_some(), "entries still land");
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListFailed {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
             error: "boom".into(),
             seq: app.session_picker_list_seq,
             query: None,
@@ -2535,84 +1055,414 @@ fn build_mode_list_response_preserves_deep_search_spinner() {
         "plain list failure must not hide the deep-search spinner"
     );
 }
-/// Build-mode canary: plain picker fetches never bump the list seq, so two
-/// rapid picker opens keep their pre-existing last-write-wins behavior —
-/// BOTH responses land in arrival order instead of the superseded one being
-/// dropped as stale (the stale-drop is chat-search machinery).
+/// Picker incarnation generations: every fetch reallocates the welcome picker's generation.
+/// A fetch with the modal open overwrites the modal's constructed 0 placeholder with a fresh allocation (distinct from the welcome one).
+/// A dismissal reallocates the welcome generation again.
 #[test]
-fn build_mode_rapid_plain_fetches_keep_last_write_wins() {
-    let mut app = test_app();
-    assert!(!app.chat_mode);
-    let first = dispatch(Action::FetchSessionList, &mut app);
-    let second = dispatch(Action::FetchSessionList, &mut app);
-    for effects in [&first, &second] {
-        assert!(
-            matches!(
-                &effects[..],
-                [Effect::FetchSessionList {
-                    query: None,
-                    seq: 0
-                }]
-            ),
-            "Build-mode plain fetch must not bump the seq, got {effects:?}"
-        );
-    }
-    assert_eq!(
-        app.session_picker_list_seq, 0,
-        "Build mode never bumps the list seq"
+fn picker_generations_reallocate_on_fetch_and_dismissal() {
+    use crate::views::modal::ActiveModal;
+    let mut app = test_app_with_agent();
+    assert_eq!(app.session_picker_generation, 0);
+    let _ = dispatch(Action::FetchSessionList, &mut app);
+    let welcome_after_fetch = app.session_picker_generation;
+    assert!(welcome_after_fetch > 0, "fetch must allocate a generation");
+    let _ = dispatch(Action::ShowSessionPicker, &mut app);
+    let Some(&ActiveModal::SessionPicker { generation, .. }) = get_active_agent(&app)
+        .expect("active agent")
+        .active_modal
+        .as_ref()
+    else {
+        panic!("expected SessionPicker modal");
+    };
+    assert!(
+        generation > welcome_after_fetch,
+        "open must overwrite the modal's 0 placeholder with a fresh allocation"
     );
-    let _ = dispatch(
-        Action::TaskComplete(TaskResult::SessionListLoaded {
-            scope: ListScope::Cwd,
-            sessions: vec![make_picker_entry("build-first", "/r")],
-            partial: None,
-            seq: 0,
-            query: None,
-        }),
-        &mut app,
+    assert!(
+        app.session_picker_generation > welcome_after_fetch,
+        "the modal-open fetch reallocates the welcome generation too"
     );
-    assert_eq!(
-        app.session_picker_entries
-            .as_ref()
-            .map(|e| e[0].id.as_str()),
-        Some("build-first"),
-        "superseded plain response must land (pre-existing behavior)"
+    assert_ne!(
+        generation, app.session_picker_generation,
+        "generations are unique across hosts"
     );
-    let _ = dispatch(
-        Action::TaskComplete(TaskResult::SessionListLoaded {
-            scope: ListScope::Cwd,
-            sessions: vec![make_picker_entry("build-second", "/r")],
-            partial: None,
-            seq: 0,
-            query: None,
-        }),
-        &mut app,
-    );
-    assert_eq!(
-        app.session_picker_entries
-            .as_ref()
-            .map(|e| e[0].id.as_str()),
-        Some("build-second"),
-        "later plain response wins (pre-existing behavior)"
+    get_active_agent_mut(&mut app)
+        .expect("active agent")
+        .active_modal = None;
+    let welcome_before_dismiss = app.session_picker_generation;
+    let _ = dispatch(Action::SessionPickerClosed, &mut app);
+    assert!(
+        app.session_picker_generation > welcome_before_dismiss,
+        "dismissal must reallocate the welcome generation"
     );
 }
-/// Legacy fast path pinned: opening/refreshing the picker fetches with no
-/// query and invalidates any in-flight search fetch.
+/// Reopening the modal picker starts a new incarnation.
+/// The first incarnation's late list response is dropped; the reopened incarnation's own response applies.
+/// The test also pins the producer side: the modal fetch carries the modal host and the modal's live generation.
 #[test]
-fn plain_picker_fetch_carries_no_query_and_bumps_seq() {
-    let mut app = test_app();
-    app.chat_mode = true;
-    app.session_picker_state.set_query("abc");
-    let _ = dispatch(Action::ForceDeepSearch, &mut app);
+fn reopened_modal_drops_prior_incarnation_list_result() {
+    use crate::views::modal::ActiveModal;
+    let mut app = test_app_with_agent();
+    assert!(!app.chat_mode);
+    let effects = dispatch(Action::ShowSessionPicker, &mut app);
+    let first_generation = modal_picker_generation(&app);
+    let [
+        Effect::FetchSessionList {
+            host: SessionPickerHost::AgentModal,
+            generation,
+            seq: first_seq,
+            ..
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("expected modal fetch, got {effects:?}");
+    };
+    assert_eq!(*generation, first_generation);
+    let first_seq = *first_seq;
+    get_active_agent_mut(&mut app)
+        .expect("active agent")
+        .active_modal = None;
+    let _ = dispatch(Action::SessionPickerClosed, &mut app);
+    let second_effects = dispatch(Action::ShowSessionPicker, &mut app);
+    let second_generation = modal_picker_generation(&app);
+    let [
+        Effect::FetchSessionList {
+            host: SessionPickerHost::AgentModal,
+            generation,
+            seq: second_seq,
+            ..
+        },
+    ] = second_effects.as_slice()
+    else {
+        panic!("expected reopened modal fetch, got {second_effects:?}");
+    };
+    assert_eq!(*generation, second_generation);
+    assert!(second_generation > first_generation);
+    assert!(*second_seq > first_seq);
+    let second_seq = *second_seq;
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: first_generation,
+            scope: ListScope::Cwd,
+            sessions: vec![make_picker_entry("stale-open", "/r")],
+            partial: None,
+            seq: first_seq,
+            query: None,
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    {
+        let agent = get_active_agent(&app).expect("active agent");
+        let Some(ActiveModal::SessionPicker {
+            entries, loading, ..
+        }) = agent.active_modal.as_ref()
+        else {
+            panic!("expected SessionPicker modal");
+        };
+        assert!(
+            entries.is_none(),
+            "stale-incarnation response must not land"
+        );
+        assert!(loading, "reopened modal keeps waiting for its own fetch");
+    }
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: second_generation,
+            scope: ListScope::Cwd,
+            sessions: vec![make_picker_entry("fresh-open", "/r")],
+            partial: None,
+            seq: second_seq,
+            query: None,
+        }),
+        &mut app,
+    );
+    let agent = get_active_agent(&app).expect("active agent");
+    let Some(ActiveModal::SessionPicker {
+        entries: Some(list),
+        loading,
+        ..
+    }) = agent.active_modal.as_ref()
+    else {
+        panic!("expected SessionPicker modal with entries");
+    };
+    assert_eq!(list.first().map(|e| e.id.as_str()), Some("fresh-open"));
+    assert!(!loading);
+}
+/// A welcome-issued fetch whose response completes after a modal opened on top is dropped.
+/// The modal-open fetch reallocated the welcome generation, so the response can neither retarget the modal nor land in the welcome picker's fields.
+#[test]
+fn welcome_fetch_response_does_not_retarget_open_modal() {
+    use crate::views::modal::ActiveModal;
+    let mut app = test_app_with_agent();
+    assert!(!app.chat_mode);
     let effects = dispatch(Action::FetchSessionList, &mut app);
+    let [
+        Effect::FetchSessionList {
+            host: SessionPickerHost::Welcome,
+            generation: welcome_generation,
+            seq: welcome_seq,
+            ..
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("expected welcome fetch, got {effects:?}");
+    };
+    let welcome_generation = *welcome_generation;
+    let welcome_seq = *welcome_seq;
+    let _ = dispatch(Action::ShowSessionPicker, &mut app);
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: welcome_generation,
+            scope: ListScope::Cwd,
+            sessions: vec![make_picker_entry("welcome-late", "/r")],
+            partial: None,
+            seq: welcome_seq,
+            query: None,
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    {
+        let agent = get_active_agent(&app).expect("active agent");
+        let Some(ActiveModal::SessionPicker {
+            entries, loading, ..
+        }) = agent.active_modal.as_ref()
+        else {
+            panic!("expected SessionPicker modal");
+        };
+        assert!(
+            entries.is_none(),
+            "welcome response must not land in the modal"
+        );
+        assert!(loading, "the modal keeps waiting for its own fetch");
+    }
     assert!(
-        matches!(
-            &effects[..],
-            [Effect::FetchSessionList {
-                query: None,
-                seq: 2
-            }]
-        ),
-        "picker fetch must be unfiltered and supersede the search, got {effects:?}"
+        app.session_picker_entries.is_none(),
+        "the superseded welcome incarnation's response is dropped everywhere"
+    );
+}
+/// A fetch issued for one agent's modal cannot land on another agent's modal: the generations differ, so the late result is dropped.
+/// The requesting (now background) modal stays loading; nothing routes back to a non-active modal.
+#[test]
+fn modal_result_does_not_cross_agents_and_background_modal_starves() {
+    use crate::views::modal::ActiveModal;
+    let mut app = test_app_with_agent();
+    assert!(!app.chat_mode);
+    let a_effects = dispatch(Action::ShowSessionPicker, &mut app);
+    let a_generation = modal_picker_generation(&app);
+    let [Effect::FetchSessionList { seq: a_seq, .. }] = a_effects.as_slice() else {
+        panic!("expected agent A modal fetch, got {a_effects:?}");
+    };
+    let a_seq = *a_seq;
+    insert_placeholder_agent(&mut app, AgentId(1));
+    app.active_view = ActiveView::Agent(AgentId(1));
+    let _ = dispatch(Action::ShowSessionPicker, &mut app);
+    let b_generation = modal_picker_generation(&app);
+    assert_ne!(a_generation, b_generation);
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: a_generation,
+            scope: ListScope::Cwd,
+            sessions: vec![make_picker_entry("agent-a-late", "/r")],
+            partial: None,
+            seq: a_seq,
+            query: None,
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    {
+        let agent = get_active_agent(&app).expect("active agent");
+        let Some(ActiveModal::SessionPicker {
+            entries, loading, ..
+        }) = agent.active_modal.as_ref()
+        else {
+            panic!("expected agent B's SessionPicker modal");
+        };
+        assert!(
+            entries.is_none(),
+            "another agent's result must not land here"
+        );
+        assert!(loading, "B's modal keeps waiting for its own fetch");
+    }
+    let Some(ActiveModal::SessionPicker {
+        entries, loading, ..
+    }) = expect_agent(&app, AgentId(0)).active_modal.as_ref()
+    else {
+        panic!("expected agent A's SessionPicker modal");
+    };
+    assert!(entries.is_none());
+    assert!(
+        loading,
+        "the background modal stays loading: its result is dropped, not delivered"
+    );
+}
+/// A background modal's in-flight card detail survives welcome-picker activity.
+/// Only the routed surface's detail seq moves, so the detail still applies when the user returns and its own host, generation, and seq match.
+/// The modal's OWN list changes still invalidate its in-flight details.
+#[test]
+fn background_modal_card_detail_survives_welcome_refetch() {
+    use crate::views::modal::ActiveModal;
+    let mut app = test_app_with_agent();
+    assert!(!app.chat_mode);
+    let modal_effects = dispatch(Action::ShowSessionPicker, &mut app);
+    let modal_generation = modal_picker_generation(&app);
+    let [Effect::FetchSessionList { seq: modal_seq, .. }] = modal_effects.as_slice() else {
+        panic!("expected modal fetch, got {modal_effects:?}");
+    };
+    let modal_seq = *modal_seq;
+    let modal_list = |generation, seq| {
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation,
+            scope: ListScope::Cwd,
+            sessions: vec![
+                make_picker_entry("card-target", "/r"),
+                make_picker_entry("card-other", "/r"),
+            ],
+            partial: None,
+            seq,
+            query: None,
+        })
+    };
+    let _ = dispatch(modal_list(modal_generation, modal_seq), &mut app);
+    let effects = dispatch(
+        Action::ExpandSessionCard {
+            source: "local".into(),
+            session_id: "card-target".into(),
+        },
+        &mut app,
+    );
+    let [
+        Effect::LoadCardDetail {
+            host: SessionPickerHost::AgentModal,
+            generation,
+            session_id,
+            seq,
+            ..
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("expected a modal-stamped card detail load, got {effects:?}");
+    };
+    assert_eq!(*generation, modal_generation);
+    assert_eq!(session_id, "card-target");
+    let detail_seq = *seq;
+    app.active_view = ActiveView::Welcome;
+    let welcome_effects = dispatch(Action::FetchSessionList, &mut app);
+    let [
+        Effect::FetchSessionList {
+            seq: welcome_seq, ..
+        },
+    ] = welcome_effects.as_slice()
+    else {
+        panic!("expected welcome fetch, got {welcome_effects:?}");
+    };
+    let welcome_seq = *welcome_seq;
+    let welcome_detail_seq = app.session_picker_detail_seq;
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::SessionListLoaded {
+            host: SessionPickerHost::Welcome,
+            generation: app.session_picker_generation,
+            scope: ListScope::Cwd,
+            sessions: vec![make_picker_entry("welcome-row", "/r")],
+            partial: None,
+            seq: welcome_seq,
+            query: None,
+        }),
+        &mut app,
+    );
+    assert!(
+        app.session_picker_detail_seq > welcome_detail_seq,
+        "the welcome result advances the welcome detail seq"
+    );
+    {
+        let Some(&ActiveModal::SessionPicker {
+            detail_seq: modal_detail_seq,
+            generation: live_modal_generation,
+            ..
+        }) = expect_agent(&app, AgentId(0)).active_modal.as_ref()
+        else {
+            panic!("agent A's modal must survive the view switch");
+        };
+        assert_eq!(
+            modal_detail_seq, detail_seq,
+            "welcome activity must not advance the modal's detail seq"
+        );
+        assert_eq!(live_modal_generation, modal_generation);
+    }
+    app.active_view = ActiveView::Agent(AgentId(0));
+    let detail = crate::app::app_view::CardDetail {
+        turn_count: 4,
+        tool_call_count: 2,
+        first_prompt_preview: "first".into(),
+    };
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::CardDetailLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_generation,
+            source: "local".into(),
+            session_id: "card-target".into(),
+            seq: detail_seq,
+            detail: detail.clone(),
+        }),
+        &mut app,
+    );
+    let modal_card_detail = |app: &AppView, id: &str| {
+        let Some(ActiveModal::SessionPicker {
+            entries: Some(entries),
+            ..
+        }) = expect_agent(app, AgentId(0)).active_modal.as_ref()
+        else {
+            panic!("expected SessionPicker modal with entries");
+        };
+        entries
+            .iter()
+            .find(|e| e.id == id)
+            .expect("entry")
+            .card_detail
+            .as_ref()
+            .map(|d| d.turn_count)
+    };
+    assert_eq!(
+        modal_card_detail(&app, "card-target"),
+        Some(4),
+        "the surviving detail must stamp the background modal's own row"
+    );
+    let effects = dispatch(
+        Action::ExpandSessionCard {
+            source: "local".into(),
+            session_id: "card-other".into(),
+        },
+        &mut app,
+    );
+    let [Effect::LoadCardDetail { seq, .. }] = effects.as_slice() else {
+        panic!("expected a card detail load, got {effects:?}");
+    };
+    let second_detail_seq = *seq;
+    let _ = dispatch(
+        modal_list(modal_generation, app.session_picker_list_seq),
+        &mut app,
+    );
+    let _ = dispatch(
+        Action::TaskComplete(TaskResult::CardDetailLoaded {
+            host: SessionPickerHost::AgentModal,
+            generation: modal_generation,
+            source: "local".into(),
+            session_id: "card-other".into(),
+            seq: second_detail_seq,
+            detail,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        modal_card_detail(&app, "card-other"),
+        None,
+        "a modal-targeted list change must still invalidate the modal's own in-flight detail"
     );
 }

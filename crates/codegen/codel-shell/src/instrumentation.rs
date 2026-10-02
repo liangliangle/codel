@@ -1,34 +1,38 @@
-//! Startup instrumentation stubs. The Chrome-trace instrumentation backend
-//! was removed with the telemetry system; these minimal types keep call sites
-//! compiling without any runtime effect.
+//! Shim; see `codel_logging::instrumentation` for the implementation.
+//!
+//! `instrumentation_timer!` lives in telemetry and is re-exported from the shell crate root
+//! so existing `crate::instrumentation_timer!` and `codel_shell::instrumentation_timer!` call sites stay.
+//! `$crate` inside the macro is telemetry.
+//!
+//! [`finalize_and_exit`] logs a terminal exit event and shuts down the shared OTel pipeline before the process exits.
+//! The telemetry crate exposes the shutdown helper; this thin wrapper combines it with `process::exit`.
 
-pub const TARGET: &str = "instrumentation";
+pub use codel_logging::instrumentation::{
+    ChromeTraceOptions, InstrumentationFinalizer, InstrumentationMode, InstrumentationTimer,
+    TARGET, current_mode, finalize, finalizer, generate_chrome_trace, install_panic_hook, layer,
+    timer,
+};
 
-pub struct InstrumentationTimer {
-    _name: &'static str,
-}
-
-impl InstrumentationTimer {
-    pub fn new(name: &'static str) -> Self {
-        Self { _name: name }
-    }
-
-    pub fn with_field(&mut self, _key: &str, _value: impl std::fmt::Display) -> &mut Self {
-        self
-    }
-}
-
-#[macro_export]
-macro_rules! instrumentation_timer {
-    ($name:expr) => {
-        $crate::instrumentation::InstrumentationTimer::new($name)
-    };
-}
-
-pub fn timer(name: &'static str) -> InstrumentationTimer {
-    InstrumentationTimer::new(name)
-}
-
+/// Logs an exit event, flushes instrumentation guards, shuts down the OpenTelemetry pipeline, and exits with `code`.
+///
+/// Stays in shell so callers can keep calling `codel_shell::instrumentation::finalize_and_exit`.
 pub fn finalize_and_exit(code: i32) -> ! {
-    std::process::exit(code)
+    let signal_name = match code {
+        130 => "SIGINT",
+        143 => "SIGTERM",
+        _ => "other",
+    };
+    tracing::info!(
+        event_type = "process_exit",
+        signal = signal_name,
+        exit_code = code,
+        "Exiting process"
+    );
+    let _ = finalize();
+    if let Some(path) = codel_logging::span_profile::finalize() {
+        eprintln!("span profile written to {}", path.display());
+    }
+    // Flush the --debug log stream; exiting via process::exit bypasses main's flush
+    codel_logging::debug_log::flush();
+    std::process::exit(code);
 }

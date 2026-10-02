@@ -1,18 +1,14 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
     use super::*;
 
-    /// Regression (resume sync): the on-disk replay stream re-emits persisted
-    /// notifications through the generic `codel/session/update` envelope. A
-    /// background `monitor`/bash task (`TaskBackgrounded`) must restore into
-    /// `bg_tasks` on a resumed / second terminal — not be dropped by the
-    /// default match arm — so the idle "watching" status line and the Tasks pane
-    /// match the originating terminal. (Before this routing only subagents
-    /// survived resume.)
+    /// A background `monitor`/bash task (`TaskBackgrounded`) must restore into `bg_tasks` on a resumed / second terminal.
+    /// It must not be dropped by the default match arm.
+    /// (Before this routing only subagents survived resume.)
     #[test]
     fn ext_session_update_replay_restores_bg_task() {
         let mut app = make_app_with_agent("sess-1");
         let id = AgentId(0);
-        assert!(app.agents[&id].session.bg_tasks.is_empty());
+        assert!(test_agent(&app, id).session.bg_tasks.is_empty());
 
         let update = CodelSessionUpdate::TaskBackgrounded {
             tool_call_id: "tc-mon".into(),
@@ -28,7 +24,7 @@
             &mut app,
         );
 
-        let task = app.agents[&id]
+        let task = test_agent(&app, id)
             .session
             .bg_tasks
             .get("mon-1")
@@ -37,16 +33,14 @@
         assert_eq!(task.status, BgTaskStatus::Running);
     }
 
-    /// Companion for scheduled `/loop`s: a replayed `ScheduledTaskCreated` must
-    /// restore `scheduled_tasks`, and a later `ScheduledTaskDeleted` must net it
-    /// back out — so a resumed terminal's loop count matches instead of staying
-    /// empty until the next live fire. (Pairs with the shell-side persistence of
-    /// these notifications in `notification_bridge.rs`.)
+    /// Companion for scheduled `/loop`s: a replayed `ScheduledTaskCreated` must restore `scheduled_tasks`.
+    /// A later `ScheduledTaskDeleted` must net it back out.
+    /// A resumed terminal's loop count then matches instead of staying empty until the next live fire.
     #[test]
     fn ext_session_update_replay_restores_then_removes_scheduled_task() {
         let mut app = make_app_with_agent("sess-1");
         let id = AgentId(0);
-        assert!(app.agents[&id].session.scheduled_tasks.is_empty());
+        assert!(test_agent(&app, id).session.scheduled_tasks.is_empty());
 
         handle(
             make_ext_session_notification_with_method(
@@ -62,7 +56,7 @@
             &mut app,
         );
         assert!(
-            app.agents[&id]
+            test_agent(&app, id)
                 .session
                 .scheduled_tasks
                 .contains_key("loop-1"),
@@ -75,19 +69,19 @@
                 "codel/session/update",
                 CodelSessionUpdate::ScheduledTaskDeleted {
                     task_id: "loop-1".into(),
+                    reason: Default::default(),
                 },
             ),
             &mut app,
         );
         assert!(
-            app.agents[&id].session.scheduled_tasks.is_empty(),
+            test_agent(&app, id).session.scheduled_tasks.is_empty(),
             "replayed ScheduledTaskDeleted must remove the loop on resume"
         );
     }
 
-    /// Regression: demotion path (foreground Execute → BgTask) must call
-    /// finish_running() so the entry is removed from the running set.
-    /// Without this, the entry stays orphaned as "running" forever.
+    /// Regression: the demotion path (foreground Execute to BgTask) must call finish_running() so the entry is removed from the running set.
+    /// Without the call, the entry stays orphaned as "running" forever.
     #[test]
     fn task_backgrounded_demotion_clears_running_state() {
         let mut app = make_app_with_agent("sess-1");
@@ -118,9 +112,8 @@
         assert!(agent.session.tracker.pending_tool_entry_id(tc_id).is_none());
     }
 
-    /// Regression: late-detected is_background=true (raw_input arrives after the
-    /// Execute block exists) followed by task_backgrounded must correctly demote
-    /// the existing Execute block — not create a duplicate BgTask.
+    /// Regression: late-detected is_background=true means raw_input arrives after the Execute block exists.
+    /// The task_backgrounded that follows must demote the existing Execute block, not create a duplicate BgTask.
     #[test]
     fn task_backgrounded_late_detection_demotes_existing_entry() {
         let mut app = make_app_with_agent("sess-1");
@@ -148,10 +141,8 @@
         assert!(!agent.session.tracker.bg_deferred_tools.contains_key(tc_id));
     }
 
-    /// Regression: even when the wire notification carries its own
-    /// `description`, the deferred-tool suppression key must still be drained
-    /// (it is preferred but the entry otherwise leaks and keeps dropping late
-    /// stdout updates for the rest of the session).
+    /// Regression: even when the wire notification carries its own `description`, the deferred-tool suppression key must still be drained.
+    /// (The wire description wins, but the entry otherwise leaks and keeps dropping late stdout updates for the rest of the session.)
     #[test]
     fn task_backgrounded_with_wire_description_still_drains_deferred_tool() {
         let mut app = make_app_with_agent("sess-1");
@@ -187,18 +178,15 @@
         );
     }
 
-    /// Regression: a blank/whitespace wire `description` must not shadow a
-    /// non-blank deferred (raw_input) description when there is no Execute
-    /// block to recover from (fresh BgTask path). The label must come from the
-    /// deferred description, not the blank wire value (which would otherwise
-    /// fall back to the raw command).
+    /// Regression: a blank/whitespace wire `description` must not shadow a non-blank deferred (raw_input) description.
+    /// This is the fresh BgTask path, with no Execute block to recover from.
+    /// The label must come from the deferred description, not the blank wire value (which would otherwise fall back to the raw command).
     #[test]
     fn task_backgrounded_blank_wire_description_prefers_deferred() {
         let mut app = make_app_with_agent("sess-1");
         let tc_id = "call-blank-wire";
 
-        // Simulate late is_background detection having stashed a real
-        // description, with the placeholder entry dropped (no pending tool).
+        // Simulate late is_background detection having stashed a real description, with the placeholder entry dropped (no pending tool)
         {
             let agent = app.agents.get_mut(&AgentId(0)).unwrap();
             agent
@@ -301,10 +289,8 @@
 
     #[test]
     fn task_backgrounded_monitor_prefix_marks_is_monitor() {
-        // Reparented monitor / older backend: the command carries the
-        // "[monitor] <desc>" prefix but the notification has no
-        // monitor_description. The pager must still mark it a monitor and use
-        // the stripped text as the description so it renders as a Monitor row.
+        // Reparented monitor / older backend: the command carries the "[monitor] <desc>" prefix but the notification has no monitor_description
+        // The pager must still mark it a monitor and use the stripped text as the description so it renders as a Monitor row
         let mut app = make_app_with_parent_and_child("parent-sess", "child-sess");
         let notif = make_task_backgrounded_notif(
             "parent-sess",
@@ -327,11 +313,9 @@
         assert_eq!(task.description.as_deref(), Some("event counter"));
     }
 
-    /// Resume regression: the agent's cold-load reconciliation
-    /// completes replay-restored dead tasks with `signal: "session_restart"`.
-    /// That synthetic completion must finalize state QUIETLY — finish the
-    /// replayed "Task started" entry and mark the task not-running — without
-    /// pushing a fresh red "Task failed" block into the resumed scrollback.
+    /// Resume regression: the agent's cold-load reconciliation completes replay-restored dead tasks with `signal: "session_restart"`.
+    /// That synthetic completion must finalize state QUIETLY: finish the replayed "Task started" entry and mark the task not-running.
+    /// It must not push a fresh red "Task failed" block into the resumed scrollback.
     #[test]
     fn session_restart_completion_finalizes_without_failure_block() {
         let mut app = make_app_with_agent("sess-1");
@@ -365,7 +349,9 @@
             !agent.scrollback.needs_animation(),
             "the replayed started entry must be finished (no running accent)"
         );
-        let task = &agent.session.bg_tasks["task-r"];
+        let Some(task) = agent.session.bg_tasks.get("task-r") else {
+            panic!("expected task-r");
+        };
         assert_eq!(
             task.status,
             BgTaskStatus::Failed,
@@ -373,8 +359,7 @@
         );
     }
 
-    /// Guard that the quiet path is NARROW: any other kill signal keeps the
-    /// live behavior of pushing a completion/failure block.
+    /// Guard that the quiet path is NARROW: any other kill signal keeps the live behavior of pushing a completion/failure block.
     #[test]
     fn non_restart_signal_completion_still_pushes_failure_block() {
         let mut app = make_app_with_agent("sess-1");
@@ -414,7 +399,6 @@
         assert!(changed);
 
         let agent = app.agents.get(&AgentId(0)).unwrap();
-        // Parent must NOT have a completion block.
         assert_eq!(
             agent.scrollback.len(),
             0,
@@ -546,7 +530,7 @@
         let notif =
             make_task_backgrounded_notif("child-sess", "tc-bg-inact", "task-bg-inact", "sleep 1");
         let changed = handle_task_backgrounded(&notif, &mut app);
-        // Active view was NOT affected — should return false.
+        // The active view was not affected
         assert!(!changed);
 
         // But the bg task state must still land in the child view.
@@ -626,12 +610,251 @@
 
         let agent = app.agents.get(&AgentId(0)).unwrap();
         assert!(
-            agent.session.bg_tasks["task-r"].restored_from_replay,
+            agent
+                .session
+                .bg_tasks
+                .get("task-r")
+                .is_some_and(|t| t.restored_from_replay),
             "isReplay-stamped TaskBackgrounded must mark restored_from_replay"
         );
         assert!(
-            !agent.session.bg_tasks["task-l"].restored_from_replay,
+            agent
+                .session
+                .bg_tasks
+                .get("task-l")
+                .is_some_and(|t| !t.restored_from_replay),
             "live TaskBackgrounded must not mark restored_from_replay"
+        );
+    }
+
+    /// Base snapshot for the Completed-before-Backgrounded race tests; tweak fields per test (the shared helpers hardcode output/description).
+    fn race_snapshot(
+        task_id: &str,
+        command: &str,
+        exit_code: Option<i32>,
+    ) -> codel_tools::types::TaskSnapshot {
+        codel_tools::types::TaskSnapshot {
+            task_id: task_id.into(),
+            command: command.into(),
+            display_command: None,
+            cwd: "/tmp".into(),
+            start_time: std::time::SystemTime::now(),
+            end_time: Some(std::time::SystemTime::now()),
+            output: String::new(),
+            output_file: "/tmp/out.log".into(),
+            truncated: false,
+            exit_code,
+            signal: None,
+            completed: true,
+            kind: Default::default(),
+            block_waited: false,
+            explicitly_killed: false,
+            kill_result_delivered: false,
+            owner_session_id: None,
+            description: None,
+            is_backgrounded: true,
+            output_total_bytes: 0,
+        }
+    }
+
+    fn completed_notif_from_snapshot(
+        session_id: &str,
+        task_snapshot: codel_tools::types::TaskSnapshot,
+        replayed: bool,
+    ) -> acp::ExtNotification {
+        let notif = SessionNotification {
+            session_id: acp::SessionId::new(session_id),
+            update: CodelSessionUpdate::TaskCompleted {
+                task_snapshot,
+                will_wake: false,
+            },
+            meta: replayed.then(crate::acp::meta::ReplayMetaStamp::replayed),
+        };
+        let raw = serde_json::value::to_raw_value(&notif).unwrap();
+        acp::ExtNotification::new("codel/task_completed", std::sync::Arc::from(raw))
+    }
+
+    /// Short bg shells can exit (and `TaskCompleted` arrive) before their `TaskBackgrounded`.
+    /// The late `TaskBackgrounded` must not resurrect the finished task as Running or push a stray "Task started" block.
+    #[test]
+    fn completed_before_backgrounded_does_not_resurrect_running() {
+        let mut app = make_app_with_agent("sess-1");
+
+        // TaskCompleted first, for a task the pager has never seen.
+        let mut snapshot = race_snapshot("task-race", "echo done", Some(0));
+        snapshot.output = "task output line".into();
+        let done = completed_notif_from_snapshot("sess-1", snapshot, false);
+        assert!(handle_task_completed(&done, &mut app));
+        {
+            let agent = app.agents.get(&AgentId(0)).unwrap();
+            let task = agent
+                .session
+                .bg_tasks
+                .get("task-race")
+                .expect("unknown TaskCompleted must record terminal state");
+            assert_eq!(task.status, BgTaskStatus::Done);
+            assert_eq!(task.stdout, "task output line");
+            assert_eq!(agent.scrollback.len(), 1, "completed block rendered");
+            assert!(
+                task.scrollback_entry_id.is_some(),
+                "tombstone anchored to the completion block (viewer actions need an entry)"
+            );
+        }
+
+        // The late TaskBackgrounded (with a wire description) arrives.
+        let notif = SessionNotification {
+            session_id: acp::SessionId::new("sess-1"),
+            update: CodelSessionUpdate::TaskBackgrounded {
+                tool_call_id: "tc-race".into(),
+                task_id: "task-race".into(),
+                command: "echo done".into(),
+                cwd: "/tmp".into(),
+                output_file: "/tmp/output.log".into(),
+                monitor_description: None,
+                description: Some("wait for build".into()),
+            },
+            meta: None,
+        };
+        let raw = serde_json::value::to_raw_value(&notif).unwrap();
+        let late = acp::ExtNotification::new("codel/task_backgrounded", std::sync::Arc::from(raw));
+        assert!(handle_task_backgrounded(&late, &mut app));
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        let Some(task) = agent.session.bg_tasks.get("task-race") else {
+            panic!("expected task-race");
+        };
+        assert_eq!(
+            task.status,
+            BgTaskStatus::Done,
+            "late TaskBackgrounded must not overwrite a terminal status with Running"
+        );
+        assert_eq!(task.tool_call_id, "tc-race", "tool_call_id backfilled");
+        assert_eq!(
+            task.description.as_deref(),
+            Some("wait for build"),
+            "description backfilled from the late notification"
+        );
+        assert_eq!(task.stdout, "task output line", "snapshot stdout kept");
+        assert_eq!(
+            agent.session.bg_tool_call_to_task.get("tc-race"),
+            Some(&"task-race".to_string())
+        );
+        assert_eq!(
+            agent.scrollback.len(),
+            1,
+            "no stray 'Task started' block after the completion"
+        );
+        assert!(
+            !agent.scrollback.needs_animation(),
+            "nothing may animate as running for a finished task"
+        );
+    }
+
+    /// Same race on the demotion path (foreground Execute auto-backgrounded).
+    /// The pending Execute block is still demoted to a finished BgTask block and the terminal status survives.
+    #[test]
+    fn completed_before_backgrounded_demotion_finishes_execute_block() {
+        let mut app = make_app_with_agent("sess-1");
+        let tc_id = "call-race-demote";
+
+        setup_pending_execute_tool(&mut app, tc_id);
+
+        let done = make_task_completed_notif("sess-1", "task-demote", "sleep 9999", Some(1));
+        assert!(handle_task_completed(&done, &mut app));
+        {
+            let agent = app.agents.get(&AgentId(0)).unwrap();
+            let Some(task) = agent.session.bg_tasks.get("task-demote") else {
+                panic!("expected task-demote");
+            };
+            assert_eq!(task.status, BgTaskStatus::Failed);
+            assert_eq!(agent.scrollback.len(), 2, "Execute block + failed block");
+        }
+
+        let late = make_task_backgrounded_notif("sess-1", tc_id, "task-demote", "sleep 9999");
+        assert!(handle_task_backgrounded(&late, &mut app));
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        let Some(task) = agent.session.bg_tasks.get("task-demote") else {
+            panic!("expected task-demote");
+        };
+        assert_eq!(
+            task.status,
+            BgTaskStatus::Failed,
+            "terminal status survives the late demotion"
+        );
+        assert_eq!(agent.scrollback.len(), 2, "no extra block from the demotion");
+        let entry = agent.scrollback.get(0).unwrap();
+        assert!(
+            matches!(entry.block, RenderBlock::BgTask(_)),
+            "Execute block demoted to BgTask"
+        );
+        assert!(
+            !agent.scrollback.needs_animation(),
+            "the demoted entry must be finished, not animating"
+        );
+        assert!(
+            agent.session.tracker.pending_tool_entry_id(tc_id).is_none(),
+            "pending tool drained"
+        );
+    }
+
+    /// A completion tombstone prefers the snapshot's model-supplied description, so the race renders the same label as the normal order.
+    #[test]
+    fn unknown_completed_prefers_snapshot_description() {
+        let mut app = make_app_with_agent("sess-1");
+
+        let mut snapshot = race_snapshot("task-desc", "cargo build", Some(0));
+        snapshot.description = Some("build the app".into());
+        let done = completed_notif_from_snapshot("sess-1", snapshot, false);
+        assert!(handle_task_completed(&done, &mut app));
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        assert_eq!(
+            agent
+                .session
+                .bg_tasks
+                .get("task-desc")
+                .and_then(|t| t.description.as_deref()),
+            Some("build the app")
+        );
+    }
+
+    /// A monitor's completion tombstone keeps the Monitor rendering.
+    #[test]
+    fn unknown_completed_monitor_kind_marks_is_monitor() {
+        let mut app = make_app_with_agent("sess-1");
+
+        let mut snapshot = race_snapshot("task-mon", "tail -f x.log", Some(0));
+        snapshot.kind = codel_tools::computer::types::TaskKind::Monitor;
+        let done = completed_notif_from_snapshot("sess-1", snapshot, false);
+        assert!(handle_task_completed(&done, &mut app));
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        assert!(
+            agent
+                .session
+                .bg_tasks
+                .get("task-mon")
+                .is_some_and(|t| t.is_monitor)
+        );
+    }
+
+    /// A tombstone from a replayed completion is historical context: it must not read as new activity (mirrors restored `TaskBackgrounded`s).
+    #[test]
+    fn replayed_unknown_completed_marks_tombstone_restored() {
+        let mut app = make_app_with_agent("sess-1");
+
+        let snapshot = race_snapshot("task-replay", "echo hi", Some(0));
+        let done = completed_notif_from_snapshot("sess-1", snapshot, true);
+        assert!(handle_task_completed(&done, &mut app));
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        assert!(
+            agent
+                .session
+                .bg_tasks
+                .get("task-replay")
+                .is_some_and(|t| t.restored_from_replay)
         );
     }
 

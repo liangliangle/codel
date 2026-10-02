@@ -1,9 +1,8 @@
-//! WebFetchToolCallBlock — URL fetch with content preview.
-
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 
 use super::TOOL_HEADER_RANGE;
+use crate::appearance::AppearanceConfig;
 use crate::render::line_utils::truncate_str;
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{
@@ -14,20 +13,19 @@ use crate::theme::Theme;
 const MAX_INLINE_LINES: usize = 10;
 const TRUNCATED_INLINE_LINES: usize = 3;
 
-/// Web fetch tool call — fetching a URL and returning markdown content.
+/// Web fetch tool call: fetches a URL and returns markdown content.
 #[derive(Debug, Clone)]
 pub struct WebFetchToolCallBlock {
     /// The fetched URL.
     pub url: String,
     /// HTTP status code (e.g. 200, 404).
-    /// `Option` because the block exists pre-completion (pending/running state)
-    /// before any response data arrives.
+    /// `Option` because the block exists pre-completion (pending/running state) before any response data arrives.
     pub status_code: Option<u16>,
     /// Content type (e.g. "markdown", "text/plain").
     pub content_type: Option<String>,
     /// Content size in bytes.
     pub bytes: Option<usize>,
-    /// Error message if the tool call failed (None = success).
+    /// Error message if the tool call failed (None means success).
     pub error: Option<String>,
     /// Fetched content (markdown or raw text).
     pub output: Option<String>,
@@ -96,19 +94,7 @@ impl WebFetchToolCallBlock {
         }
     }
 
-    /// Format byte count as human-readable (e.g. "14.2 KB").
-    fn format_bytes(bytes: usize) -> String {
-        if bytes < 1024 {
-            format!("{bytes} B")
-        } else if bytes < 1024 * 1024 {
-            format!("{:.1} KB", bytes as f64 / 1024.0)
-        } else {
-            format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-        }
-    }
-
     /// Render the header line: **Fetch** `url`
-    ///
     /// When `max_width` is `Some`, the URL is truncated with ellipsis to fit.
     /// When `None`, the full URL is rendered (for expanded view / fullscreen).
     fn header_line(&self, theme: &Theme, muted: bool, max_width: Option<usize>) -> Line<'static> {
@@ -170,7 +156,7 @@ impl WebFetchToolCallBlock {
         if let Some(bytes) = self.bytes {
             parts.push(vec![
                 Span::styled("size: ", label_style),
-                Span::styled(Self::format_bytes(bytes), value_style),
+                Span::styled(crate::util::format_bytes(bytes as u64), value_style),
             ]);
         }
 
@@ -205,9 +191,8 @@ impl BlockContent for WebFetchToolCallBlock {
                     Some(ctx.content_width()),
                 ))],
             },
-            // Fetch completes in one shot (no streaming), so Truncated
-            // is never visible in practice. Treat it the same as Expanded
-            // to always show the full content the model saw.
+            // Fetch completes in one shot (no streaming), so Truncated is never visible in practice
+            // Treat it the same as Expanded to always show the full content the model saw
             DisplayMode::Truncated | DisplayMode::Expanded => {
                 let header = self.header_line(&theme, false, None);
                 let wrapped = crate::render::wrapping::wrap_header_flush(
@@ -316,7 +301,7 @@ impl BlockContent for WebFetchToolCallBlock {
         }
     }
 
-    fn has_vpad(&self, _ctx: &BlockContext) -> bool {
+    fn has_vpad_for(&self, _appearance: &AppearanceConfig) -> bool {
         false
     }
 

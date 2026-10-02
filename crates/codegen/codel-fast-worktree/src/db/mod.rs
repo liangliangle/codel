@@ -7,15 +7,27 @@ mod queries;
 mod schema;
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use codel_sqlite_journal::JournalMode;
+use codel_sqlite_journal::{BUSY_RETRY_BUDGET, JournalMode};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    strum::AsRefStr,
+    strum::IntoStaticStr,
+)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "snake_case")]
 pub enum WorktreeKind {
     Session,
     Ab,
@@ -26,17 +38,6 @@ pub enum WorktreeKind {
 }
 
 impl WorktreeKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Session => "session",
-            Self::Ab => "ab",
-            Self::Pool => "pool",
-            Self::Fork => "fork",
-            Self::Manual => "manual",
-            Self::Subagent => "subagent",
-        }
-    }
-
     pub fn from_str_lossy(s: &str) -> Self {
         Self::from_str_exact(s).unwrap_or(Self::Manual)
     }
@@ -69,21 +70,17 @@ impl WorktreeKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, strum::IntoStaticStr,
+)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "snake_case")]
 pub enum WorktreeStatus {
     Alive,
     Dead,
 }
 
 impl WorktreeStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Alive => "alive",
-            Self::Dead => "dead",
-        }
-    }
-
     pub fn from_str_lossy(s: &str) -> Self {
         match s {
             "alive" => Self::Alive,
@@ -92,6 +89,8 @@ impl WorktreeStatus {
         }
     }
 }
+
+pub const META_KEY_LABEL: &str = "label";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorktreeRecord {
@@ -109,6 +108,17 @@ pub struct WorktreeRecord {
     pub last_accessed_at: Option<i64>,
     pub status: WorktreeStatus,
     pub metadata: Option<serde_json::Value>,
+}
+
+impl WorktreeRecord {
+    /// The user-facing label from `metadata.label`; empty labels are `None`.
+    pub fn label(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.get(META_KEY_LABEL))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+    }
 }
 
 #[derive(Default)]
@@ -132,10 +142,59 @@ pub struct WorktreeDb {
     conn: Connection,
 }
 
+/// Outcome of a read-only open. A corrupt file still reaches `Opened`, since
+/// SQLite reads lazily and fails at the first query.
+pub enum RegistryOpen {
+    Opened { path: PathBuf, db: WorktreeDb },
+    Absent { path: PathBuf },
+    Busy { path: PathBuf, error: anyhow::Error },
+    Failed { path: PathBuf, error: anyhow::Error },
+}
+
+#[derive(Debug)]
+enum OpenFailure {
+    Busy(anyhow::Error),
+    Other(anyhow::Error),
+}
+
+const WORKTREES_DB_FILE: &str = "worktrees.db";
+
+fn is_sqlite_busy(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if is_busy_code(f.code))
+}
+
+fn is_busy_code(code: rusqlite::ErrorCode) -> bool {
+    use rusqlite::ErrorCode;
+    matches!(code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqliteFailureKind {
+    Busy,
+    Corrupt,
+    Other,
+}
+
+/// What a SQLite failure says about the file. Only the damage codes justify
+/// telling a user to delete their registry.
+pub fn classify_sqlite_error(error: &anyhow::Error) -> SqliteFailureKind {
+    use rusqlite::ErrorCode;
+    let Some(rusqlite::Error::SqliteFailure(f, _)) = error.downcast_ref::<rusqlite::Error>() else {
+        return SqliteFailureKind::Other;
+    };
+    if is_busy_code(f.code) {
+        return SqliteFailureKind::Busy;
+    }
+    match f.code {
+        ErrorCode::NotADatabase | ErrorCode::DatabaseCorrupt => SqliteFailureKind::Corrupt,
+        _ => SqliteFailureKind::Other,
+    }
+}
+
 impl WorktreeDb {
     /// Open (or create) the DB at `codel_home/worktrees.db`.
     pub fn open(codel_home: &Path) -> Result<Self> {
-        Self::open_at(&codel_home.join("worktrees.db"))
+        Self::open_at(&codel_home.join(WORKTREES_DB_FILE))
     }
 
     /// Open with an explicit path.
@@ -157,78 +216,93 @@ impl WorktreeDb {
             .with_context(|| format!("failed to open worktree DB: {}", path.display()))?;
         let db = Self { conn };
         db.set_journal_mode(journal_mode)?;
-        // Normal statement timeout, now that the conversion budget is done.
-        db.conn
-            .busy_timeout(std::time::Duration::from_millis(5000))?;
         db.init_schema()?;
         Ok(db)
     }
 
-    /// Put the database in `mode`'s journal mode, retrying on `SQLITE_BUSY`
-    /// under one absolute deadline (~10s total).
-    ///
-    /// Conversion-lock acquisition only partially honors `busy_timeout` (see
-    /// `JournalMode::apply`, the single source of truth): a second process
-    /// opening the same file at the same instant can still get `SQLITE_BUSY`
-    /// immediately. Without a retry that opener's `open_at` fails, and callers
-    /// like `register_worktree`/`unregister_worktree` swallow the error
-    /// (best-effort) — silently dropping worktree tracking, exactly what this DB
-    /// exists to prevent. A bounded retry rides out the concurrent converter
-    /// (which finishes in microseconds), while the deadline plus a per-attempt
-    /// `busy_timeout` cap keeps a held legacy lock from stalling startup by
-    /// `attempts x busy_timeout`. Once converted the setting persists (WAL) or
-    /// re-applies as a no-op (TRUNCATE), so later opens are cheap.
     fn set_journal_mode(&self, mode: JournalMode) -> Result<()> {
-        use rusqlite::ErrorCode;
+        mode.apply_with_retry(&self.conn)
+            .with_context(|| format!("failed to set journal mode {}", mode.as_ref()))
+    }
+
+    /// Open `~/.codel/worktrees.db` via `resolve_codel_home` (`$CODEL_HOME`, else
+    /// `<home>/.codel`). Resolved fresh each call for test overrides. Each call
+    /// opens its own connection — hot paths should cache the instance.
+    pub fn open_default() -> Result<Self> {
+        Self::open(&resolve_codel_home()?)
+    }
+
+    fn journal_mode_and_base_path(codel_home: &Path) -> (JournalMode, PathBuf) {
+        let base_path = codel_home.join(WORKTREES_DB_FILE);
+        let mode = JournalMode::for_db_path(&base_path);
+        (mode, base_path)
+    }
+
+    /// The path a read-write open would use (per-host on network mounts).
+    /// Runs statfs and a hostname lookup, so resolve once and carry it.
+    pub fn resolve_db_path(codel_home: &Path) -> PathBuf {
+        let (mode, base_path) = Self::journal_mode_and_base_path(codel_home);
+        mode.effective_db_path(&base_path)
+    }
+
+    /// Read-only open: creates no directory, database file, or schema. Not
+    /// side-effect free, though: reading a WAL database leaves `-shm` and
+    /// `-wal` sidecars, and a network-mount open still converts the journal.
+    pub fn open_read_only(codel_home: &Path) -> RegistryOpen {
+        let (mode, base_path) = Self::journal_mode_and_base_path(codel_home);
+        let path = mode.effective_db_path(&base_path);
+        match Self::open_read_only_at(mode, &path) {
+            Ok(Some(db)) => RegistryOpen::Opened { path, db },
+            Ok(None) => RegistryOpen::Absent { path },
+            Err(OpenFailure::Busy(error)) => RegistryOpen::Busy { path, error },
+            Err(OpenFailure::Other(error)) => RegistryOpen::Failed { path, error },
+        }
+    }
+
+    fn open_read_only_at(mode: JournalMode, effective: &Path) -> Result<Option<Self>, OpenFailure> {
+        let present = effective.try_exists().map_err(|e| {
+            OpenFailure::Other(
+                anyhow::Error::new(e)
+                    .context(format!("cannot stat worktree DB: {}", effective.display())),
+            )
+        })?;
+        if !present {
+            return Ok(None);
+        }
+        let deadline = std::time::Instant::now() + BUSY_RETRY_BUDGET;
+        let conn = Self::open_readonly_with_busy_retry(mode, effective, deadline)?;
+        Ok(Some(Self { conn }))
+    }
+
+    /// Retry busy failures until `deadline`, which also bounds the network
+    /// arm's journal conversion, so the wait cannot come to twice what the
+    /// caller allowed.
+    fn open_readonly_with_busy_retry(
+        mode: JournalMode,
+        path: &Path,
+        deadline: std::time::Instant,
+    ) -> Result<Connection, OpenFailure> {
         use std::time::{Duration, Instant};
-        // Total conversion budget; each attempt waits at most 1s for locks.
-        const DEADLINE: Duration = Duration::from_secs(10);
         let start = Instant::now();
-        let mut last_err = None;
+        let context = || format!("failed to open worktree DB read-only: {}", path.display());
         loop {
-            let remaining = DEADLINE.saturating_sub(start.elapsed());
-            if remaining.is_zero() {
-                break;
-            }
-            self.conn
-                .busy_timeout(remaining.min(Duration::from_millis(1000)))?;
-            match mode.apply(&self.conn) {
-                Ok(()) => return Ok(()),
+            match mode.open_readonly_until(path, deadline) {
+                Ok(conn) => return Ok(conn),
+                Err(e) if !is_sqlite_busy(&e) => {
+                    return Err(OpenFailure::Other(anyhow::Error::new(e).context(context())));
+                }
                 Err(e) => {
-                    let busy = matches!(
-                        &e,
-                        rusqlite::Error::SqliteFailure(f, _)
-                            if matches!(f.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
-                    );
-                    if !busy {
-                        return Err(e).with_context(|| {
-                            format!("failed to set journal mode {}", mode.as_str())
-                        });
+                    if Instant::now() >= deadline {
+                        let elapsed = start.elapsed();
+                        return Err(OpenFailure::Busy(anyhow::Error::new(e).context(format!(
+                            "{} (database busy after {elapsed:?})",
+                            context()
+                        ))));
                     }
-                    last_err = Some(e);
-                    // Brief pause so fail-fast busy errors don't spin hot.
                     std::thread::sleep(Duration::from_millis(20));
                 }
             }
         }
-        Err(last_err.expect("deadline allows at least one attempt")).with_context(|| {
-            format!(
-                "failed to set journal mode {} (database busy after {:?})",
-                mode.as_str(),
-                start.elapsed()
-            )
-        })
-    }
-
-    /// Open the default DB at `~/.codel/worktrees.db`.
-    ///
-    /// Discovers codel home via `$CODEL_HOME`, falling back to the canonicalized
-    /// `$HOME/.codel` (matching `codel_config::codel_home`).
-    /// Path is resolved fresh each call (~1µs env var read) to support
-    /// test overrides. Each call opens its own connection — callers in hot
-    /// paths should cache the `WorktreeDb` instance.
-    pub fn open_default() -> Result<Self> {
-        Self::open(&resolve_codel_home()?)
     }
 
     /// Open an in-memory DB (for tests).
@@ -288,11 +362,8 @@ impl WorktreeDb {
         queries::get_by_id(&self.conn, id)
     }
 
-    /// Look up by ID, label, or path.
-    ///
-    /// If `id_or_path` contains `/`, it's treated as a path (canonicalized
-    /// before lookup). Otherwise it's looked up first as a DB ID, then as a
-    /// worktree label (stored in `metadata.label`).
+    /// Look up by ID, label, or path. A `/` means path (canonicalized first);
+    /// otherwise DB ID, then `metadata.label`.
     pub fn get(&self, id_or_path: &str) -> Result<Option<WorktreeRecord>> {
         if id_or_path.contains('/') {
             let canon = PathBuf::from(id_or_path);
@@ -356,22 +427,14 @@ impl WorktreeDb {
     }
 }
 
-/// Derive a worktree ID from its destination path: `<basename>-<hash of full path>`
-/// (the last component, minus any `worktree-` prefix, plus a full-path hash).
-///
-/// The basename alone collides across repos, and `INSERT OR REPLACE` would then evict
-/// the other repo's record; hashing the full path keeps distinct worktrees distinct.
+/// `<basename>-<hash of full path>`. Basename alone collides across repos, and
+/// `INSERT OR REPLACE` would evict the other record.
 pub fn id_from_path(path: &Path) -> String {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    let base = name.strip_prefix("worktree-").unwrap_or(&name);
-    format!("{base}-{}", crate::copy::shard::short_path_hash(path))
+    crate::worktree::plan::worktree_id_from_path(path)
 }
 
 /// Extract the repo name (last component) from a source repo path.
-pub fn repo_name_from_path(source: &Path) -> String {
+pub(crate) fn repo_name_from_path(source: &Path) -> String {
     source
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -379,42 +442,32 @@ pub fn repo_name_from_path(source: &Path) -> String {
 }
 
 pub fn now_epoch_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    crate::time::epoch_secs()
 }
 
+/// Resolve the codel home: `$CODEL_HOME`, else `<home>/.codel`.
 pub fn resolve_codel_home() -> Result<PathBuf> {
-    if let Ok(v) = std::env::var("CODEL_HOME") {
-        return Ok(PathBuf::from(v));
-    }
-    let home = PathBuf::from(std::env::var("HOME").context("neither $CODEL_HOME nor $HOME is set")?);
-    // Canonicalize the home dir so worktree paths share the same physical .codel
-    // tree as trust/hooks even when it is symlinked. The dunce canonicalization
-    // must stay in sync with codel_config::default_codel_home();
-    // home resolution deliberately differs ($HOME here vs std::env::home_dir()).
-    Ok(dunce::canonicalize(&home).unwrap_or(home).join(".codel"))
+    codel_dirs::resolve_codel_home()
+        .context("neither $CODEL_HOME nor a home directory could be resolved")
 }
 
 /// Serializes tests that mutate the process-global `CODEL_HOME` env var so they
 /// don't clobber each other under `cargo test`, where tests share one process
 /// (nextest isolates per-process, but the suite must also pass under `cargo test`).
 #[cfg(test)]
-static CODEL_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static CODEL_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Test-only isolation for code that resolves the DB via `open_default()`.
-///
-/// Holds [`CODEL_HOME_ENV_LOCK`] (serializing concurrent setters), points
-/// `CODEL_HOME` at a fresh private tmp dir, and restores the prior value on drop.
-/// Use instead of hand-rolling the lock + restore guard + tmp dir per test.
-///
-/// `Drop` restores `CODEL_HOME` before `_lock` releases, so the env is correct
-/// before another waiting setter proceeds.
+/// Test-only: hold [`CODEL_HOME_ENV_LOCK`], point `CODEL_HOME` at a private tmp
+/// dir, restore on drop. `Drop` restores the env before the lock releases so
+/// the next setter never sees a stale value.
 #[cfg(test)]
 pub(crate) struct CodelHomeFixture {
     _lock: std::sync::MutexGuard<'static, ()>,
     prev: Option<std::ffi::OsString>,
+    prev_xdg_data_home: Option<std::ffi::OsString>,
+    prev_grove_data_dir: Option<std::ffi::OsString>,
+    prev_home: Option<std::ffi::OsString>,
+    touched_grove_env: bool,
     /// The isolated codel home; pass to `WorktreeDb::open` to read the same DB
     /// `open_default()` writes to.
     pub home: PathBuf,
@@ -428,30 +481,69 @@ impl CodelHomeFixture {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("codel-home");
         std::fs::create_dir_all(&home).unwrap();
-        // Warm up the DB (journal-mode conversion + schema) before exposing it
-        // via CODEL_HOME, sparing the test hot loop set_journal_mode's retry
-        // sleeps. This open has exclusive access (nothing reaches the path
-        // until CODEL_HOME points here); set_journal_mode's retry is the actual
-        // race fix.
+        // Warm journal-mode + schema before CODEL_HOME is visible, so the hot
+        // loop skips retry sleeps. This open is exclusive; the retry is the
+        // actual race fix.
         let _ = WorktreeDb::open(&home);
         let prev = std::env::var_os("CODEL_HOME");
+        // SAFETY: the fixture holds the CODEL_HOME env lock for its whole
+        // lifetime, so no other test thread reads or writes the environment.
         unsafe { std::env::set_var("CODEL_HOME", &home) };
         Self {
             _lock: lock,
             prev,
+            prev_xdg_data_home: None,
+            prev_grove_data_dir: None,
+            prev_home: None,
+            touched_grove_env: false,
             home,
             _tmp: tmp,
         }
+    }
+
+    /// and `HOME` confined to this fixture so pin-GC cannot touch the host.
+    pub(crate) fn isolate_xdg_grove_data(&mut self) -> PathBuf {
+        if !self.touched_grove_env {
+            self.prev_xdg_data_home = std::env::var_os("XDG_DATA_HOME");
+            self.prev_grove_data_dir = std::env::var_os("GROVE_DATA_DIR");
+            self.prev_home = std::env::var_os("HOME");
+            self.touched_grove_env = true;
+        }
+        let xdg = self._tmp.path().join("xdg-data");
+        let grove = xdg.join("grove");
+        std::fs::create_dir_all(&grove).unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &xdg);
+            std::env::remove_var("GROVE_DATA_DIR");
+            std::env::set_var("HOME", self._tmp.path());
+        }
+        grove
     }
 }
 
 #[cfg(test)]
 impl Drop for CodelHomeFixture {
     fn drop(&mut self) {
+        // SAFETY: the fixture still holds the CODEL_HOME env lock here, so no
+        // other test thread reads or writes the environment during restore.
         unsafe {
             match self.prev.take() {
                 Some(p) => std::env::set_var("CODEL_HOME", p),
                 None => std::env::remove_var("CODEL_HOME"),
+            }
+            if self.touched_grove_env {
+                match self.prev_xdg_data_home.take() {
+                    Some(p) => std::env::set_var("XDG_DATA_HOME", p),
+                    None => std::env::remove_var("XDG_DATA_HOME"),
+                }
+                match self.prev_grove_data_dir.take() {
+                    Some(p) => std::env::set_var("GROVE_DATA_DIR", p),
+                    None => std::env::remove_var("GROVE_DATA_DIR"),
+                }
+                match self.prev_home.take() {
+                    Some(p) => std::env::set_var("HOME", p),
+                    None => std::env::remove_var("HOME"),
+                }
             }
         }
     }

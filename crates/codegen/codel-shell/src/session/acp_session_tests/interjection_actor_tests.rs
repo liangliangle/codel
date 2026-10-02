@@ -1,5 +1,4 @@
-//! Mid-turn interjection images: queue-row harvest and the
-//! `drain_pending_interjections` image pipeline.
+//! Mid-turn interjection images: harvesting images from queued rows and the `drain_pending_interjections` image pipeline.
 use super::support::*;
 use super::*;
 
@@ -14,6 +13,7 @@ async fn queue_send_now_keeps_prompt_block_images_on_promoted_row() {
                 let mut state = actor.state.lock().await;
                 state.pending_inputs.push_back(user_item("running", "A"));
                 state.running_task = Some(running_task_stub("running"));
+                state.front_message_committed = true;
                 let mut item = user_item("p1", "A");
                 item.prompt_blocks
                     .push(acp::ContentBlock::Image(test_image_content()));
@@ -26,7 +26,8 @@ async fn queue_send_now_keeps_prompt_block_images_on_promoted_row() {
 
             let cancel = actor
                 .handle_interject_queued_prompt("p1", 0, None, None)
-                .await;
+                .await
+                .cancel_running_turn;
             assert!(cancel, "promotion behind a running turn requests cancel");
 
             let state = actor.state.lock().await;
@@ -52,9 +53,63 @@ async fn queue_send_now_keeps_prompt_block_images_on_promoted_row() {
         .await;
 }
 
-/// Draining an image-bearing interjection injects structured
-/// `ContentPart::Image` parts (base64 data URL) on the synthetic user
-/// message, preserving `SyntheticReason::Interjection`.
+#[tokio::test]
+async fn goal_send_now_routes_text_and_image_as_planner_steering_and_interjection() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("running", "A"));
+                state.running_task = Some(running_task_stub("running"));
+            }
+            actor.goal_tracker.lock().create_goal(
+                "goal".into(),
+                "objective".into(),
+                None,
+                0,
+                "2026-01-01T00:00:00Z".into(),
+                None,
+            );
+            let cancel = tokio_util::sync::CancellationToken::new();
+            actor.goal_tracker.lock().start_planner_run(cancel.clone());
+
+            let (respond_to, response_rx) = tokio::sync::oneshot::channel();
+            let cancelled = actor
+                .queue_input(QueueInputRequest {
+                    send_now: true,
+                    ..queue_input_request(
+                        vec![
+                            acp::ContentBlock::Text(acp::TextContent::new("steer")),
+                            acp::ContentBlock::Image(test_image_content()),
+                        ],
+                        "steer-image",
+                        respond_to,
+                    )
+                })
+                .await;
+
+            assert!(!cancelled);
+            assert!(cancel.is_cancelled());
+            assert!(matches!(
+                response_rx.await.unwrap().unwrap().completion_kind,
+                PromptCompletionKind::RemovedFromQueue
+            ));
+            let run = actor.goal_tracker.lock().take_planner_run().unwrap();
+            assert_eq!(run.steering, ["steer"]);
+            let interjections = actor.pending_interjections.drain_all();
+            let [inj] = interjections.as_slice() else {
+                panic!("expected one interjection: {interjections:?}");
+            };
+            assert_eq!(inj.text, "steer");
+            assert_eq!(inj.attachments.len(), 1);
+        })
+        .await;
+}
+
+/// Draining an image-bearing interjection injects structured `ContentPart::Image` parts (base64 data URLs) on the synthetic user message.
+/// The message keeps `SyntheticReason::Interjection`.
 #[tokio::test]
 async fn drain_interjection_with_images_attaches_image_parts() {
     let local = tokio::task::LocalSet::new();
@@ -73,10 +128,7 @@ async fn drain_interjection_with_images_attaches_image_parts() {
                 Some(ConversationItem::User(u)) => u,
                 other => panic!("conversation tail must be a user item, got: {other:?}"),
             };
-            assert_eq!(
-                user_item.synthetic_reason,
-                Some(SyntheticReason::Interjection)
-            );
+            assert_eq!(user_item.synthetic_reason, SyntheticReason::Interjection);
             let image_urls: Vec<&str> = user_item
                 .content
                 .iter()
@@ -85,11 +137,13 @@ async fn drain_interjection_with_images_attaches_image_parts() {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(image_urls.len(), 1, "image part must be attached");
+            let [url] = image_urls.as_slice() else {
+                panic!("image part must be attached: {image_urls:?}");
+            };
             assert!(
-                image_urls[0].starts_with("data:image/"),
+                url.starts_with("data:image/"),
                 "inline base64 data URL expected, got {}",
-                &image_urls[0][..image_urls[0].len().min(32)]
+                url.get(..url.len().min(32)).unwrap_or(*url)
             );
             let text = conversation.last().unwrap().text_content();
             assert!(
@@ -100,9 +154,48 @@ async fn drain_interjection_with_images_attaches_image_parts() {
         .await;
 }
 
-/// The drain strips `[Image #N: <path>]` → `[Image #N]` before the text
-/// reaches the model — same gate as the prompt path. Covers raw text from
-/// legacy clients AND the queue-interject harvest (raw `queue_meta.text`).
+/// A codel-build interjection persists its images under the session `assets/` dir and leads with the
+/// `<image_files>` block, like a prompt turn, so compaction can later list the paths.
+#[tokio::test]
+async fn codel_build_interjection_with_images_gets_image_files_block() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _gateway_rx) = build_actor().await;
+            actor.pending_interjections.push(PendingInterjection {
+                text: "look at [Image #1]".to_string(),
+                attachments: vec![test_image_content()],
+            });
+
+            assert!(actor.drain_pending_interjections().await);
+
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let user_item = match conversation.last() {
+                Some(ConversationItem::User(u)) => u,
+                other => panic!("conversation tail must be a user item, got: {other:?}"),
+            };
+            assert_eq!(user_item.synthetic_reason, SyntheticReason::Interjection);
+            let text = conversation.last().unwrap().text_content();
+            assert!(text.starts_with("<image_files>\n"), "got: {text}");
+            let path = text
+                .lines()
+                .find_map(|line| line.strip_prefix("1. "))
+                .unwrap_or_else(|| panic!("no persisted path line, got: {text}"));
+            assert!(
+                path.contains("/assets/image-") && std::path::Path::new(path).is_file(),
+                "path must point at the persisted asset, got: {path}"
+            );
+            assert!(
+                text.find("</image_files>") < text.find("<user_query>"),
+                "block must precede the wrapped query, got: {text}"
+            );
+            std::fs::remove_file(path).unwrap();
+        })
+        .await;
+}
+
+/// The drain strips `[Image #N: <path>]` down to `[Image #N]` before the text reaches the model, the same gate as the prompt path.
+/// Covers raw text from legacy clients and text harvested from a queued row (raw `queue_meta.text`).
 #[tokio::test]
 async fn drain_interjection_strips_placeholder_paths_from_text() {
     let local = tokio::task::LocalSet::new();
@@ -130,10 +223,8 @@ async fn drain_interjection_strips_placeholder_paths_from_text() {
         .await;
 }
 
-/// Draining an interjection whose text is a skill slash invocation appends
-/// the loaded `<skill_information>` envelope after the wrapped
-/// `<user_query>` — send-now of a queued `/skill` row (and a typed `/skill`
-/// interjection) must not reach the model unexpanded.
+/// Draining an interjection whose text is a skill slash invocation appends the `<skill_information>` envelope after the wrapped `<user_query>`.
+/// Send-now of a queued `/skill` row (and a typed `/skill` interjection) must not reach the model unexpanded.
 #[tokio::test]
 async fn drain_interjection_expands_skill_slash_reference() {
     let local = tokio::task::LocalSet::new();
@@ -191,9 +282,8 @@ async fn drain_interjection_expands_skill_slash_reference() {
                 "SKILL.md body with substituted args must ride along, got: {text}"
             );
 
-            // A steering interjection that only MENTIONS the skill mid-text
-            // (no leading slash) stays untouched — mirrors turn-start
-            // gating, where "don't run /commit yet" is not an invocation.
+            // A steering interjection that only mentions the skill mid-text (no leading slash) stays untouched
+            // The same gating applies at turn start, where "don't run /commit yet" is not an invocation
             actor.pending_interjections.push(PendingInterjection {
                 text: "don't run /find-session yet".to_string(),
                 attachments: vec![],
@@ -209,8 +299,8 @@ async fn drain_interjection_expands_skill_slash_reference() {
         .await;
 }
 
-/// `format_interjection`'s large-prompt truncation applies to the TEXT only —
-/// image data rides structurally and is never truncated or inlined.
+/// `format_interjection`'s large-prompt truncation applies to the text only.
+/// Image data travels as structured parts and is never truncated or inlined.
 #[tokio::test]
 async fn drain_interjection_truncation_never_touches_image_data() {
     let local = tokio::task::LocalSet::new();
@@ -250,9 +340,62 @@ async fn drain_interjection_truncation_never_touches_image_data() {
         .await;
 }
 
-/// An interjection converted to a fallback prompt turn lands FRONT of the
-/// queue (send-now beats queued-for-later), carries the text + image blocks,
-/// and uses the persist-only `interject-fallback-` prompt-id prefix.
+/// A turn abort (send-now or cancel) can drop the drain future at an await before the batch is submitted.
+/// The drained entries must go back to the buffer in arrival order so `flush_stranded_interjections` can still convert them into fallback prompts; previously they left the buffer and vanished.
+#[tokio::test]
+async fn cancelled_drain_restores_entries_for_stranded_flush() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            actor.pending_interjections.push(PendingInterjection {
+                text: "first steer".to_string(),
+                attachments: vec![],
+            });
+            actor.pending_interjections.push(PendingInterjection {
+                text: "second steer".to_string(),
+                attachments: vec![],
+            });
+            let conversation_len_before = actor.chat_state_handle.get_conversation().await.len();
+
+            {
+                let mut drain = std::pin::pin!(actor.drain_pending_interjections());
+                // The first poll runs past the buffer drain to the chat-state round trip
+                // (`current_model_id`) and pends there, before the batch submit.
+                assert!(
+                    futures::poll!(drain.as_mut()).is_pending(),
+                    "drain must hit an await before submitting the batch"
+                );
+                // Dropping the pending future here simulates the turn abort.
+            }
+
+            let restored: Vec<String> = actor
+                .pending_interjections
+                .snapshot()
+                .into_iter()
+                .map(|e| e.text)
+                .collect();
+            assert_eq!(
+                restored,
+                vec!["first steer".to_string(), "second steer".to_string()],
+                "aborted drain must restore its entries in arrival order"
+            );
+            assert_eq!(
+                actor.chat_state_handle.get_conversation().await.len(),
+                conversation_len_before,
+                "nothing may reach the model from an aborted drain"
+            );
+            assert_eq!(
+                actor.flush_stranded_interjections().await,
+                2,
+                "the cancel path can still convert the restored entries into fallback prompts"
+            );
+        })
+        .await;
+}
+
+/// An interjection converted to a fallback prompt turn lands at the front of the queue: send-now beats queued-for-later.
+/// It carries the text and image blocks and uses the persist-only `interject-fallback-` prompt-id prefix.
 #[tokio::test]
 async fn interjection_fallback_prompt_queues_front_with_prefix() {
     let local = tokio::task::LocalSet::new();
@@ -298,17 +441,16 @@ async fn interjection_fallback_prompt_queues_front_with_prefix() {
             );
             assert!(front.queue_meta.is_none(), "not a shared-queue row");
             assert_eq!(
-                state.pending_inputs[1].prompt_id, "queued-later",
+                state.pending_inputs.get(1).map(|i| i.prompt_id.as_str()),
+                Some("queued-later"),
                 "previously queued prompt stays behind the send-now text"
             );
         })
         .await;
 }
 
-/// Interjections that miss the completed turn's final drain are flushed into
-/// fallback prompt turns — front of the queue, original order — instead of
-/// stranding in `pending_interjections` (the queue-jam: pager said
-/// "Interjection sent" but the message was never sent).
+/// Interjections that miss the completed turn's final drain are flushed into fallback prompt turns, front of the queue in arrival order.
+/// Without the flush they strand in `pending_interjections`: the pager said "Interjection sent" but the message never went out.
 #[tokio::test]
 async fn flush_stranded_interjections_converts_to_front_prompts_in_order() {
     let local = tokio::task::LocalSet::new();
@@ -330,7 +472,7 @@ async fn flush_stranded_interjections_converts_to_front_prompts_in_order() {
                 attachments: vec![],
             });
 
-            assert!(actor.flush_stranded_interjections().await);
+            assert_eq!(actor.flush_stranded_interjections().await, 2);
             assert!(
                 actor.pending_interjections.is_empty(),
                 "flush must drain the buffer"
@@ -358,21 +500,19 @@ async fn flush_stranded_interjections_converts_to_front_prompts_in_order() {
         .await;
 }
 
-/// An empty buffer flushes to nothing (no phantom turns).
 #[tokio::test]
 async fn flush_stranded_interjections_noop_when_empty() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let (actor, _rx) = build_actor().await;
-            assert!(!actor.flush_stranded_interjections().await);
+            assert_eq!(actor.flush_stranded_interjections().await, 0);
             assert!(actor.state.lock().await.pending_inputs.is_empty());
         })
         .await;
 }
 
-/// Review fix: front placement never displaces a pinned running front — the
-/// fallback item lands right behind it when a promotion raced the check.
+/// Front placement never displaces a pinned running front: the fallback item lands right behind it when a promotion raced the check.
 #[tokio::test]
 async fn fallback_prompt_lands_behind_running_front() {
     let local = tokio::task::LocalSet::new();
@@ -400,18 +540,20 @@ async fn fallback_prompt_lands_behind_running_front() {
                 .iter()
                 .map(|i| i.prompt_id.as_str())
                 .collect();
-            assert_eq!(ids[0], "running", "running front stays pinned");
+            let [running, fallback, later] = ids.as_slice() else {
+                panic!("expected running/fallback/later: {ids:?}");
+            };
+            assert_eq!(*running, "running", "running front stays pinned");
             assert!(
-                ids[1].starts_with("interject-fallback-"),
+                fallback.starts_with("interject-fallback-"),
                 "fallback lands right behind the running front, got {ids:?}"
             );
-            assert_eq!(ids[2], "later");
+            assert_eq!(*later, "later");
         })
         .await;
 }
 
-/// A fallback prompt turn created while plan mode is active must not escape
-/// the plan gate: it carries `PromptMode::Plan`.
+/// A fallback prompt turn created while plan mode is active must not escape the plan gate: it carries `PromptMode::Plan`.
 #[tokio::test]
 async fn fallback_prompt_respects_active_plan_mode() {
     let local = tokio::task::LocalSet::new();

@@ -6,6 +6,8 @@ edition.workspace = true
 description = "Foundation modules for the codel shell crate family: environment presets, CPU profiling, and process/filesystem utilities."
 
 [features]
+# Forwarded from shell; empty here (no local-ws code in this crate).
+local-workspace = []
 # Exposes `#[cfg(test)]`-only helpers (`env::EnvVarGuard`,
 # `cpu_profile` test seams) to downstream crates' test targets. Enabled by
 test-support = ["codel-env/test-support"]
@@ -15,12 +17,14 @@ default-bazel = ["test-support"]
 anyhow = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
+codel-extra-ca = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 url = { workspace = true }
+codel-dirs = { workspace = true }
 codel-config = { workspace = true }
 codel-env = { workspace = true }
 codel-shared = { workspace = true }

@@ -16,7 +16,6 @@ use std::io::Cursor;
 
 use base64::Engine as _;
 use image::ImageReader;
-use reqwest::header::AUTHORIZATION;
 
 use crate::attribution::ToolConsumer;
 use crate::implementations::codel_build::image_gen::{ImageGenClient, ImageGenResponse};
@@ -121,13 +120,23 @@ async fn resolve_to_data_url(value: &str) -> Result<String, codel_tool_runtime::
         let comma = value.find(',').ok_or_else(|| {
             codel_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
         })?;
-        if !value[..comma].contains(";base64") {
+        let Some(header) = value.get(..comma) else {
+            return Err(codel_tool_runtime::ToolError::invalid_arguments(
+                "malformed data URL in image reference",
+            ));
+        };
+        if !header.contains(";base64") {
             return Err(codel_tool_runtime::ToolError::invalid_arguments(
                 "image references only support base64 data URLs",
             ));
         }
+        let Some(payload) = value.get(comma + 1..) else {
+            return Err(codel_tool_runtime::ToolError::invalid_arguments(
+                "malformed data URL in image reference",
+            ));
+        };
         base64::engine::general_purpose::STANDARD
-            .decode(&value[comma + 1..])
+            .decode(payload)
             .map_err(|e| {
                 codel_tool_runtime::ToolError::invalid_arguments(format!(
                     "invalid base64 in image reference: {e}"
@@ -156,12 +165,9 @@ async fn resolve_to_data_url(value: &str) -> Result<String, codel_tool_runtime::
 // Attachment reference resolution
 // ---------------------------------------------------------------------------
 
-/// Parse an attached-image reference token into its 1-based display number.
-///
-/// Accepts the forms the model naturally produces for an image the user
-/// attached to the conversation: `[Image #1]`, `Image #1`, `image #1`, or
-/// a bare `#1`. Returns `None` for anything else — filesystem paths and
-/// `data:` / `file://` URLs fall through to direct resolution.
+/// Parse an attached-image reference token into its 1-based display number. Accepts the forms the model naturally
+/// produces for an image the user attached to the conversation: `[Image #1]`, `Image #1`, `image #1`, or a bare `#1`.
+/// Returns `None` for anything else — filesystem paths and `data:` / `file://` URLs fall through to direct resolution.
 fn parse_attachment_token(value: &str) -> Option<usize> {
     let trimmed = value.trim();
     // Strip optional surrounding brackets: `[…]`.
@@ -173,7 +179,10 @@ fn parse_attachment_token(value: &str) -> Option<usize> {
     // Strip an optional leading `image` label (case-insensitive). The
     // 5-byte prefix is ASCII, so slicing at byte 5 stays on a boundary.
     let rest = match inner.get(..5).map(str::to_ascii_lowercase).as_deref() {
-        Some("image") => inner[5..].trim_start(),
+        Some("image") => {
+            let rest = inner.get(5..)?;
+            rest.trim_start()
+        }
         _ => inner,
     };
     // Require the `#` sigil followed by a bare positive integer.
@@ -184,12 +193,9 @@ fn parse_attachment_token(value: &str) -> Option<usize> {
     }
 }
 
-/// Resolve a single `image` argument to a reference `resolve_to_data_url`
-/// can read.
-///
-/// Attachment tokens (`[Image #N]`) are mapped to the durable reference
-/// the shell recorded for the current turn; everything else (filesystem
-/// paths, `data:` / `file://` URLs) passes through unchanged.
+/// Resolve a single `image` argument to a reference `resolve_to_data_url` can read. Attachment
+/// tokens (`[Image #N]`) are mapped to the durable reference the shell recorded for the current
+/// turn; everything else (filesystem paths, `data:` / `file://` URLs) passes through unchanged.
 fn resolve_attachment_reference(
     reference: &str,
     attached: Option<&crate::types::resources::AttachedImages>,
@@ -198,10 +204,9 @@ fn resolve_attachment_reference(
         return Ok(reference.to_owned());
     };
     let registry = attached.filter(|a| !a.0.is_empty()).ok_or_else(|| {
-        // Tokens only resolve against the current message's attachments. An
-        // empty registry usually means the image was attached in an earlier
-        // message (cross-turn editing isn't supported yet), so steer the
-        // model to ask for a re-attach rather than retry the dead token.
+        // Tokens only resolve against the current message's attachments. An empty registry usually
+        // means the image was attached in an earlier message (cross-turn editing isn't supported
+        // yet), so steer the model to ask for a re-attach rather than retry the dead token.
         codel_tool_runtime::ToolError::invalid_arguments(format!(
             "image reference {reference:?} matches no image attached to this message. If it was \
              attached earlier in the conversation, ask the user to re-attach it here; otherwise \
@@ -287,7 +292,7 @@ impl codel_tool_runtime::Tool for ImageEditTool {
     ) -> codel_tool_types::ToolDescription {
         codel_tool_types::ToolDescription::new(
             "image_edit",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
@@ -324,14 +329,8 @@ impl codel_tool_runtime::Tool for ImageEditTool {
             res.require::<ImageGenClient>()?.clone()
         };
 
-        // Free / X Basic users are zero-limited on Imagine server-side; return
-        // the upsell prose instead of a doomed request (shares `image_gen`'s
-        // message and short-circuits before resolving any attachments).
-        if client.is_tier_restricted() {
-            return Ok(ToolOutput::Text(
-                super::image_gen::TIER_RESTRICTED_UPSELL.into(),
-            ));
-        }
+        // Before the attachments are read: a refused bearer must not cost the image encoding
+        let sent_bearer = client.current_bearer().await?;
 
         // Snapshot the per-turn attachment registry so `[Image #N]` tokens
         // resolve to the real attachment (see `resolve_attachment_reference`).
@@ -360,26 +359,34 @@ impl codel_tool_runtime::Tool for ImageEditTool {
             "response_format": "b64_json",
         });
 
-        // API: single ref → "image" object; multiple → "images" array.
-        // For single-image edits the API auto-detects aspect ratio from the
-        // input image and ignores the `aspect_ratio` field. Only send it
-        // for multi-image edits where the API needs an explicit ratio.
+        // API: single ref → "image" object; multiple → "images" array. For single-image edits the
+        // API auto-detects aspect ratio from the input image and ignores the `aspect_ratio` field.
+        // Only send it for multi-image edits where the API needs an explicit ratio.
         let mut imgs: Vec<serde_json::Value> = data_urls
             .iter()
             .map(|u| serde_json::json!({ "url": u }))
             .collect();
+        let Some(obj) = payload.as_object_mut() else {
+            return Err(codel_tool_runtime::ToolError::invalid_arguments(
+                "failed to build image edit payload",
+            ));
+        };
         if imgs.len() == 1 {
-            payload["image"] = imgs.pop().unwrap();
+            let Some(img) = imgs.pop() else {
+                return Err(codel_tool_runtime::ToolError::invalid_arguments(
+                    "failed to build image edit payload",
+                ));
+            };
+            obj.insert("image".to_owned(), img);
         } else {
-            payload["images"] = serde_json::Value::Array(imgs);
-            payload["aspect_ratio"] = serde_json::json!(input.aspect_ratio);
+            obj.insert("images".to_owned(), serde_json::Value::Array(imgs));
+            obj.insert(
+                "aspect_ratio".to_owned(),
+                serde_json::json!(input.aspect_ratio),
+            );
         }
 
-        let sent_bearer = client.current_bearer().await;
-        let mut req = client.http().post(&url).json(&payload);
-        if let Some(ref key) = sent_bearer {
-            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
-        }
+        let req = client.post_json(&url, &payload, &sent_bearer);
 
         let response = req.send().await.map_err(|e| {
             codel_tool_runtime::ToolError::invalid_arguments(format!(
@@ -389,7 +396,7 @@ impl codel_tool_runtime::Tool for ImageEditTool {
 
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            client.record_401_attribution(ToolConsumer::ImageGen, sent_bearer.as_deref());
+            client.record_401_attribution(ToolConsumer::ImageGen, Some(&sent_bearer));
         }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -461,8 +468,6 @@ mod tests {
     fn tool_name_and_description() {
         let tool = ImageEditTool;
         assert_eq!(codel_tool_runtime::Tool::id(&tool).as_str(), "image_edit");
-        let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
-        assert!(desc.contains("Edit or transform"));
     }
 
     #[test]
@@ -668,10 +673,9 @@ mod tests {
 
     #[test]
     fn resolve_reference_maps_by_number_not_position() {
-        // After a mid-compose chip removal the surviving numbers are
-        // non-contiguous (`#1`, `#3`). Resolution must key on the number,
-        // not the list position, or `[Image #3]` would resolve to the wrong
-        // file (or wrongly error).
+        // After a mid-compose chip removal the surviving numbers are non-contiguous (`#1`, `#3`).
+        // Resolution must key on the number, not the list position, or `[Image #3]` would resolve
+        // to the wrong file (or wrongly error).
         let attached = crate::types::resources::AttachedImages(vec![
             (1, "/tmp/first.png".to_owned()),
             (3, "/tmp/third.png".to_owned()),

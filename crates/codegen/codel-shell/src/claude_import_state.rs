@@ -1,16 +1,14 @@
-// claude_import_state.rs
 // Tracks what Claude settings have been imported/dismissed so we don't re-prompt.
 //
 // State is persisted to `~/.codel/claude_import_state.json`.
-// Hash is SHA-256 over sorted, concatenated contents of all Claude settings
-// files at a given scope (global or project).
+// Hash is SHA-256 over sorted, concatenated contents of all Claude settings files at a given scope (global or project)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, warn};
+use tracing::warn;
 
 use codel_workspace::permission::claude_settings::find_claude_settings_paths;
 
@@ -18,7 +16,7 @@ use codel_workspace::permission::claude_settings::find_claude_settings_paths;
 
 /// Persistent import state, loaded from / saved to `~/.codel/claude_import_state.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImportState {
+pub(crate) struct ImportState {
     /// Schema version for forward compatibility.
     pub version: u32,
     /// Hash of global Claude settings (`~/.claude/settings*.json`, `~/.claude.json`).
@@ -31,7 +29,7 @@ pub struct ImportState {
 
 /// Import state for a single scope (global or one project).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScopeState {
+pub(crate) struct ScopeState {
     /// SHA-256 hex digest of the concatenated Claude settings file contents.
     pub last_hash: String,
     /// RFC 3339 timestamp of when the hash was last recorded.
@@ -56,7 +54,7 @@ fn state_path() -> PathBuf {
 }
 
 /// Load the import state from disk. Returns default if missing or unreadable.
-pub fn load_import_state() -> ImportState {
+pub(crate) fn load_import_state() -> ImportState {
     let path = state_path();
     match std::fs::read_to_string(&path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
@@ -80,14 +78,13 @@ pub fn load_import_state() -> ImportState {
 }
 
 /// Save the import state to disk (atomic write via tmp + rename).
-pub fn save_import_state(state: &ImportState) -> std::io::Result<()> {
+pub(crate) fn save_import_state(state: &ImportState) -> std::io::Result<()> {
     let path = state_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(state).map_err(std::io::Error::other)?;
-    // `.with_extension("json.tmp")` replaces `.json` → produces
-    // `claude_import_state.json.tmp` (the last extension is replaced).
+    // `.with_extension("json.tmp")` replaces `.json`, producing `claude_import_state.json.tmp` (the last extension is replaced)
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &json)?;
     std::fs::rename(&tmp, &path)?;
@@ -96,11 +93,9 @@ pub fn save_import_state(state: &ImportState) -> std::io::Result<()> {
 
 // Hash Computation
 
-/// Compute a SHA-256 hash over the contents of all Claude settings files for a
-/// given set of paths. Files that don't exist or can't be read are skipped.
-///
-/// Paths are sorted before hashing so the result is deterministic regardless of
-/// discovery order.
+/// Compute a SHA-256 hash over the contents of all Claude settings files for a given set of paths.
+/// Files that don't exist or can't be read are skipped.
+/// Paths are sorted before hashing so the result is deterministic regardless of discovery order.
 fn compute_settings_hash(paths: &[PathBuf]) -> String {
     let mut existing: Vec<(&PathBuf, Vec<u8>)> = paths
         .iter()
@@ -123,12 +118,11 @@ fn compute_settings_hash(paths: &[PathBuf]) -> String {
 }
 
 /// Compute hash for global Claude settings (`~/.claude/settings*.json`, `~/.claude.json`).
-///
-/// Uses `dirs::home_dir()` to match the home directory resolution used by
-/// `load_claude_json_mcp_servers_as_configs()` in `util/config.rs`.
+/// `codel_dirs::home_dir()` resolves home the way the imported tool itself does (Node `os.homedir()`: `USERPROFILE` on Windows).
+/// So the hash covers the files that tool actually wrote even under a redirected profile.
 fn compute_global_hash() -> (String, Vec<PathBuf>) {
     let mut paths = Vec::new();
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = codel_dirs::home_dir() {
         paths.push(home.join(".claude").join("settings.json"));
         paths.push(home.join(".claude").join("settings.local.json"));
         paths.push(home.join(".claude.json"));
@@ -139,13 +133,11 @@ fn compute_global_hash() -> (String, Vec<PathBuf>) {
 
 /// Compute hash for project-level Claude settings.
 ///
-/// Uses `dirs::home_dir()` to match the home directory resolution used by
-/// the scanner in `claude_import.rs`.
+/// The home used to exclude global paths must match the one the scanner in `claude_import.rs` uses, or a path could hash as both global and project.
 fn compute_project_hash(cwd: &Path) -> (String, Vec<PathBuf>) {
-    // Use find_claude_settings_paths but filter to only project-level paths
-    // (exclude global ~/.claude/ paths).
+    // Use find_claude_settings_paths but filter to only project-level paths (exclude global ~/.claude/ paths)
     let all_paths = find_claude_settings_paths(cwd);
-    let home = dirs::home_dir();
+    let home = codel_dirs::home_dir();
 
     let project_paths: Vec<PathBuf> = all_paths
         .into_iter()
@@ -160,8 +152,7 @@ fn compute_project_hash(cwd: &Path) -> (String, Vec<PathBuf>) {
         .collect();
 
     // Also include .mcp.json candidate paths from cwd up to repo root.
-    // Non-existent files are skipped by compute_settings_hash(), so we
-    // unconditionally add candidates (avoids TOCTOU race vs .exists()).
+    // Non-existent files are skipped by compute_settings_hash(), so we unconditionally add candidates (avoids a TOCTOU race vs .exists())
     let mut all = project_paths;
     let mut current = cwd.to_path_buf();
     loop {
@@ -180,61 +171,6 @@ fn compute_project_hash(cwd: &Path) -> (String, Vec<PathBuf>) {
 }
 
 // Change Detection
-
-/// Check if any Claude settings files have changed since the last import/dismiss.
-///
-/// Returns `true` if:
-/// - Global settings exist and have a different hash than last recorded
-/// - Project settings exist and have a different hash than last recorded
-/// - No import state exists yet but Claude settings files are present
-pub fn has_new_changes(cwd: &Path) -> bool {
-    let state = load_import_state();
-
-    // Check global scope.
-    let (global_hash, global_paths) = compute_global_hash();
-    let global_files_exist = global_paths.iter().any(|p| p.exists());
-    if global_files_exist {
-        match &state.global {
-            None => {
-                debug!("Claude import: global settings found, no previous import state");
-                return true;
-            }
-            Some(s) if s.last_hash != global_hash => {
-                debug!(
-                    old = %s.last_hash,
-                    new = %global_hash,
-                    "Claude import: global settings changed since last import"
-                );
-                return true;
-            }
-            _ => {}
-        }
-    }
-
-    // Check project scope.
-    let (project_hash, project_paths) = compute_project_hash(cwd);
-    let project_files_exist = project_paths.iter().any(|p| p.exists());
-    if project_files_exist {
-        let cwd_key = cwd.to_string_lossy().to_string();
-        match state.projects.get(&cwd_key) {
-            None => {
-                debug!("Claude import: project settings found, no previous import state");
-                return true;
-            }
-            Some(s) if s.last_hash != project_hash => {
-                debug!(
-                    old = %s.last_hash,
-                    new = %project_hash,
-                    "Claude import: project settings changed since last import"
-                );
-                return true;
-            }
-            _ => {}
-        }
-    }
-
-    false
-}
 
 // State Updates
 
@@ -269,8 +205,7 @@ pub fn mark_imported(cwd: &Path) {
     }
 }
 
-/// Alias for `mark_imported` — dismissing records the same hash so we don't
-/// re-prompt until the files actually change.
+/// Alias for `mark_imported`: dismissing records the same hash so we don't re-prompt until the files actually change.
 pub fn mark_dismissed(cwd: &Path) {
     mark_imported(cwd);
 }
@@ -292,7 +227,7 @@ mod tests {
         let h2 = compute_settings_hash(&[f1.clone(), f2.clone()]);
         assert_eq!(h1, h2, "same order should produce same hash");
 
-        // Reversed order should also produce the same hash (sorted internally).
+        // Reversed order produces the same hash (sorted internally)
         let h3 = compute_settings_hash(&[f2.clone(), f1.clone()]);
         assert_eq!(
             h1, h3,
@@ -328,7 +263,7 @@ mod tests {
 
     #[test]
     fn compute_settings_hash_empty_input() {
-        // No paths at all should produce a deterministic hash.
+        // No paths at all still produces a deterministic hash
         let h1 = compute_settings_hash(&[]);
         let h2 = compute_settings_hash(&[]);
         assert_eq!(h1, h2, "empty input should produce same hash");

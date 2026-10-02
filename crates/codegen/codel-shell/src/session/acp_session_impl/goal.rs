@@ -1,25 +1,21 @@
-//! Goal-orchestration concern for `SessionActor`.
+//! Goal handling for `SessionActor`.
 
 use super::*;
 
-/// Per-role toolset capability requirement for the parent-side gate.
-///
-/// Each role needs a different minimum toolset to do its job; a configured
-/// harness `agent_type` whose role toolset lacks the capability fails open to
-/// the current model + session harness rather than spawning an unusable
-/// verifier.
+/// Minimum toolset a role needs, checked by the parent-side gate.
+/// A configured harness `agent_type` whose role toolset lacks the capability fails open to the current model and session harness.
+/// Failing open beats spawning an unusable verifier.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RoleCapability {
-    /// Skeptic: reads + greps code to corroborate diff hunks.
+    /// Reads and greps code to corroborate diff hunks.
     Skeptic,
-    /// Strategist: reads + greps + runs commands while investigating traces.
+    /// Reads, greps, and runs commands while investigating traces.
     Strategist,
 }
 
 impl RoleCapability {
-    /// `true` when `summary`'s toolset satisfies this role's minimum
-    /// capability, keyed on the `can_*` flags (`can_search` for grep,
-    /// `can_execute` for terminal/bash).
+    /// `true` when `summary`'s toolset satisfies this role's minimum capability.
+    /// Keyed on the `can_*` flags (`can_search` for grep, `can_execute` for terminal/bash).
     fn is_satisfied(
         self,
         summary: &codel_tools::implementations::codel_build::task::types::SubagentTypeSummary,
@@ -31,27 +27,21 @@ impl RoleCapability {
     }
 }
 
-/// Panel-scoped memoization for `resolve_goal_role_override`:
-/// at most one `describe_subagent_type` coordinator round-trip per distinct
-/// `agent_type`, so a multi-index skeptic panel sharing one agent_type costs
-/// one round-trip instead of N. A single planner/strategist resolve uses a
-/// fresh (empty) cache — no cross-call sharing needed.
+/// Panel-scoped memoization for `resolve_goal_role_override`: at most one `describe_subagent_type` coordinator round-trip per distinct `agent_type`.
+/// So a multi-index skeptic panel sharing one agent_type costs one round-trip instead of N.
+/// A single planner/strategist resolve uses a fresh (empty) cache; no cross-call sharing is needed.
 #[derive(Default)]
 pub(crate) struct PanelResolveCache {
-    /// harness `agent_type` → describe outcome (the coordinator round-trip
-    /// result for the role's `general-purpose` toolset on that harness).
+    /// Maps a harness `agent_type` to its describe outcome (the coordinator's answer for the role's `general-purpose` toolset on that harness).
     describe: std::collections::HashMap<
         String,
         codel_tools::implementations::codel_build::task::types::SubagentDescribeOutcome,
     >,
 }
 
-/// Build a role's prompt tool names from its resolved spawn override (
-/// option (a)). A committed explicit pair draws its names from the SAME
-/// `describe_subagent_type` summary cached during the gate (no second
-/// round-trip); every other case (inherit, fail-open, or a missing summary)
-/// falls back to the parent-toolset `inherit` names so the prompt always
-/// renders fully.
+/// Build a role's prompt tool names from its resolved spawn override.
+/// A committed explicit pair draws its names from the same `describe_subagent_type` summary cached during the gate, with no second round-trip.
+/// Every other case (inherit, fail-open, or a missing summary) falls back to the parent-toolset `inherit` names so the prompt always renders fully.
 fn role_tool_names_from(
     override_: &crate::session::goal_planner::RoleSpawnOverride,
     cache: &PanelResolveCache,
@@ -70,11 +60,9 @@ fn role_tool_names_from(
     }
 }
 
-/// How [`SessionActor::record_verdict_on_orchestration`] updates the
-/// orchestration's `last_classifier_gaps`. A real `NotAchieved` panel result
-/// stamps fresh curated gaps (`Set`), a verdict that resolves them clears
-/// (`Clear`), and a synthetic verdict that ran no panel leaves any stored
-/// real gaps replaying into the continuation directive (`Preserve`).
+/// How [`SessionActor::record_verdict_on_orchestration`] updates the orchestration's `last_classifier_gaps`.
+/// A real `NotAchieved` panel result stamps fresh curated gaps (`Set`), and a verdict that resolves them clears (`Clear`).
+/// A synthetic verdict that ran no panel leaves any stored real gaps replaying into the continuation directive (`Preserve`).
 pub(crate) enum GapsUpdate<'a> {
     Set(&'a str),
     Clear,
@@ -86,8 +74,7 @@ impl SessionActor {
         &self,
     ) -> Result<crate::session::goal_evaluator::GoalEvaluatorVerdict, String> {
         use crate::session::goal_evaluator::{
-            GOAL_EVALUATOR_TIMEOUT, bounded_goal_transcript, build_goal_evaluator_request,
-            parse_goal_evaluator_verdict,
+            bounded_goal_transcript, build_goal_evaluator_request, parse_goal_evaluator_verdict,
         };
         let (objective, plan_file) = {
             let tracker = self.goal_tracker.lock();
@@ -111,84 +98,31 @@ impl SessionActor {
             .map(|config| config.model)
             .filter(|model| !model.is_empty())
             .unwrap_or_else(|| self.models_manager.current_model_id().0.to_string());
-        let small_model = crate::session::helpers::prompt_suggest::DEFAULT_SUGGEST_MODEL;
-        let preferred_model = self
-            .models_manager
-            .model_in_catalog(small_model)
-            .then_some(small_model);
         let session_id = self.session_info.id.to_string();
         let mut last_error = String::new();
-        for attempt in 0..2 {
-            let requested_model = if attempt == 0 {
-                preferred_model.unwrap_or(active_model.as_str())
-            } else {
-                active_model.as_str()
-            };
-            let (client, model) = if requested_model == active_model {
-                match self.prepare_chat_completion(false).await {
-                    Ok(client) => (client, active_model.clone()),
-                    Err(error) => {
-                        last_error = format!("could not prepare evaluator client: {error}");
-                        continue;
-                    }
-                }
-            } else {
-                let active_config = self.reconstruct_full_config().await;
-                match self.resolve_aux_sampler_config(requested_model).await {
-                    Some(mut config) => {
-                        crate::agent::config::stamp_session_local_sampler_fields(
-                            &mut config,
-                            &active_config,
-                            self.client_identifier.clone(),
-                            Some(self.max_retries),
-                        );
-                        let model = config.model.clone();
-                        match codel_sampler::SamplingClient::new(config) {
-                            Ok(client) => (client, model),
-                            Err(error) => {
-                                last_error = format!("could not prepare small evaluator: {error}");
-                                continue;
-                            }
-                        }
-                    }
-                    None => {
-                        last_error =
-                            format!("small evaluator model `{requested_model}` unavailable");
-                        continue;
-                    }
+        for _ in 0..2 {
+            let client = match self.prepare_chat_completion(false).await {
+                Ok(client) => client,
+                Err(error) => {
+                    last_error = format!("could not prepare evaluator client: {error}");
+                    continue;
                 }
             };
             let request = build_goal_evaluator_request(
                 &objective,
                 &transcript,
                 plan.as_deref(),
-                model.clone(),
+                active_model.clone(),
                 &session_id,
             );
-            let response = match tokio::time::timeout(
-                GOAL_EVALUATOR_TIMEOUT,
-                client.conversation_collect(request),
-            )
-            .await
-            {
-                Ok(Ok(response)) => response,
-                Ok(Err(error)) => {
+            let response = match client.conversation_collect(request).await {
+                Ok(response) => response,
+                Err(error) => {
                     let _ = self
                         .chat_state_handle
                         .mark_usage_incomplete(true, true)
                         .await;
                     last_error = format!("goal evaluator request failed: {error}");
-                    continue;
-                }
-                Err(_) => {
-                    let _ = self
-                        .chat_state_handle
-                        .mark_usage_incomplete(true, true)
-                        .await;
-                    last_error = format!(
-                        "goal evaluator timed out after {}s",
-                        GOAL_EVALUATOR_TIMEOUT.as_secs()
-                    );
                     continue;
                 }
             };
@@ -271,7 +205,7 @@ impl SessionActor {
             self.auto_pause_goal_if_active_with_message(
                 crate::session::goal_tracker::GoalPauseReason::Infra,
                 format!(
-                    "Goal verification infrastructure failed ({}). Resume with /goal to retry.",
+                    "Goal verification infrastructure failed ({}). Run /goal resume to retry.",
                     reason.as_const_str()
                 ),
             )
@@ -463,6 +397,8 @@ impl SessionActor {
         details_path: &str,
         pause_summary: &str,
     ) {
+        self.events
+            .emit(crate::session::events::Event::GoalClassifierCapReached { attempt });
         let msg = format_goal_pause_message(
             &format!("Goal classifier rejected completion {attempt} times — goal auto-paused."),
             pause_summary,
@@ -648,6 +584,7 @@ impl SessionActor {
                 cwd: Some(self.tool_context.cwd.as_str().to_owned()),
                 trace_sink: Some((self.chat_state_handle.clone(), task_tool_name)),
                 skeptic_overrides,
+                events: Some(self.events.writer()),
             });
 
         let implementer_scratch =
@@ -674,7 +611,7 @@ impl SessionActor {
             inherit_tool_names: &inherit_tool_names,
         };
 
-        let result = run_verification_stage(spawner, inputs).await;
+        let result = run_verification_stage(spawner, inputs, &|e| self.events.emit(e)).await;
         self.chat_state_handle.flush_harness_trace_turn();
         if result.panel_ran
             && let Some(o) = self.goal_tracker.lock().snapshot_mut()
@@ -737,14 +674,19 @@ impl SessionActor {
         available_models: &indexmap::IndexMap<String, crate::agent::config::ModelEntry>,
         cache: &mut PanelResolveCache,
     ) -> crate::session::goal_planner::RoleSpawnOverride {
-        use crate::session::events::GoalRoleModelFailOpenReason as Reason;
+        use crate::session::events::{Event, GoalRoleModelFailOpenReason as Reason};
         use crate::session::goal_planner::RoleSpawnOverride;
         use codel_tools::implementations::codel_build::task::backend::{
             ChannelBackend, SubagentBackend,
         };
         use codel_tools::implementations::codel_build::task::types::SubagentDescribeOutcome;
 
-        let fail_open = |_reason: Reason| {
+        let fail_open = |reason: Reason| {
+            self.emit_event(Event::GoalRoleModelFailOpen {
+                role,
+                skeptic_idx,
+                reason: reason.as_const_str(),
+            });
             RoleSpawnOverride::default()
         };
 
@@ -793,6 +735,13 @@ impl SessionActor {
             return fail_open(Reason::ToolsetIncapable);
         }
 
+        self.emit_event(Event::GoalRoleModelResolved {
+            role,
+            skeptic_idx,
+            model_id: pair.model.clone(),
+            agent_type: pair.agent_type.clone(),
+            source: "remote",
+        });
         RoleSpawnOverride {
             model: Some(pair.model.clone()),
             agent_type: Some(pair.agent_type.clone()),
@@ -835,7 +784,11 @@ impl SessionActor {
         )
     }
 
-    pub(super) async fn setup_goal(&self, objective: &str, token_budget: Option<i64>) -> String {
+    pub(super) async fn setup_goal(
+        &self,
+        objective: &str,
+        token_budget: Option<i64>,
+    ) -> GoalSetupOutcome {
         let goal_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
         let token_baseline = self.chat_state_handle.get_total_tokens().await as i64;
@@ -868,40 +821,48 @@ impl SessionActor {
         }
 
         self.maybe_run_goal_planner(objective).await;
+        if let Some(msg) = self.planner_pause_short_circuit_message("Goal paused.") {
+            return GoalSetupOutcome::Message(msg);
+        }
 
         let names = self.resolve_goal_tool_names().await;
         let planner_enabled = self.goal_planner_enabled;
         let body = {
             let tracker = self.goal_tracker.lock();
-            let o = tracker
-                .snapshot()
-                .expect("create_goal must populate the orchestration snapshot");
-            let plan_path = goal_reminder_plan_path(planner_enabled, o);
-            let scratch_dir = crate::session::goal_tracker::implementer_scratch_dir(&o.verifier_id);
-            let scratch = scratch_dir.to_string_lossy();
-            if self.goal_runs_on_workflow_engine() {
-                render_goal_rules(
-                    objective,
-                    &names,
-                    "",
-                    "",
-                    plan_path,
-                    &scratch,
-                    o.scratch_dir_ready,
-                )
-            } else {
-                render_goal_rules_legacy(
-                    objective,
-                    &names,
-                    "",
-                    "",
-                    plan_path,
-                    &scratch,
-                    o.scratch_dir_ready,
-                )
-            }
+            tracker.snapshot().map(|o| {
+                let plan_path = goal_reminder_plan_path(planner_enabled, o);
+                let scratch_dir =
+                    crate::session::goal_tracker::implementer_scratch_dir(&o.verifier_id);
+                let scratch = scratch_dir.to_string_lossy();
+                if self.goal_runs_on_workflow_engine() {
+                    render_goal_rules(
+                        objective,
+                        &names,
+                        "",
+                        "",
+                        plan_path,
+                        &scratch,
+                        o.scratch_dir_ready,
+                    )
+                } else {
+                    render_goal_rules_legacy(
+                        objective,
+                        &names,
+                        "",
+                        "",
+                        plan_path,
+                        &scratch,
+                        o.scratch_dir_ready,
+                    )
+                }
+            })
         };
-        format!("<system-reminder>\n{body}\nStart now.\n</system-reminder>\n\n")
+        let Some(body) = body else {
+            return GoalSetupOutcome::Message(GOAL_CLEARED_DURING_PLANNING.to_string());
+        };
+        GoalSetupOutcome::Inference {
+            reminder: format!("<system-reminder>\n{body}\nStart now.\n</system-reminder>\n\n"),
+        }
     }
 
     pub(super) async fn resume_goal(&self) -> GoalResumeOutcome {
@@ -979,6 +940,7 @@ impl SessionActor {
         self.goal_blocked_streak
             .store(0, std::sync::atomic::Ordering::Relaxed);
 
+        let mut planner_published = false;
         if was_resumed {
             let needs_retry = {
                 let tracker = self.goal_tracker.lock();
@@ -995,11 +957,17 @@ impl SessionActor {
                     .map(|o| o.objective.clone());
                 if let Some(objective) = objective {
                     self.maybe_run_goal_planner(&objective).await;
-                    if self.goal_tracker.lock().status() != Some(GoalStatus::Active) {
-                        return GoalResumeOutcome::Message(
-                            "Planning failed again; goal paused.".to_string(),
-                        );
+                    if let Some(msg) = self
+                        .planner_pause_short_circuit_message("Planning failed again; goal paused.")
+                    {
+                        return GoalResumeOutcome::Message(msg);
                     }
+                    // `needs_retry` saw `plan_file == None` and the goal is still Active, so `Some` means this resume published.
+                    planner_published = self
+                        .goal_tracker
+                        .lock()
+                        .snapshot()
+                        .is_some_and(|o| o.plan_file.is_some());
                 }
             }
         }
@@ -1026,6 +994,8 @@ impl SessionActor {
                  working. If no, you may block again with an updated reason.\n\
                  \n"
             ),
+            // The pause was the planner's own failure; a plan published on this resume supersedes it.
+            (GoalStatus::InfraPaused, _) if planner_published => String::new(),
             (GoalStatus::InfraPaused, Some(msg)) => format!(
                 "Previous state: Paused (infrastructure error).\n\
                  Previous error: {msg}\n\
@@ -1089,6 +1059,108 @@ impl SessionActor {
         }
     }
 
+    /// Seeds compacted `last_user_query` from the live objective.
+    /// Paused / blocked / budget-limited goals leave the human prompt in place.
+    pub(crate) fn goal_objective_for_compaction(&self) -> Option<String> {
+        let tracker = self.goal_tracker.lock();
+        let o = tracker.snapshot()?;
+        if o.status != crate::session::goal_tracker::GoalStatus::Active {
+            return None;
+        }
+        let objective = o.objective.trim();
+        if objective.is_empty() {
+            None
+        } else {
+            Some(o.objective.clone())
+        }
+    }
+
+    /// Summarizer pin so multi-compact cannot drop the objective.
+    pub(crate) fn goal_compaction_user_context(&self) -> Option<String> {
+        let (objective, plan_path) = {
+            let tracker = self.goal_tracker.lock();
+            let o = tracker.snapshot()?;
+            if o.status != crate::session::goal_tracker::GoalStatus::Active {
+                return None;
+            }
+            if o.objective.trim().is_empty() {
+                return None;
+            }
+            (
+                o.objective.clone(),
+                goal_reminder_plan_path(self.goal_planner_enabled, o)
+                    .map(std::path::Path::to_path_buf),
+            )
+        };
+        let mut ctx = format!(
+            "Objective: {objective}\nDo not restart this goal or revive a prior unrelated task. Continue from the current next step."
+        );
+        if let Some(step) = resolve_goal_next_step(plan_path.as_deref()) {
+            ctx.push_str("\nNext step: ");
+            ctx.push_str(&step);
+        }
+        Some(ctx)
+    }
+
+    /// Live GoalTracker snapshot for the post-compaction reminder.
+    /// `None` when no goal exists or it already completed.
+    /// Continuation-style (next step), not create-style `goal_rules`.
+    pub(crate) async fn compaction_goal_section(&self) -> Option<String> {
+        use crate::session::goal_tracker::GoalStatus;
+
+        let names = self.resolve_goal_tool_names().await;
+        let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
+        let (tokens_used, _) = self.goal_tokens(current_tokens);
+        let planner_enabled = self.goal_planner_enabled;
+        let (objective, status, elapsed, plan_path, is_active) = {
+            let mut tracker = self.goal_tracker.lock();
+            tracker.account_elapsed();
+            let o = tracker.snapshot()?;
+            if o.status == GoalStatus::Complete {
+                return None;
+            }
+            let elapsed = crate::session::goal_orchestrator::format_elapsed(o.elapsed_ms);
+            let is_active = o.status == GoalStatus::Active;
+            let status = match o.status {
+                GoalStatus::Active => "Active",
+                GoalStatus::UserPaused => "Paused",
+                GoalStatus::BackOffPaused => "Paused (back off)",
+                GoalStatus::NoProgressPaused => "Paused (no progress)",
+                GoalStatus::InfraPaused => "Paused (infrastructure error)",
+                GoalStatus::Blocked => "Blocked",
+                GoalStatus::BudgetLimited => "Budget limited",
+                GoalStatus::Complete => unreachable!("complete goals are omitted above"),
+            };
+            let plan_path =
+                goal_reminder_plan_path(planner_enabled, o).map(std::path::Path::to_path_buf);
+            (o.objective.clone(), status, elapsed, plan_path, is_active)
+        };
+        let next_step = resolve_goal_next_step(plan_path.as_deref())
+            .unwrap_or_else(|| format!("Check your `{}` list for next steps.", names.todo));
+        let body = if is_active {
+            format!(
+                "Objective: {objective}\nStatus: {status}\nTokens: {tokens_used} | Elapsed: {elapsed}\n\n{GOAL_CONTINUATION_SENTINEL}\n{next_step}\n\nDo not restart this goal or revive a prior unrelated task."
+            )
+        } else {
+            format!(
+                "Objective: {objective}\nStatus: {status}\nTokens: {tokens_used} | Elapsed: {elapsed}\n\nA live goal exists. Do not restart it or revive a prior unrelated task."
+            )
+        };
+        Some(format_compaction_goal_section(&body))
+    }
+
+    /// Inject GoalSummary so the next sample sees next-step, not create-style rules.
+    pub(crate) async fn reseed_active_goal_after_compaction(&self) {
+        let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
+        let Some(plan) = self
+            .prepare_goal_continuation(current_tokens, GoalContinuationPurpose::Compaction)
+            .await
+        else {
+            return;
+        };
+        self.inject_goal_continuation_message(plan.directive).await;
+    }
+
     pub(super) async fn prune_prior_goal_continuation_directives(&self) {
         use codel_sampling_types::conversation::SyntheticReason;
 
@@ -1096,7 +1168,7 @@ impl SessionActor {
             matches!(
                 item,
                 ConversationItem::User(u)
-                    if u.synthetic_reason == Some(SyntheticReason::GoalSummary)
+                    if u.synthetic_reason == SyntheticReason::GoalSummary
             ) && item.text_content().contains(GOAL_CONTINUATION_SENTINEL)
         }
         let conv = self.chat_state_handle.get_conversation().await;
@@ -1134,9 +1206,14 @@ impl SessionActor {
         true
     }
 
-    async fn prepare_goal_continuation(&self, current_tokens: i64) -> Option<GoalContinuationPlan> {
+    async fn prepare_goal_continuation(
+        &self,
+        current_tokens: i64,
+        purpose: GoalContinuationPurpose,
+    ) -> Option<GoalContinuationPlan> {
         let legacy = !self.goal_runs_on_workflow_engine();
-        if legacy {
+        let apply_turn_end = matches!(purpose, GoalContinuationPurpose::TurnEnd);
+        if apply_turn_end && legacy {
             self.drain_goal_updates(current_tokens, DrainPurpose::TurnEnd)
                 .await;
         }
@@ -1149,18 +1226,22 @@ impl SessionActor {
             return None;
         }
 
-        let stop_pattern = match self.assistant_text_signals_premature_stop().await {
-            Some(pattern) if self.has_pending_goal_todos().await => Some(pattern),
-            _ => None,
+        let stop_pattern = if apply_turn_end {
+            match self.assistant_text_signals_premature_stop().await {
+                Some(pattern) if self.has_pending_goal_todos().await => Some(pattern),
+                _ => None,
+            }
+        } else {
+            None
         };
 
         let (tokens_used, finished_marginal) = self.goal_tokens(current_tokens);
 
-        if self.enforce_goal_token_budget(current_tokens).await {
+        if apply_turn_end && self.enforce_goal_token_budget(current_tokens).await {
             return None;
         }
 
-        {
+        if apply_turn_end {
             let notify = self.goal_notify_sender();
             notify.emit_goal_updated(
                 &mut self.goal_tracker.lock(),
@@ -1190,7 +1271,9 @@ impl SessionActor {
             let mut tracker = self.goal_tracker.lock();
             tracker.account_elapsed();
             let o = tracker.snapshot_mut()?;
-            o.rounds_since_verify = o.rounds_since_verify.saturating_add(1);
+            if apply_turn_end {
+                o.rounds_since_verify = o.rounds_since_verify.saturating_add(1);
+            }
             let rounds_since_verify = o.rounds_since_verify;
             let refuted = o.consecutive_not_achieved >= 1;
             let elapsed = crate::session::goal_orchestrator::format_elapsed(o.elapsed_ms);
@@ -1302,6 +1385,7 @@ impl SessionActor {
                 Some(pattern.to_owned()),
             ),
         );
+        self.emit_event(crate::session::events::Event::GoalPrematureStopDetected { pattern });
     }
 
     pub(super) fn consume_strategist_note(&self, delivered_rec: &str) {
@@ -1393,7 +1477,10 @@ impl SessionActor {
             return GoalRoundDecision::EndTurn;
         }
         let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
-        let Some(mut plan) = self.prepare_goal_continuation(current_tokens).await else {
+        let Some(mut plan) = self
+            .prepare_goal_continuation(current_tokens, GoalContinuationPurpose::TurnEnd)
+            .await
+        else {
             return GoalRoundDecision::EndTurn;
         };
         plan.directive.push_str("\nEvaluator next step: ");
@@ -1416,16 +1503,19 @@ impl SessionActor {
 
     pub(super) async fn maybe_queue_goal_continuation(&self) {
         let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
-        let Some(plan) = self.prepare_goal_continuation(current_tokens).await else {
+        let Some(plan) = self
+            .prepare_goal_continuation(current_tokens, GoalContinuationPurpose::TurnEnd)
+            .await
+        else {
             return;
         };
         {
             let state = self.state.lock().await;
             if state.pending_inputs.iter().any(|i| {
                 matches!(
-                    i.origin,
+                    i.input_origin.as_prompt_origin(),
                     super::super::PromptOrigin::GoalSummary
-                        | super::super::PromptOrigin::GoalClassifierNudge,
+                        | super::super::PromptOrigin::GoalClassifierNudge
                 )
             }) {
                 return;
@@ -1439,9 +1529,9 @@ impl SessionActor {
             let mut state = self.state.lock().await;
             if state.pending_inputs.iter().any(|i| {
                 matches!(
-                    i.origin,
+                    i.input_origin.as_prompt_origin(),
                     super::super::PromptOrigin::GoalSummary
-                        | super::super::PromptOrigin::GoalClassifierNudge,
+                        | super::super::PromptOrigin::GoalClassifierNudge
                 )
             }) {
                 tracing::debug!("continuation reminder already pending; skipping duplicate");
@@ -1459,14 +1549,17 @@ impl SessionActor {
                 screen_mode: None,
                 verbatim: true,
                 json_schema: None,
-                origin: super::super::PromptOrigin::GoalSummary,
+                input_origin: InputOrigin::new(super::super::PromptOrigin::GoalSummary),
                 task_wake_fallback: None,
                 tool_overrides_update: None,
                 respond_to,
                 persist_ack: None,
                 parsed_prompt_tx: None,
+                initial_child_prompt_ready: None,
                 queue_meta: None,
+                queue_mutation_policy: QueueMutationPolicy::hidden(),
                 send_now: false,
+                traceparent: None,
             });
         }
         if let Some(rec) = plan.strategy_rec.as_deref() {
@@ -1481,7 +1574,9 @@ impl SessionActor {
         &self,
         reason: crate::session::goal_tracker::GoalPauseReason,
     ) {
-        let _ = self.auto_pause_goal_if_active_inner(reason, None).await;
+        let _ = self
+            .auto_pause_goal_if_active_inner(reason, None, None)
+            .await;
     }
 
     pub(crate) async fn auto_pause_goal_if_active_with_message(
@@ -1489,19 +1584,41 @@ impl SessionActor {
         reason: crate::session::goal_tracker::GoalPauseReason,
         message: String,
     ) -> bool {
-        self.auto_pause_goal_if_active_inner(reason, Some(message))
+        self.auto_pause_goal_if_active_inner(reason, Some(message), None)
             .await
     }
 
+    /// Pause only if the active goal still has `goal_id`.
+    /// Stale planner work uses this variant, so a replacement goal created while the planner ran cannot be paused by the previous goal's failure.
+    pub(crate) async fn auto_pause_goal_if_matches_with_message(
+        &self,
+        goal_id: &str,
+        reason: crate::session::goal_tracker::GoalPauseReason,
+        message: String,
+    ) -> bool {
+        self.auto_pause_goal_if_active_inner(reason, Some(message), Some(goal_id))
+            .await
+    }
+
+    /// Shared auto-pause body: pauses the goal (with `message`, else the bare reason) and emits, but only when the goal is `Active`.
+    /// When `expected_goal_id` is `Some`, the goal must also still carry that id.
     async fn auto_pause_goal_if_active_inner(
         &self,
         reason: crate::session::goal_tracker::GoalPauseReason,
         message: Option<String>,
+        expected_goal_id: Option<&str>,
     ) -> bool {
         let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
         {
             let mut tracker = self.goal_tracker.lock();
-            if tracker.status() != Some(crate::session::goal_tracker::GoalStatus::Active) {
+            let is_match = match expected_goal_id {
+                Some(goal_id) => tracker.snapshot().is_some_and(|goal| {
+                    goal.goal_id == goal_id
+                        && goal.status == crate::session::goal_tracker::GoalStatus::Active
+                }),
+                None => tracker.status() == Some(crate::session::goal_tracker::GoalStatus::Active),
+            };
+            if !is_match {
                 return false;
             }
             match message {
@@ -1517,6 +1634,9 @@ impl SessionActor {
             tokens_used,
             finished_marginal,
         );
+        self.emit_event(crate::session::events::Event::GoalAutoPaused {
+            reason: reason.into(),
+        });
         true
     }
 
@@ -1728,6 +1848,11 @@ impl SessionActor {
                     "completed: true against non-Active goal; dropping classifier fire"
                 );
                 if post_cap {
+                    self.events.emit(
+                        crate::session::events::Event::GoalClassifierDroppedAfterCap {
+                            attempts_seen,
+                        },
+                    );
                     try_send_ack(
                         ack_tx,
                         UpdateGoalAck::Rejected {
@@ -1740,6 +1865,14 @@ impl SessionActor {
                         },
                     );
                 } else {
+                    self.events.emit(
+                        crate::session::events::Event::GoalClassifierFailOpen {
+                            reason: crate::session::events::GoalClassifierFailOpenReason::GoalNotActiveAtResolve
+                                .as_const_str(),
+                            attempt: attempts_seen,
+                            latency_ms: 0,
+                        },
+                    );
                     try_send_ack(
                         ack_tx,
                         UpdateGoalAck::Rejected {
@@ -1756,10 +1889,21 @@ impl SessionActor {
                     let mut q = self.pending_classifier_completions.lock();
                     if q.len() >= GOAL_CLASSIFIER_PENDING_QUEUE_CAP {
                         q.pop_front();
+                        self.events.emit(
+                            crate::session::events::Event::GoalClassifierFailClosed {
+                                reason:
+                                    crate::session::events::GoalClassifierFailClosedReason::PendingQueueFull
+                                        .as_const_str(),
+                                attempt: 0,
+                            },
+                        );
                     }
                     q.push_back(cmd);
                     u32::try_from(q.len()).unwrap_or(u32::MAX)
                 };
+                self.events.emit(
+                    crate::session::events::Event::GoalClassifierMidTurnDeferred { pending_depth },
+                );
                 try_send_ack(ack_tx, UpdateGoalAck::DeferredToTurnEnd { pending_depth });
                 continue;
             }
@@ -1774,6 +1918,13 @@ impl SessionActor {
                 )
                 .is_err()
             {
+                self.events
+                    .emit(crate::session::events::Event::GoalClassifierFailClosed {
+                    reason:
+                        crate::session::events::GoalClassifierFailClosedReason::ConcurrentInFlight
+                            .as_const_str(),
+                    attempt: 0,
+                });
                 let synthetic_info = self
                     .account_not_achieved_without_sampler(
                         &policy,
@@ -1820,6 +1971,14 @@ impl SessionActor {
             let fire_started = std::time::Instant::now();
 
             let Some(attempt) = self.reserve_classifier_attempt_slot(&policy) else {
+                self.events
+                    .emit(crate::session::events::Event::GoalClassifierFailOpen {
+                    reason:
+                        crate::session::events::GoalClassifierFailOpenReason::GoalNotActiveAtResolve
+                            .as_const_str(),
+                    attempt: 0,
+                    latency_ms: fire_started.elapsed().as_millis() as u64,
+                });
                 try_send_ack(
                     ack_tx,
                     UpdateGoalAck::Rejected {
@@ -1860,6 +2019,14 @@ impl SessionActor {
             let status_changed = self.goal_tracker.lock().status()
                 != Some(crate::session::goal_tracker::GoalStatus::Active);
             if status_changed {
+                self.events
+                    .emit(crate::session::events::Event::GoalClassifierFailOpen {
+                    reason:
+                        crate::session::events::GoalClassifierFailOpenReason::GoalNotActiveAtResolve
+                            .as_const_str(),
+                    attempt,
+                    latency_ms: fire_started.elapsed().as_millis() as u64,
+                });
                 try_send_ack(
                     ack_tx,
                     UpdateGoalAck::Rejected {
@@ -1880,7 +2047,11 @@ impl SessionActor {
             try_send_ack(ack_tx, ack);
         }
         if cap_dropped > 0 {
-            tracing::debug!(dropped = cap_dropped, "goal classifier pending queue cleared");
+            self.events.emit(
+                crate::session::events::Event::GoalClassifierPendingQueueCleared {
+                    dropped: cap_dropped,
+                },
+            );
         }
     }
 
@@ -1904,17 +2075,18 @@ impl SessionActor {
         self.pending_classifier_completions.lock().clear();
     }
 
-    /// In-turn goal loop step: run verification for the round just completed
-    /// and decide whether to continue the loop in-turn (with the continuation
-    /// directive) or end the turn. The premature-stop signal, if any, is
-    /// emitted here — once per continued round.
+    /// In-turn goal loop step: run verification for the round just completed.
+    /// Decides whether to continue the loop in-turn (with the continuation directive) or end the turn.
+    /// The premature-stop signal, if any, is emitted here, once per continued round.
     pub(super) async fn run_goal_round_end_legacy(&self) -> GoalRoundDecision {
         let current_tokens = self.chat_state_handle.get_total_tokens().await as i64;
-        let Some(plan) = self.prepare_goal_continuation(current_tokens).await else {
+        let Some(plan) = self
+            .prepare_goal_continuation(current_tokens, GoalContinuationPurpose::TurnEnd)
+            .await
+        else {
             return GoalRoundDecision::EndTurn;
         };
-        // A Continue directive is unconditionally injected — returning it
-        // commits the embedded strategist note for delivery.
+        // A Continue directive is unconditionally injected; returning it commits the embedded strategist note for delivery
         if let Some(rec) = plan.strategy_rec.as_deref() {
             self.consume_strategist_note(rec);
         }
@@ -2169,8 +2341,7 @@ mod role_tool_names_tests {
     };
     use codel_tools::types::tool::ToolKind;
 
-    /// A named summary (distinct from the inherit/default names) so the
-    /// from_summary-vs-inherit dispatch is unambiguous.
+    /// A named summary (distinct from the inherit/default names) so tests can tell `from_summary` output from the inherit fallback.
     fn cursor_summary() -> SubagentTypeSummary {
         let mut s = SubagentTypeSummary {
             can_read: true,
@@ -2182,7 +2353,7 @@ mod role_tool_names_tests {
         s
     }
 
-    /// A distinguishable parent-inherit names value (not the literal defaults).
+    /// Parent inherit names distinct from the literal defaults, so assertions can tell which path won.
     fn inherit_names() -> RoleToolNames {
         RoleToolNames::from_parent(
             Some("parent_read".into()),
@@ -2237,8 +2408,7 @@ mod role_tool_names_tests {
         let tn = role_tool_names_from(&ov, &PanelResolveCache::default(), &inherit_names());
         assert_eq!(tn.read, "parent_read", "absent summary ⇒ inherit");
 
-        // (b) agent_type set but the describe round-trip failed open
-        // (`Unavailable`) ⇒ inherit, never a partial/broken summary.
+        // (b) agent_type set but the describe round-trip failed open (`Unavailable`): inherit wins, never a partial/broken summary
         let mut cache = PanelResolveCache::default();
         cache
             .describe

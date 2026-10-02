@@ -1,10 +1,12 @@
-// `McpOAuthConfig` / `McpOAuthConfigMap` re-exported via `mcp` (see `mcp.rs`).
+// `McpOAuthConfig` / `McpOAuthConfigMap` are re-exported via `mcp` (see `mcp.rs`)
 
 mod announcements;
 mod campaigns;
+mod consent;
 mod hints;
 mod load;
 mod mcp;
+mod mcp_reenable;
 mod permissions;
 mod persist;
 mod resolve;
@@ -14,22 +16,28 @@ mod worktree;
 
 pub use announcements::*;
 pub use campaigns::{
-    CampaignModelsDefault, campaign_driven_models_default, load_effective_config,
-    load_effective_config_disk_only, persist_models_default, remote_campaigns_from_settings,
-    set_remote_campaigns_from_settings, sync_campaign_fields,
+    CampaignModelsDefault, campaign_driven_models_default, persist_models_default,
+    sync_campaign_fields,
 };
+pub use consent::*;
 pub use hints::*;
 pub use load::*;
 pub use mcp::*;
+pub(crate) use mcp_reenable::{McpDefinitionIndex, needs_definition_scan};
 pub use permissions::*;
 pub use persist::*;
-// `remote` extracted to the `codel-config-types` crate (dependency inversion);
-// re-exported so `crate::util::config::{RemoteSettings, GoalRoleModel}` keep working.
 pub use resolve::*;
 pub use settings_writes::*;
 pub use tips::*;
 pub use worktree::*;
+pub use codel_config::effective_config::{
+    EffectiveConfigLayers, load_effective_config, load_effective_config_with_layers,
+    remote_campaigns_from_settings, set_remote_campaigns_from_settings,
+};
+pub use codel_config::load_effective_config_disk_only;
+// These types live in `codel-config`; the re-export keeps `crate::util::config::{RemoteSettings, GoalRoleModel}` working
 pub use codel_config_types::{
-    CampaignOverride, ContextualHintsRemote, DisplayRefreshSettings, DoomLoopRecoverySettings,
-    GoalRoleModel, RemoteSettings, WorktreeAutoGcSettings, WorktreeKindMaxAge,
+    CampaignOverride, ConsentGate, ContextualHintsRemote, DisplayRefreshSettings,
+    DoomLoopRecoverySettings, GoalRoleModel, LongReasoningReminderSettings, RemoteSettings,
+    WorktreeAutoGcSettings, WorktreeKindMaxAge, deserialize_tolerant,
 };

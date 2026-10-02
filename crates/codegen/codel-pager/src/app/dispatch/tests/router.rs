@@ -1,38 +1,11 @@
 //! Tests for the action router, model switching, slash commands, and other cross-cutting dispatch behavior.
 use super::*;
 #[test]
-fn auth_copy_dispatch_preserves_all_delivery_states() {
-    for delivery in [
-        crate::clipboard::ClipboardDelivery::Confirmed,
-        crate::clipboard::ClipboardDelivery::Unverified,
-        crate::clipboard::ClipboardDelivery::Failed,
-    ] {
-        let mut app = test_app();
-        app.auth_state = AuthState::Authenticating {
-            request_seq: 1,
-            handle: None,
-            auth_url: Some("https://codel.dev/auth".to_owned()),
-            mode: AuthMode::Command,
-        };
-        let effects = crate::app::dispatch::router::dispatch_copy_auth_url(&mut app, |url| {
-            assert_eq!(url, "https://codel.dev/auth");
-            delivery
-        });
-        assert_eq!(app.auth_clipboard_delivery, Some(delivery));
-        assert_eq!(app.auth_clipboard_feedback_generation, 1);
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::ScheduleClearAuthCopyFeedback { generation: 1 }]
-        ));
-    }
-}
-#[test]
 fn external_prompt_editor_arms_typed_request_and_preserves_composer_modes() {
     use crate::app::agent_view::PromptInputMode;
     for mode in [
         PromptInputMode::Normal,
         PromptInputMode::Bash,
-        PromptInputMode::Feedback,
         PromptInputMode::Remember,
     ] {
         let mut app = test_app_with_agent();
@@ -57,17 +30,23 @@ fn external_prompt_editor_arms_typed_request_and_preserves_composer_modes() {
             }
             other => panic!("expected prompt draft request, got {other:?}"),
         }
-        assert_eq!(app.agents[&id].prompt_input_mode, mode);
-        assert_eq!(app.agents[&id].prompt.text(), "draft with\nnewlines");
+        assert_eq!(agent_ref(&app, id).prompt_input_mode, mode);
+        assert_eq!(agent_ref(&app, id).prompt.text(), "draft with\nnewlines");
     }
 }
 #[test]
-fn external_prompt_editor_refuses_nonminimal_and_owned_input() {
+fn external_prompt_editor_arms_in_fullscreen_and_refuses_owned_input() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().prompt.set_text("draft");
     let _ = dispatch(Action::EditPromptExternal, &mut app);
-    assert!(app.pending_editor.is_none(), "full TUI must refuse");
+    assert!(
+        matches!(
+            app.pending_editor.take(),
+            Some(crate::app::external_editor::PendingEditorRequest::PromptDraft { .. })
+        ),
+        "full TUI arms the request without requiring prompt-pane focus"
+    );
     app.screen_mode = crate::app::ScreenMode::Minimal;
     app.agents.get_mut(&id).unwrap().active_pane = ActivePane::Scrollback;
     let _ = dispatch(Action::EditPromptExternal, &mut app);
@@ -76,7 +55,7 @@ fn external_prompt_editor_refuses_nonminimal_and_owned_input() {
             app.pending_editor,
             Some(crate::app::external_editor::PendingEditorRequest::PromptDraft { .. })
         ),
-        "minimal's logical composer remains authoritative after Tab/Vim focus"
+        "the composer stays the editing surface with scrollback focused"
     );
     app.pending_editor = None;
     app.agents.get_mut(&id).unwrap().cancel_turn_view =
@@ -86,7 +65,7 @@ fn external_prompt_editor_refuses_nonminimal_and_owned_input() {
         });
     let _ = dispatch(Action::EditPromptExternal, &mut app);
     assert!(app.pending_editor.is_none(), "modal owner must refuse");
-    assert_eq!(app.agents[&id].prompt.text(), "draft");
+    assert_eq!(agent_ref(&app, id).prompt.text(), "draft");
     app.agents.get_mut(&id).unwrap().cancel_turn_view = None;
     app.agents.get_mut(&id).unwrap().prompt_mode = PromptMode::EditingQueued {
         id: 1,
@@ -96,16 +75,16 @@ fn external_prompt_editor_refuses_nonminimal_and_owned_input() {
     };
     let _ = dispatch(Action::EditPromptExternal, &mut app);
     assert!(app.pending_editor.is_none(), "queue edit must refuse");
-    assert_eq!(app.agents[&id].prompt.text(), "draft");
+    assert_eq!(agent_ref(&app, id).prompt.text(), "draft");
     app.agents.get_mut(&id).unwrap().prompt_mode = PromptMode::Normal;
     app.agents.get_mut(&id).unwrap().prompt.set_text("/");
-    let models = app.agents[&id].session.models.clone();
+    let models = agent_ref(&app, id).session.models.clone();
     app.agents
         .get_mut(&id)
         .unwrap()
         .prompt
         .refresh_slash(&models);
-    assert!(app.agents[&id].prompt.any_dropdown_open());
+    assert!(agent_ref(&app, id).prompt.any_dropdown_open());
     let _ = dispatch(Action::EditPromptExternal, &mut app);
     assert!(app.pending_editor.is_none(), "dropdown owner must refuse");
 }
@@ -125,10 +104,10 @@ fn external_prompt_editor_refuses_elements_with_visible_message() {
     assert!(!agent.prompt.textarea.elements().is_empty());
     let _ = dispatch(Action::EditPromptExternal, &mut app);
     assert!(app.pending_editor.is_none());
-    assert_eq!(app.agents[&id].prompt.text(), pasted);
-    assert!(!app.agents[&id].prompt.textarea.elements().is_empty());
+    assert_eq!(agent_ref(&app, id).prompt.text(), pasted);
+    assert!(!agent_ref(&app, id).prompt.textarea.elements().is_empty());
     assert!(
-        app.agents[&id]
+        agent_ref(&app, id)
             .scrollback
             .iter_entries()
             .any(|(_, entry)| entry.block.searchable_text().as_deref()
@@ -144,8 +123,8 @@ fn external_prompt_editor_refuses_elements_with_visible_message() {
     let file_ref_text = agent.prompt.text().to_owned();
     let _ = dispatch(Action::EditPromptExternal, &mut app);
     assert!(app.pending_editor.is_none());
-    assert_eq!(app.agents[&id].prompt.text(), file_ref_text);
-    assert!(!app.agents[&id].prompt.textarea.elements().is_empty());
+    assert_eq!(agent_ref(&app, id).prompt.text(), file_ref_text);
+    assert!(!agent_ref(&app, id).prompt.textarea.elements().is_empty());
     let agent = app.agents.get_mut(&id).unwrap();
     agent.prompt.set_text("");
     let image = crate::prompt_images::PastedImage {
@@ -164,13 +143,13 @@ fn external_prompt_editor_refuses_elements_with_visible_message() {
     let image_text = agent.prompt.text().to_owned();
     let _ = dispatch(Action::EditPromptExternal, &mut app);
     assert!(app.pending_editor.is_none());
-    assert_eq!(app.agents[&id].prompt.text(), image_text);
-    assert_eq!(app.agents[&id].prompt.images.len(), 1);
+    assert_eq!(agent_ref(&app, id).prompt.text(), image_text);
+    assert_eq!(agent_ref(&app, id).prompt.images.len(), 1);
 }
 #[test]
 fn external_prompt_editor_refuses_voice_and_pending_paste_with_visible_messages() {
     use crate::app::agent_view::AgentDeferredSend;
-    use crate::app::app_view::{VoiceState, VoiceTarget};
+    use crate::app::app_view::{Partial, VoiceState, VoiceTarget};
     for voice_state in [
         VoiceState::ColdStart {
             hold: false,
@@ -179,11 +158,13 @@ fn external_prompt_editor_refuses_voice_and_pending_paste_with_visible_messages(
         VoiceState::Recording {
             hold: false,
             target: VoiceTarget::Agent(AgentId(0)),
-            interim: Some("partial".to_owned()),
+            partial: Partial::Shown("partial".to_owned()),
+            route: Some(codel_voice::VoiceRoute::Streaming),
         },
         VoiceState::Stopping {
             target: VoiceTarget::Agent(AgentId(0)),
-            interim: Some("partial".to_owned()),
+            partial: Partial::Shown("partial".to_owned()),
+            route: Some(codel_voice::VoiceRoute::Streaming),
         },
     ] {
         let mut app = test_app_with_agent();
@@ -193,9 +174,9 @@ fn external_prompt_editor_refuses_voice_and_pending_paste_with_visible_messages(
         app.agents.get_mut(&id).unwrap().prompt.set_text("draft");
         let _ = dispatch(Action::EditPromptExternal, &mut app);
         assert!(app.pending_editor.is_none());
-        assert_eq!(app.agents[&id].prompt.text(), "draft");
+        assert_eq!(agent_ref(&app, id).prompt.text(), "draft");
         assert!(
-            app.agents[&id]
+            agent_ref(&app, id)
                 .scrollback
                 .iter_entries()
                 .any(|(_, entry)| entry.block.searchable_text().as_deref()
@@ -216,11 +197,11 @@ fn external_prompt_editor_refuses_voice_and_pending_paste_with_visible_messages(
         agent.deferred_send = deferred_send;
         let _ = dispatch(Action::EditPromptExternal, &mut app);
         assert!(app.pending_editor.is_none());
-        assert_eq!(app.agents[&id].prompt.text(), "draft");
-        assert_eq!(app.agents[&id].paste_probe_in_flight, probes);
-        assert_eq!(app.agents[&id].deferred_send, deferred_send);
+        assert_eq!(agent_ref(&app, id).prompt.text(), "draft");
+        assert_eq!(agent_ref(&app, id).paste_probe_in_flight, probes);
+        assert_eq!(agent_ref(&app, id).deferred_send, deferred_send);
         assert!(
-            app.agents[&id]
+            agent_ref(&app, id)
                 .scrollback
                 .iter_entries()
                 .any(|(_, entry)| entry.block.searchable_text().as_deref()
@@ -260,8 +241,8 @@ fn deferred_paste_completion_after_refused_editor_does_not_implicitly_send_witho
         &mut app,
     );
     assert!(effects.is_empty(), "no deferred submit was armed");
-    assert_eq!(app.agents[&id].prompt.text(), "draftpasted");
-    assert!(app.agents[&id].session.pending_prompts.is_empty());
+    assert_eq!(agent_ref(&app, id).prompt.text(), "draftpasted");
+    assert!(agent_ref(&app, id).session.pending_prompts.is_empty());
 }
 #[test]
 fn external_prompt_editor_result_replaces_or_clears_without_sending() {
@@ -270,12 +251,12 @@ fn external_prompt_editor_result_replaces_or_clears_without_sending() {
     app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
     app.agents.get_mut(&id).unwrap().prompt.set_text("original");
     crate::app::external_editor::apply_prompt_text(&mut app, id, "edited\n".to_owned());
-    assert_eq!(app.agents[&id].prompt.text(), "edited\n");
-    assert!(app.agents[&id].session.state.is_turn_running());
-    assert!(app.agents[&id].session.pending_prompts.is_empty());
+    assert_eq!(agent_ref(&app, id).prompt.text(), "edited\n");
+    assert!(agent_ref(&app, id).session.state.is_turn_running());
+    assert!(agent_ref(&app, id).session.pending_prompts.is_empty());
     crate::app::external_editor::apply_prompt_text(&mut app, id, String::new());
-    assert_eq!(app.agents[&id].prompt.text(), "");
-    assert!(app.agents[&id].session.state.is_turn_running());
+    assert_eq!(agent_ref(&app, id).prompt.text(), "");
+    assert!(agent_ref(&app, id).session.state.is_turn_running());
 }
 #[test]
 fn editor_failure_targets_original_agent_and_vanished_agent_is_safe() {
@@ -283,9 +264,9 @@ fn editor_failure_targets_original_agent_and_vanished_agent_is_safe() {
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().prompt.set_text("original");
     crate::app::external_editor::report_prompt_failure(&mut app, id, "editor failed");
-    assert_eq!(app.agents[&id].prompt.text(), "original");
+    assert_eq!(agent_ref(&app, id).prompt.text(), "original");
     assert!(
-        app.agents[&id]
+        agent_ref(&app, id)
             .scrollback
             .iter_entries()
             .any(|(_, entry)| entry.block.searchable_text().as_deref() == Some("editor failed"))
@@ -316,14 +297,13 @@ fn config_editor_action_still_uses_typed_request() {
 }
 fn seed_foreign_resume_hint(
     app: &mut AppView,
-    tool: codel_workspace::foreign_sessions::ForeignSessionTool,
+    tool: codel_foreign_sessions::ForeignSessionTool,
 ) {
-    app.foreign_session_compat =
-        codel_workspace::foreign_sessions::EnabledForeignSessionSources {
-            claude: true,
-            codex: true,
-            cursor: true,
-        };
+    app.foreign_session_compat = codel_foreign_sessions::EnabledForeignSessionSources {
+        claude: true,
+        codex: true,
+        cursor: true,
+    };
     let Effect::CanonicalizeForeignResumeCwd {
         requested_cwd,
         launch_token,
@@ -340,7 +320,7 @@ fn seed_foreign_resume_hint(
     app.apply_foreign_resume_detection(
         launch_token,
         &canonical_cwd,
-        Some(codel_workspace::foreign_sessions::RecentForeignSession {
+        Some(codel_foreign_sessions::RecentForeignSession {
             tool,
             native_id: "native-id".into(),
             age: std::time::Duration::from_secs(60),
@@ -358,7 +338,14 @@ fn send_feedback_clears_active_ephemeral_tip() {
         &mut std::collections::HashMap::new(),
     );
     assert!(agent.ephemeral_tip.is_active());
-    let _ = dispatch(Action::SendFeedback("it broke".into()), &mut app);
+    let _ = dispatch(
+        Action::SendFeedback {
+            text: "it broke".into(),
+            images: Default::default(),
+            trace: None,
+        },
+        &mut app,
+    );
     assert!(
         !app.agents.get(&id).unwrap().ephemeral_tip.is_active(),
         "feedback submit must clear the tip"
@@ -382,106 +369,17 @@ fn send_remember_note_clears_active_ephemeral_tip() {
     );
 }
 #[test]
-fn quit_returns_quit_effect() {
-    let mut app = test_app();
-    let effects = dispatch(Action::Quit, &mut app);
-    assert!(matches!(effects.as_slice(), [Effect::Quit]));
-}
-#[test]
-fn resume_foreign_session_consumes_hint_and_uses_each_tools_prompt() {
-    use codel_workspace::foreign_sessions::ForeignSessionTool;
-    for (tool, prompt) in [
-        (ForeignSessionTool::Claude, "/resume-claude native-id"),
-        (ForeignSessionTool::Codex, "/resume-codex native-id"),
-        (ForeignSessionTool::Cursor, "/resume-cursor native-id"),
-    ] {
-        let mut app = test_app();
-        seed_foreign_resume_hint(&mut app, tool);
-        let effects = dispatch(Action::ResumeForeignSession, &mut app);
-        assert!(app.foreign_resume_hint().is_none());
-        assert!(
-            effects
-                .iter()
-                .any(|effect| matches!(effect, Effect::CreateSession { .. }))
-        );
-        assert_eq!(
-            app.agents[&AgentId(0)]
-                .session
-                .pending_prompts
-                .front()
-                .map(|pending| pending.text.as_str()),
-            Some(prompt)
-        );
-    }
-}
-#[test]
-fn resume_foreign_session_without_hint_is_noop() {
-    let mut app = test_app();
-    assert!(app.foreign_resume_hint().is_none());
-    let effects = dispatch(Action::ResumeForeignSession, &mut app);
-    assert!(effects.is_empty(), "no hint → no effects");
-    assert!(app.foreign_resume_hint().is_none());
-}
-#[test]
-fn resume_foreign_session_stashes_prompt_behind_trust_and_auth() {
-    use codel_workspace::foreign_sessions::ForeignSessionTool;
-    for (tool, prompt, auth_pending) in [
-        (ForeignSessionTool::Codex, "/resume-codex native-id", false),
-        (ForeignSessionTool::Cursor, "/resume-cursor native-id", true),
-    ] {
-        let mut app = test_app();
-        if auth_pending {
-            app.auth_state = AuthState::Pending { error: None };
-        } else {
-            app.trust_state = TrustState::Pending {
-                workspace: std::path::PathBuf::from("/work/proj"),
-            };
-        }
-        seed_foreign_resume_hint(&mut app, tool);
-        app.deferred_startup.session =
-            Some(crate::app::session_startup::DeferredSessionStartup::Load {
-                session_id: "must-not-load".into(),
-                session_cwd: Some(std::path::PathBuf::from("/other")),
-                chat_kind: true,
-            });
-        app.deferred_startup.worktree = true;
-        app.deferred_startup.worktree_label = Some("stale".into());
-        app.deferred_startup.worktree_ref = Some("stale-ref".into());
-        app.deferred_startup.preferred_session_id = Some("stale-id".into());
-        app.deferred_startup.new_session = true;
-        app.deferred_startup.prompt = Some("stale prompt".into());
-        app.deferred_startup.open_dashboard = true;
-        app.deferred_startup.pending_chat = true;
-        assert!(
-            app.foreign_resume_hint().is_some(),
-            "the explicit nudge remains available to supersede deferred intents"
-        );
-        let effects = dispatch(Action::ResumeForeignSession, &mut app);
-        assert!(effects.is_empty());
-        assert!(app.foreign_resume_hint().is_none());
-        assert_eq!(app.deferred_startup.prompt.as_deref(), Some(prompt));
-        assert!(app.deferred_startup.session.is_none());
-        assert!(!app.deferred_startup.worktree);
-        assert!(app.deferred_startup.worktree_label.is_none());
-        assert!(app.deferred_startup.worktree_ref.is_none());
-        assert!(app.deferred_startup.preferred_session_id.is_none());
-        assert!(!app.deferred_startup.new_session);
-        assert!(!app.deferred_startup.open_dashboard);
-        assert!(!app.deferred_startup.pending_chat);
-    }
-}
-#[test]
 fn follow_up_chip_does_not_execute_slash_command() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    assert!(!app.agents[&id].session.is_yolo());
+    assert!(!agent_ref(&app, id).session.is_yolo());
     let effects = dispatch(Action::SubmitFollowUp("/always-approve".into()), &mut app);
     assert!(
-        !app.agents[&id].session.is_yolo(),
+        !agent_ref(&app, id).session.is_yolo(),
         "a /always-approve chip must NOT flip YOLO mode"
     );
     assert!(
-        matches!(&effects[..], [Effect::SendPrompt { text, .. }] if text == "/always-approve"),
+        matches!(effects.as_slice(), [Effect::SendPrompt { text, .. }] if text == "/always-approve"),
         "chip text must be submitted literally, got {effects:?}"
     );
 }
@@ -490,7 +388,7 @@ fn follow_up_chip_does_not_execute_exit_alias() {
     let mut app = test_app_with_agent();
     let effects = dispatch(Action::SubmitFollowUp("quit".into()), &mut app);
     assert!(
-        matches!(&effects[..], [Effect::SendPrompt { text, .. }] if text == "quit"),
+        matches!(effects.as_slice(), [Effect::SendPrompt { text, .. }] if text == "quit"),
         "bare 'quit' chip must be a literal prompt, got {effects:?}"
     );
 }
@@ -506,12 +404,12 @@ fn chip_submit_while_running_clears_follow_up_chips() {
     }
     let effects = dispatch(Action::SubmitFollowUp("Summarize".into()), &mut app);
     assert!(
-        matches!(&effects[..], [Effect::SendPrompt { text, .. }] if text == "Summarize"),
+        matches!(effects.as_slice(), [Effect::SendPrompt { text, .. }] if text == "Summarize"),
         "chip must immediate-send while running, got {effects:?}"
     );
-    assert_eq!(app.agents[&id].session.queue_len(), 0);
+    assert_eq!(agent_ref(&app, id).session.queue_len(), 0);
     assert!(
-        app.agents[&id].follow_ups.is_none(),
+        agent_ref(&app, id).follow_ups.is_none(),
         "immediate-send chip path must clear chips"
     );
 }
@@ -529,20 +427,20 @@ fn chip_submit_while_reconnect_pending_keeps_chips_and_does_not_send() {
         effects.is_empty(),
         "a reconnect-pending submit must emit no effect, got {effects:?}"
     );
-    assert_eq!(app.agents[&id].session.queue_len(), 0);
+    assert_eq!(agent_ref(&app, id).session.queue_len(), 0);
     assert!(
-        app.agents[&id].follow_ups.is_some(),
+        agent_ref(&app, id).follow_ups.is_some(),
         "reconnect-pending submit must NOT clear the chips"
     );
     app.reconnect_pending = false;
     app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
     let effects2 = dispatch(Action::SubmitFollowUp("Summarize".into()), &mut app);
     assert!(
-        matches!(&effects2[..], [Effect::SendPrompt { text, .. }] if text == "Summarize"),
+        matches!(effects2.as_slice(), [Effect::SendPrompt { text, .. }] if text == "Summarize"),
         "after reconnect clears, the chip must submit, got {effects2:?}"
     );
     assert!(
-        app.agents[&id].follow_ups.is_none(),
+        agent_ref(&app, id).follow_ups.is_none(),
         "a proceeding submit must clear the chips"
     );
 }
@@ -553,7 +451,7 @@ fn mark_turn_finished_clears_start_and_stamps_active() {
     let agent = app.agents.get_mut(&id).unwrap();
     agent.turn_started_at = Some(std::time::Instant::now());
     agent.last_active_at = None;
-    agent.mark_turn_finished();
+    agent.mark_turn_finished(crate::app::cancel_latency::TurnEnd::Completed);
     assert!(
         agent.turn_started_at.is_none(),
         "turn_started_at must be cleared"
@@ -593,33 +491,44 @@ fn shown_banner_id(app: &AppView) -> Option<String> {
     )
     .and_then(|a| a.id.clone())
 }
-/// `AnnouncementsOpenCta` re-resolves through the slot gate and opens
-/// the promo url (observed via the `CODEL_TEST_OPEN_URL_FILE` seam); a
-/// critical owning the slot — or no usable cta — makes it a silent
-/// no-op (no open, so a stale prior-frame click can't leak the promo url).
+/// `AnnouncementsOpenCta(surface)` re-resolves through the slot gate and opens the promo url from every surface.
+/// The opens are observed through the file named by `CODEL_TEST_OPEN_URL_FILE`.
+/// A critical owning the slot, or no usable cta, makes it a silent no-op, so a stale prior-frame click cannot open the promo url.
 #[serial_test::serial(CODEL_TEST_OPEN_URL_FILE)]
 #[test]
 fn announcements_open_cta_opens_promo_and_noops_under_critical() {
+    use codel_logging::events::AnnouncementCtaSurface;
     let url_file = std::env::temp_dir().join(format!("codel-cta-open-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&url_file);
     unsafe { std::env::set_var("CODEL_TEST_OPEN_URL_FILE", &url_file) };
     let opened = || std::fs::read_to_string(&url_file).unwrap_or_default();
     let mut app = test_app_with_agent();
     app.active_announcements = vec![promo_announcement("promo-open")];
-    let _ = std::fs::write(&url_file, "");
-    let effects = dispatch(Action::AnnouncementsOpenCta, &mut app);
-    assert!(effects.is_empty(), "open is a side effect, not an Effect");
-    assert!(
-        opened().lines().any(|l| l == "https://codel/promo-open"),
-        "open must open the promo url; got {:?}",
-        opened()
-    );
+    for surface in [
+        AnnouncementCtaSurface::Banner,
+        AnnouncementCtaSurface::Welcome,
+        AnnouncementCtaSurface::Header,
+        AnnouncementCtaSurface::Dashboard,
+        AnnouncementCtaSurface::Keyboard,
+    ] {
+        let _ = std::fs::write(&url_file, "");
+        let effects = dispatch(Action::AnnouncementsOpenCta(surface), &mut app);
+        assert!(effects.is_empty(), "open is a side effect, not an Effect");
+        assert!(
+            opened().lines().any(|l| l == "https://codel/promo-open"),
+            "surface {surface:?} must open the promo url; got {:?}",
+            opened()
+        );
+    }
     let _ = std::fs::write(&url_file, "");
     app.active_announcements = vec![
         critical_announcement("crit-a"),
         promo_announcement("promo-open"),
     ];
-    let _ = dispatch(Action::AnnouncementsOpenCta, &mut app);
+    let _ = dispatch(
+        Action::AnnouncementsOpenCta(AnnouncementCtaSurface::Keyboard),
+        &mut app,
+    );
     assert!(
         opened().trim().is_empty(),
         "a critical slot owner must make the open a no-op; got {:?}",
@@ -627,17 +536,20 @@ fn announcements_open_cta_opens_promo_and_noops_under_critical() {
     );
     let _ = std::fs::write(&url_file, "");
     app.active_announcements = vec![];
-    let _ = dispatch(Action::AnnouncementsOpenCta, &mut app);
+    let _ = dispatch(
+        Action::AnnouncementsOpenCta(AnnouncementCtaSurface::Banner),
+        &mut app,
+    );
     assert!(opened().trim().is_empty(), "no cta → no open");
     unsafe { std::env::remove_var("CODEL_TEST_OPEN_URL_FILE") };
     let _ = std::fs::remove_file(&url_file);
 }
-/// `AnnouncementCtaShown` latches once per (announcement, surface): first
-/// frame with an armed CTA rect emits, later frames don't, and a NEW
-/// announcement id re-emits on the same surfaces.
+/// `AnnouncementCtaShown` latches once per (announcement, surface) pair.
+/// The first frame with an armed CTA rect emits, later frames don't, and a NEW announcement id re-emits on the same surfaces.
 #[test]
 fn cta_impressions_latch_once_per_surface_and_reemit_for_new_id() {
     use crate::app::app_view::ActiveView;
+    use codel_logging::events::AnnouncementCtaSurface;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.active_view = ActiveView::Agent(id);
@@ -651,20 +563,19 @@ fn cta_impressions_latch_once_per_surface_and_reemit_for_new_id() {
     app.log_announcement_cta_impressions();
     let logged = &app.announcement_cta_impressions_logged;
     assert_eq!(logged.len(), 2);
-    assert!(logged.contains(&("promo-a".to_string(), "banner".to_string())));
-    assert!(logged.contains(&("promo-a".to_string(), "header".to_string())));
+    assert!(logged.contains(&("promo-a".to_string(), AnnouncementCtaSurface::Banner)));
+    assert!(logged.contains(&("promo-a".to_string(), AnnouncementCtaSurface::Header)));
     app.log_announcement_cta_impressions();
     assert_eq!(app.announcement_cta_impressions_logged.len(), 2);
     app.active_announcements = vec![promo_announcement("promo-b")];
     app.log_announcement_cta_impressions();
     let logged = &app.announcement_cta_impressions_logged;
     assert_eq!(logged.len(), 4);
-    assert!(logged.contains(&("promo-b".to_string(), "banner".to_string())));
-    assert!(logged.contains(&("promo-b".to_string(), "header".to_string())));
+    assert!(logged.contains(&("promo-b".to_string(), AnnouncementCtaSurface::Banner)));
+    assert!(logged.contains(&("promo-b".to_string(), AnnouncementCtaSurface::Header)));
 }
-/// No impression without a painted button under a promo slot owner: a
-/// critical preempting the slot, a hidden promo, and cleared (unpainted)
-/// rects all emit nothing — the same gate the click dispatch resolves.
+/// No impression is logged without a painted button under a promo slot owner.
+/// A critical preempting the slot, a hidden promo, and cleared (unpainted) rects all emit nothing; this is the same gate the click dispatch resolves.
 #[test]
 fn cta_impressions_respect_slot_gate_and_paint() {
     use crate::app::app_view::ActiveView;
@@ -702,12 +613,12 @@ fn cta_impressions_respect_slot_gate_and_paint() {
     app.log_announcement_cta_impressions();
     assert!(app.announcement_cta_impressions_logged.is_empty());
 }
-/// Frame occluders (the goal-detail class) leave rects armed and block clicks
-/// at dispatch time — impressions mirror the OSC 8 drop-whole rule: an
-/// occluded CTA is not counted until an overlay-free frame shows it clean.
+/// Frame occluders (the goal-detail class) leave rects armed and block clicks at dispatch time.
+/// Impressions follow the same rule as OSC 8 links: an occluded CTA is not counted until an overlay-free frame shows it clean.
 #[test]
 fn cta_impressions_suppressed_while_rect_occluded() {
     use crate::app::app_view::ActiveView;
+    use codel_logging::events::AnnouncementCtaSurface;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.active_view = ActiveView::Agent(id);
@@ -729,37 +640,10 @@ fn cta_impressions_suppressed_while_rect_occluded() {
     app.log_announcement_cta_impressions();
     let logged = &app.announcement_cta_impressions_logged;
     assert_eq!(logged.len(), 2);
-    assert!(logged.contains(&("p".to_string(), "banner".to_string())));
-    assert!(logged.contains(&("p".to_string(), "header".to_string())));
+    assert!(logged.contains(&("p".to_string(), AnnouncementCtaSurface::Banner)));
+    assert!(logged.contains(&("p".to_string(), AnnouncementCtaSurface::Header)));
     app.log_announcement_cta_impressions();
     assert_eq!(app.announcement_cta_impressions_logged.len(), 2);
-}
-/// The welcome hero and dashboard surfaces latch from their own armed rects
-/// (only the active view's rects are consulted).
-#[test]
-fn cta_impressions_cover_welcome_and_dashboard_surfaces() {
-    use crate::app::app_view::ActiveView;
-    use crate::views::dashboard::state::DashboardState;
-    let mut app = test_app();
-    app.active_announcements = vec![promo_announcement("p")];
-    let rect = Some(ratatui::layout::Rect::new(0, 0, 4, 1));
-    app.active_view = ActiveView::Welcome;
-    app.welcome_upgrade_cta_rect = rect;
-    app.log_announcement_cta_impressions();
-    let logged = &app.announcement_cta_impressions_logged;
-    assert!(logged.contains(&("p".to_string(), "welcome".to_string())));
-    app.active_view = ActiveView::AgentDashboard;
-    let mut dash = DashboardState::new();
-    dash.upgrade_cta_hit.set(rect);
-    app.dashboard = Some(dash);
-    app.log_announcement_cta_impressions();
-    let logged = &app.announcement_cta_impressions_logged;
-    assert!(logged.contains(&("p".to_string(), "dashboard".to_string())));
-    app.active_announcements = vec![promo_announcement("q")];
-    app.log_announcement_cta_impressions();
-    let logged = &app.announcement_cta_impressions_logged;
-    assert!(!logged.contains(&("q".to_string(), "welcome".to_string())));
-    assert_eq!(logged.len(), 3);
 }
 #[test]
 fn dispatch_send_prompt_announcements_via_registry() {
@@ -776,181 +660,133 @@ fn dispatch_send_prompt_announcements_via_registry() {
         );
     assert!(app.hidden_announcement_ids.contains("crit-a"));
     assert_eq!(shown_banner_id(&app), None, "hidden critical closes banner");
-    assert!(app.agents[&agent_id].prompt.text().is_empty());
-    let initial_scrollback_len = app.agents[&agent_id].scrollback.len();
-    let initial_queue_len = app.agents[&agent_id].session.queue_len();
+    assert!(agent_ref(&app, agent_id).prompt.text().is_empty());
+    let initial_scrollback_len = agent_ref(&app, agent_id).scrollback.len();
+    let initial_queue_len = agent_ref(&app, agent_id).session.queue_len();
     let effects = dispatch(Action::SendPrompt("/announcements foo".into()), &mut app);
     assert!(effects.is_empty(), "expected no effects, got {effects:?}");
-    assert_eq!(app.agents[&agent_id].session.queue_len(), initial_queue_len);
     assert_eq!(
-        app.agents[&agent_id].scrollback.len(),
+        agent_ref(&app, agent_id).session.queue_len(),
+        initial_queue_len
+    );
+    assert_eq!(
+        agent_ref(&app, agent_id).scrollback.len(),
         initial_scrollback_len + 1,
         "expected usage message in scrollback"
-    );
-}
-/// Hide records only the currently-SHOWN critical's id: with `[A, B]`,
-/// hiding A reveals B, hiding B closes the banner, and a later push with a
-/// new id (C) re-arms it without any user action.
-#[test]
-fn announcements_hide_is_per_id_so_new_critical_reappears() {
-    let mut app = test_app();
-    app.active_announcements = vec![
-        critical_announcement("outage-a"),
-        critical_announcement("outage-b"),
-    ];
-    assert_eq!(shown_banner_id(&app).as_deref(), Some("outage-a"));
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert_eq!(effects.len(), 1);
-    assert!(app.hidden_announcement_ids.contains("outage-a"));
-    assert_eq!(
-        shown_banner_id(&app).as_deref(),
-        Some("outage-b"),
-        "hiding the shown critical must reveal the next one"
-    );
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert_eq!(effects.len(), 1);
-    assert_eq!(shown_banner_id(&app), None, "all hidden closes the banner");
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert!(effects.is_empty(), "expected no effects, got {effects:?}");
-    app.active_announcements
-        .push(critical_announcement("outage-c"));
-    assert_eq!(
-        shown_banner_id(&app).as_deref(),
-        Some("outage-c"),
-        "new critical id must re-arm the banner"
-    );
-}
-/// Show clears the hide keys of every live critical (stacked hides
-/// un-hide in one step) and leaves unrelated ids alone.
-#[test]
-fn announcements_show_clears_visible_critical_ids_only() {
-    let mut app = test_app();
-    app.hidden_announcement_ids = ["outage-a".to_string(), "unrelated".to_string()]
-        .into_iter()
-        .collect();
-    app.active_announcements = vec![critical_announcement("outage-a")];
-    assert_eq!(shown_banner_id(&app), None);
-    let effects = dispatch(Action::AnnouncementsShow, &mut app);
-    assert!(
-            effects.iter().any(
-                |e| matches!(e, Effect::PersistAnnouncementsHidden { hidden_ids } if !hidden_ids.contains("outage-a"))
-            ),
-            "expected persist effect without the un-hidden id, got {effects:?}"
-        );
-    assert_eq!(shown_banner_id(&app).as_deref(), Some("outage-a"));
-    assert!(
-        app.hidden_announcement_ids.contains("unrelated"),
-        "ids not currently visible must survive show (prune owns cleanup)"
-    );
-    let effects = dispatch(Action::AnnouncementsShow, &mut app);
-    assert!(effects.is_empty(), "expected no effects, got {effects:?}");
-    app.active_announcements.clear();
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert!(effects.is_empty(), "expected no effects, got {effects:?}");
-}
-/// Hide targets the banner-slot item: the critical while one owns the slot,
-/// then the promo the slot reveals — each per-ID with a persist effect.
-#[test]
-fn announcements_hide_targets_slot_owner_critical_then_promo() {
-    let mut app = test_app();
-    app.active_announcements = vec![
-        promo_announcement("promo-a"),
-        critical_announcement("outage-a"),
-    ];
-    assert_eq!(
-        shown_banner_id(&app).as_deref(),
-        Some("outage-a"),
-        "critical wins the slot regardless of list order"
-    );
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert_eq!(effects.len(), 1);
-    assert!(app.hidden_announcement_ids.contains("outage-a"));
-    assert!(
-        !app.hidden_announcement_ids.contains("promo-a"),
-        "hide must only record the shown item"
-    );
-    assert_eq!(
-        shown_banner_id(&app).as_deref(),
-        Some("promo-a"),
-        "hiding the critical hands the slot to the promo"
-    );
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert_eq!(effects.len(), 1);
-    assert!(app.hidden_announcement_ids.contains("promo-a"));
-    assert_eq!(shown_banner_id(&app), None, "all hidden closes the banner");
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert!(effects.is_empty(), "expected no effects, got {effects:?}");
-}
-/// `dismissible: false` pins the slot owner: hide is a silent no-op (no key
-/// write, no persist effect, owner stays shown) — and a dismissible item
-/// owning the slot later still hides normally.
-#[test]
-fn announcements_hide_noops_for_non_dismissible_owner() {
-    let mut app = test_app();
-    let mut pinned = critical_announcement("pinned-crit");
-    pinned.dismissible = Some(false);
-    app.active_announcements = vec![pinned, promo_announcement("promo-a")];
-    assert_eq!(shown_banner_id(&app).as_deref(), Some("pinned-crit"));
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert!(
-        effects.is_empty(),
-        "non-dismissible hide must not persist, got {effects:?}"
-    );
-    assert!(
-        app.hidden_announcement_ids.is_empty(),
-        "non-dismissible hide must not write a hide key"
-    );
-    assert_eq!(
-        shown_banner_id(&app).as_deref(),
-        Some("pinned-crit"),
-        "pinned owner stays shown"
-    );
-    app.active_announcements.remove(0);
-    assert_eq!(shown_banner_id(&app).as_deref(), Some("promo-a"));
-    let effects = dispatch(Action::AnnouncementsHide, &mut app);
-    assert_eq!(effects.len(), 1);
-    assert!(app.hidden_announcement_ids.contains("promo-a"));
-    assert_eq!(shown_banner_id(&app), None);
-}
-/// Show also clears hidden promo keys (one show un-hides the whole slot).
-#[test]
-fn announcements_show_clears_hidden_promo_ids() {
-    let mut app = test_app();
-    app.hidden_announcement_ids = ["promo-a".to_string(), "unrelated".to_string()]
-        .into_iter()
-        .collect();
-    app.active_announcements = vec![promo_announcement("promo-a")];
-    assert_eq!(shown_banner_id(&app), None);
-    let effects = dispatch(Action::AnnouncementsShow, &mut app);
-    assert!(
-        effects.iter().any(
-            |e| matches!(e, Effect::PersistAnnouncementsHidden { hidden_ids } if !hidden_ids.contains("promo-a"))
-        ),
-        "expected persist effect without the un-hidden promo id, got {effects:?}"
-    );
-    assert_eq!(shown_banner_id(&app).as_deref(), Some("promo-a"));
-    assert!(
-        app.hidden_announcement_ids.contains("unrelated"),
-        "ids not currently visible must survive show (prune owns cleanup)"
     );
 }
 #[test]
 fn switch_model_dispatch_produces_effect_and_sets_pending() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    let model_id = acp::ModelId::new(std::sync::Arc::from("test-model"));
-    assert!(!app.agents[&id].session.model_switch_pending);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("codel-4.5"));
+    assert!(!agent_ref(&app, id).session.model_switch_pending);
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::SwitchModel { model_id: mid, .. } if mid == &model_id));
-    assert!(app.agents[&id].session.model_switch_pending);
-    assert!(app.agents[&id].session.state.is_idle());
+    assert!(
+        matches!(effects.first(), Some(Effect::SwitchModel { choice, .. }) if choice.model_id == model_id)
+    );
+    assert!(agent_ref(&app, id).session.model_switch_pending);
+    assert!(agent_ref(&app, id).session.state.is_idle());
+}
+#[test]
+fn context_window_selection_is_refused_while_a_model_switch_is_pending() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let old_model = acp::ModelId::new(std::sync::Arc::from("codel-4.5"));
+    let new_model = acp::ModelId::new(std::sync::Arc::from("codel-4.7"));
+    test_agent_mut(&mut app, id).session.models.current = Some(old_model.clone());
+    dispatch(Action::SwitchModel(ModelChoice::new(new_model)), &mut app);
+    let scrollback_before = agent_ref(&app, id).scrollback.len();
+    let effects = dispatch(
+        Action::SwitchModel(ModelChoice {
+            context_window_selection: std::num::NonZeroU64::new(500_000),
+            ..ModelChoice::new(old_model)
+        }),
+        &mut app,
+    );
+    assert!(
+        effects.is_empty(),
+        "re-selecting the old model must not revert the pending switch: {effects:?}"
+    );
+    assert_eq!(agent_ref(&app, id).scrollback.len(), scrollback_before + 1);
+}
+#[test]
+fn a_window_pick_sends_only_a_change_to_the_session_selection() {
+    let cases = [
+        (Some(500_000), "codel-4.8", 500_000, None),
+        (Some(500_000), "codel-4.5", 256_000, None),
+        (None, "codel-4.8", 256_000, None),
+        (None, "codel-4.7", 256_000, Some(256_000)),
+        (Some(500_000), "codel-4.8", 256_000, Some(256_000)),
+    ];
+    for (selection, target, picked, expected) in cases {
+        let mut app = test_app_with_catalog(selection);
+        let effects = dispatch(
+            Action::SwitchModel(ModelChoice {
+                model_id: acp::ModelId::new(std::sync::Arc::from(target)),
+                effort: None,
+                context_window_selection: std::num::NonZeroU64::new(picked),
+            }),
+            &mut app,
+        );
+        let sent = match effects.as_slice() {
+            [Effect::SwitchModel { choice, .. }] => choice
+                .context_window_selection
+                .map(std::num::NonZeroU64::get),
+            other => panic!("expected one SwitchModel effect, got {other:?}"),
+        };
+        assert_eq!(sent, expected, "selection {selection:?}, {target} {picked}");
+    }
+}
+#[test]
+fn a_redundant_window_pick_is_refused_while_a_model_switch_is_pending() {
+    let mut app = test_app_with_catalog(Some(500_000));
+    dispatch(
+        Action::SwitchModel(ModelChoice::new(acp::ModelId::new(std::sync::Arc::from(
+            "codel-4.5",
+        )))),
+        &mut app,
+    );
+    let scrollback_before = agent_ref(&app, AgentId(0)).scrollback.len();
+    let effects = dispatch(
+        Action::SwitchModel(ModelChoice {
+            model_id: acp::ModelId::new(std::sync::Arc::from("codel-4.8")),
+            effort: None,
+            context_window_selection: std::num::NonZeroU64::new(500_000),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty(), "got {effects:?}");
+    assert_eq!(
+        agent_ref(&app, AgentId(0)).scrollback.len(),
+        scrollback_before + 1
+    );
+}
+/// Codel 4.7 (current) and 4.8 list 256k and 500k, and Codel 4.5 lists 128k and 256k. All default to 256k.
+fn test_app_with_catalog(selection: Option<u64>) -> AppView {
+    let mut app = test_app_with_agent();
+    let models = &mut test_agent_mut(&mut app, AgentId(0)).session.models;
+    for (id, windows) in [
+        ("codel-4.7", [256_000, 500_000]),
+        ("codel-4.8", [256_000, 500_000]),
+        ("codel-4.5", [128_000, 256_000]),
+    ] {
+        let info = codel_test_support::acp_fixtures::model_info_with_meta(
+            id,
+            id,
+            serde_json::json!({ "totalContextTokens": 256_000, "contextWindows": windows }),
+        );
+        models
+            .available
+            .insert(acp::ModelId::new(std::sync::Arc::from(id)), info);
+    }
+    models.current = Some(acp::ModelId::new(std::sync::Arc::from("codel-4.7")));
+    models.context_window_selection = selection;
+    app
 }
 #[test]
 fn switch_model_allowed_when_agent_chat_kind() {
@@ -959,15 +795,14 @@ fn switch_model_allowed_when_agent_chat_kind() {
     app.agents.get_mut(&id).unwrap().chat_kind = true;
     let model_id = acp::ModelId::new(std::sync::Arc::from("auto"));
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::SwitchModel { model_id: mid, .. } if mid == &model_id));
-    assert!(app.agents[&id].session.model_switch_pending);
+    assert!(
+        matches!(effects.first(), Some(Effect::SwitchModel { choice, .. }) if choice.model_id == model_id)
+    );
+    assert!(agent_ref(&app, id).session.model_switch_pending);
 }
 #[test]
 fn switch_model_allowed_when_app_chat_mode() {
@@ -976,15 +811,14 @@ fn switch_model_allowed_when_app_chat_mode() {
     app.chat_mode = true;
     let model_id = acp::ModelId::new(std::sync::Arc::from("auto"));
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::SwitchModel { model_id: mid, .. } if mid == &model_id));
-    assert!(app.agents[&id].session.model_switch_pending);
+    assert!(
+        matches!(effects.first(), Some(Effect::SwitchModel { choice, .. }) if choice.model_id == model_id)
+    );
+    assert!(agent_ref(&app, id).session.model_switch_pending);
 }
 #[test]
 fn agent_type_mismatch_cancel_is_noop() {
@@ -1029,10 +863,14 @@ fn agent_type_mismatch_with_effort_stashes_deferred_switch() {
         _ => unreachable!(),
     }
     if let ActiveView::Agent(new_aid) = app.active_view {
-        let agent = &app.agents[&new_aid];
+        let agent = agent_ref(&app, new_aid);
         assert_eq!(
             agent.session.deferred_model_switch,
-            Some((model_id, effort)),
+            Some(crate::app::agent::DeferredModelSwitch {
+                model_id,
+                effort,
+                prev_model_id: None,
+            }),
             "effort override must be stashed for the shell via deferred_model_switch",
         );
     } else {
@@ -1040,25 +878,12 @@ fn agent_type_mismatch_with_effort_stashes_deferred_switch() {
     }
 }
 #[test]
-fn deferred_model_switch_still_works_for_cli_override() {
-    let mut app = test_app();
-    let cli_model = acp::ModelId::new(std::sync::Arc::from("cli-override"));
-    app.cli_model_override = Some(cli_model.clone());
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    assert_eq!(
-        app.agents[&id].session.deferred_model_switch,
-        Some((cli_model, None)),
-        "CLI -m override must still populate deferred_model_switch",
-    );
-}
-#[test]
 fn test_helper_agent_uses_generation_zero() {
     let app = test_app_with_agent();
     let id = AgentId(0);
-    assert!(app.agents[&id].session.available_commands.is_empty());
-    assert_eq!(app.agents[&id].session.available_commands_generation, 0);
-    assert!(!app.agents[&id].session.model_switch_pending);
+    assert!(agent_ref(&app, id).session.available_commands.is_empty());
+    assert_eq!(agent_ref(&app, id).session.available_commands_generation, 0);
+    assert!(!agent_ref(&app, id).session.model_switch_pending);
 }
 #[test]
 fn slash_exit_dispatches_quit() {
@@ -1093,7 +918,7 @@ fn slash_new_does_not_cancel_running_turn() {
             .any(|e| matches!(e, Effect::CancelTurn { .. }))
     );
     assert!(
-        app.agents[&id].session.state.is_turn_running(),
+        agent_ref(&app, id).session.state.is_turn_running(),
         "old agent's turn must remain running"
     );
 }
@@ -1113,26 +938,26 @@ fn slash_new_uses_active_agent_cwd() {
         _ => unreachable!(),
     }
     let new_id = AgentId(1);
-    assert!(!app.agents[&new_id].session.is_worktree);
+    assert!(!agent_ref(&app, new_id).session.is_worktree);
 }
 #[test]
 fn slash_model_invalid_arg_produces_scrollback_error() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    let initial_scrollback = app.agents[&id].scrollback.len();
+    let initial_scrollback = agent_ref(&app, id).scrollback.len();
     let effects = dispatch(Action::SendPrompt("/model nonexistent".into()), &mut app);
     assert!(effects.is_empty(), "error should not produce effects");
-    assert_eq!(app.agents[&id].scrollback.len(), initial_scrollback + 1);
-    assert!(app.agents[&id].prompt.text().is_empty());
+    assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback + 1);
+    assert!(agent_ref(&app, id).prompt.text().is_empty());
 }
 #[test]
 fn slash_model_no_args_produces_scrollback_error() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    let initial_scrollback = app.agents[&id].scrollback.len();
+    let initial_scrollback = agent_ref(&app, id).scrollback.len();
     let effects = dispatch(Action::SendPrompt("/model".into()), &mut app);
     assert!(effects.is_empty());
-    assert_eq!(app.agents[&id].scrollback.len(), initial_scrollback + 1);
+    assert_eq!(agent_ref(&app, id).scrollback.len(), initial_scrollback + 1);
 }
 #[test]
 fn slash_hooks_opens_modal() {
@@ -1140,320 +965,8 @@ fn slash_hooks_opens_modal() {
     app.appearance.disable_plugins = false;
     let id = AgentId(0);
     let effects = dispatch(Action::SendPrompt("/hooks".into()), &mut app);
-    assert!(app.agents[&id].extensions_modal.is_some());
+    assert!(agent_ref(&app, id).extensions_modal.is_some());
     assert_eq!(effects.len(), 6);
-}
-#[test]
-fn acp_bootstrap_command_appears_in_autocomplete() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![acp::AvailableCommand::new(
-        "flush".to_string(),
-        "Flush memory".to_string(),
-    )];
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    {
-        let agent = app.agents.get_mut(&id).unwrap();
-        agent.prompt.sync_acp_commands(
-            &agent.session.available_commands,
-            agent.session.available_tools.as_ref(),
-            &agent.session.models,
-        );
-    }
-    let models = app.agents[&id].session.models.clone();
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .prompt
-        .textarea
-        .insert_str("/flu");
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .prompt
-        .refresh_slash(&models);
-    let snap = app.agents[&id].prompt.slash_snapshot();
-    assert!(snap.open, "dropdown should be open");
-    assert!(
-        snap.matches.iter().any(|r| r.display == "/flush"),
-        "bootstrap ACP command should appear in matches, got: {:?}",
-        snap.matches.iter().map(|r| &r.display).collect::<Vec<_>>()
-    );
-}
-#[test]
-fn acp_bootstrap_command_executes_as_passthrough() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![acp::AvailableCommand::new(
-        "flush".to_string(),
-        "Flush memory".to_string(),
-    )];
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    app.agents.get_mut(&id).unwrap().session.session_id = Some("sess-1".into());
-    {
-        let agent = app.agents.get_mut(&id).unwrap();
-        agent.prompt.sync_acp_commands(
-            &agent.session.available_commands,
-            agent.session.available_tools.as_ref(),
-            &agent.session.models,
-        );
-    }
-    let effects = dispatch(Action::SendPrompt("/flush".into()), &mut app);
-    assert_eq!(effects.len(), 1);
-    assert!(
-        matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "/flush"),
-        "ACP command should passthrough, got: {effects:?}"
-    );
-}
-#[test]
-fn acp_runtime_update_replaces_commands_in_autocomplete() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![acp::AvailableCommand::new(
-        "old-cmd".to_string(),
-        "Old command".to_string(),
-    )];
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    {
-        let agent = app.agents.get_mut(&id).unwrap();
-        agent.prompt.sync_acp_commands(
-            &agent.session.available_commands,
-            agent.session.available_tools.as_ref(),
-            &agent.session.models,
-        );
-    }
-    app.agents.get_mut(&id).unwrap().session.available_commands = vec![acp::AvailableCommand::new(
-        "new-cmd".to_string(),
-        "New command".to_string(),
-    )];
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .session
-        .available_commands_generation += 1;
-    {
-        let agent = app.agents.get_mut(&id).unwrap();
-        agent.prompt.sync_acp_commands(
-            &agent.session.available_commands,
-            agent.session.available_tools.as_ref(),
-            &agent.session.models,
-        );
-    }
-    let models = app.agents[&id].session.models.clone();
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .prompt
-        .textarea
-        .insert_str("/new");
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .prompt
-        .refresh_slash(&models);
-    let snap = app.agents[&id].prompt.slash_snapshot();
-    assert!(
-        snap.matches.iter().any(|r| r.display == "/new-cmd"),
-        "new ACP command should appear"
-    );
-    assert!(
-        !snap.matches.iter().any(|r| r.display == "/old-cmd"),
-        "old ACP command should be replaced"
-    );
-}
-#[test]
-fn acp_command_colliding_with_builtin_skipped_in_autocomplete() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![
-        acp::AvailableCommand::new(
-            "exit".to_string(),
-            "ACP exit (should be skipped)".to_string(),
-        ),
-        acp::AvailableCommand::new("flush".to_string(), "Flush memory".to_string()),
-    ];
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    {
-        let agent = app.agents.get_mut(&id).unwrap();
-        agent.prompt.sync_acp_commands(
-            &agent.session.available_commands,
-            agent.session.available_tools.as_ref(),
-            &agent.session.models,
-        );
-    }
-    let registry = app.agents[&id].prompt.slash_controller.registry();
-    let exit_cmd = registry.get("exit").unwrap();
-    assert_eq!(exit_cmd.description(), "Quit the application");
-    assert!(registry.get("flush").is_some());
-}
-#[test]
-fn acp_command_with_arg_hint_shows_placeholder() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![
-        acp::AvailableCommand::new("search".to_string(), "Search codebase".to_string()).input(
-            Some(acp::AvailableCommandInput::Unstructured(
-                acp::UnstructuredCommandInput::new("<query>".to_string()),
-            )),
-        ),
-    ];
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    {
-        let agent = app.agents.get_mut(&id).unwrap();
-        agent.prompt.sync_acp_commands(
-            &agent.session.available_commands,
-            agent.session.available_tools.as_ref(),
-            &agent.session.models,
-        );
-    }
-    let registry = app.agents[&id].prompt.slash_controller.registry();
-    let search_cmd = registry.get("search").unwrap();
-    assert!(search_cmd.takes_args());
-    assert!(!search_cmd.args_required());
-    assert_eq!(search_cmd.arg_placeholder(), Some("<query>"));
-}
-#[test]
-fn acp_command_with_args_passthrough_includes_args() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![
-        acp::AvailableCommand::new("search".to_string(), "Search codebase".to_string()).input(
-            Some(acp::AvailableCommandInput::Unstructured(
-                acp::UnstructuredCommandInput::new("<query>".to_string()),
-            )),
-        ),
-    ];
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    app.agents.get_mut(&id).unwrap().session.session_id = Some("sess-1".into());
-    {
-        let agent = app.agents.get_mut(&id).unwrap();
-        agent.prompt.sync_acp_commands(
-            &agent.session.available_commands,
-            agent.session.available_tools.as_ref(),
-            &agent.session.models,
-        );
-    }
-    let effects = dispatch(Action::SendPrompt("/search find bugs".into()), &mut app);
-    assert_eq!(effects.len(), 1);
-    assert!(
-        matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "/search find bugs"),
-        "ACP passthrough should preserve args, got: {effects:?}"
-    );
-}
-#[test]
-fn generation_lifecycle_bootstrap_through_runtime_update() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![acp::AvailableCommand::new(
-        "initial".to_string(),
-        "Initial command".to_string(),
-    )];
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    assert_eq!(app.agents[&id].session.available_commands_generation, 1);
-    assert_eq!(app.agents[&id].session.available_commands.len(), 1);
-    assert_eq!(app.agents[&id].acp_synced_generation, 0);
-    app.agents.get_mut(&id).unwrap().session.available_commands = vec![acp::AvailableCommand::new(
-        "updated".to_string(),
-        "Updated command".to_string(),
-    )];
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .session
-        .available_commands_generation += 1;
-    assert_eq!(app.agents[&id].session.available_commands_generation, 2);
-    assert_eq!(
-        app.agents[&id].session.available_commands[0].name,
-        "updated"
-    );
-}
-#[test]
-fn tick_propagates_available_commands_to_bootstrap() {
-    let mut app = test_app();
-    app.bootstrap_acp_commands = vec![acp::AvailableCommand::new(
-        "compact".to_string(),
-        "Builtin only".to_string(),
-    )];
-    dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    app.active_view = crate::app::app_view::ActiveView::Agent(id);
-    let skill_meta = serde_json::json!({
-        "scope": "user",
-        "path": "/home/user/.codel/skills/pick-best/SKILL.md",
-    });
-    app.agents.get_mut(&id).unwrap().session.available_commands = vec![
-        acp::AvailableCommand::new("compact".to_string(), "Builtin".to_string()),
-        acp::AvailableCommand::new("pick-best".to_string(), "Parallel tournament".to_string())
-            .meta(skill_meta.as_object().cloned()),
-    ];
-    app.agents
-        .get_mut(&id)
-        .unwrap()
-        .session
-        .available_commands_generation += 1;
-    app.tick();
-    assert_eq!(
-        app.bootstrap_acp_commands.len(),
-        2,
-        "bootstrap should now include the skill"
-    );
-    assert!(
-        app.bootstrap_acp_commands
-            .iter()
-            .any(|c| c.name == "pick-best"),
-        "pick-best should be in bootstrap_acp_commands, got: {:?}",
-        app.bootstrap_acp_commands
-            .iter()
-            .map(|c| &c.name)
-            .collect::<Vec<_>>()
-    );
-    dispatch(Action::NewSession, &mut app);
-    let new_id = AgentId(1);
-    assert_eq!(app.agents[&new_id].session.available_commands.len(), 2);
-    assert!(
-        app.agents[&new_id]
-            .session
-            .available_commands
-            .iter()
-            .any(|c| c.name == "pick-best")
-    );
-}
-#[test]
-fn all_constructor_paths_initialize_slash_fields() {
-    let mut app = test_app();
-    dispatch(Action::NewSession, &mut app);
-    {
-        let s = &app.agents[&AgentId(0)].session;
-        assert_eq!(s.available_commands_generation, 1);
-        assert!(!s.model_switch_pending);
-    }
-    dispatch(Action::LoadSession("sess-1".into(), None, false), &mut app);
-    {
-        let s = &app.agents[&AgentId(1)].session;
-        assert_eq!(s.available_commands_generation, 1);
-        assert!(!s.model_switch_pending);
-    }
-    app.cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    app.cwd_has_git_ancestor = true;
-    dispatch(
-        Action::NewWorktreeSession {
-            load_session_id: None,
-            label: None,
-            git_ref: None,
-        },
-        &mut app,
-    );
-    {
-        let s = &app.agents[&AgentId(2)].session;
-        assert_eq!(s.available_commands_generation, 1);
-        assert!(!s.model_switch_pending);
-    }
-    let test_app = test_app_with_agent();
-    {
-        let s = &test_app.agents[&AgentId(0)].session;
-        assert_eq!(s.available_commands_generation, 0);
-        assert!(!s.model_switch_pending);
-    }
 }
 #[test]
 fn deferred_switch_overwritten_by_second_switch() {
@@ -1463,156 +976,155 @@ fn deferred_switch_overwritten_by_second_switch() {
     let model_b = acp::ModelId::new(std::sync::Arc::from("model-b"));
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     dispatch(
-        Action::SwitchModel {
-            model_id: model_a,
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_a.clone())),
         &mut app,
     );
     dispatch(
-        Action::SwitchModel {
-            model_id: model_b.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_b.clone())),
         &mut app,
     );
     assert_eq!(
-        app.agents[&id].session.deferred_model_switch,
-        Some((model_b, None))
+        agent_ref(&app, id).session.deferred_model_switch,
+        Some(crate::app::agent::DeferredModelSwitch {
+            model_id: model_b.clone(),
+            effort: None,
+            prev_model_id: Some(model_a),
+        })
     );
 }
 #[test]
-fn request_bundle_status_emits_effect() {
-    let mut app = test_app();
-    let effects = dispatch(Action::RequestBundleStatus, &mut app);
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::FetchBundleStatus));
-}
-/// Conversation-entry resume stamps LoadSession.chat_kind; process chat_mode
-/// alone does not set the entry bit (effects still stamp via SessionFlags).
-#[test]
-fn conversation_entry_load_sets_chat_kind_bit() {
-    let mut app = test_app();
-    let effects = dispatch(Action::LoadSession("conv-id".into(), None, true), &mut app);
-    assert!(matches!(
-        &effects[..],
-        [Effect::LoadSession {
-            session_id,
-            chat_kind: true,
-            ..
-        }] if session_id == "conv-id"
-    ));
-    let agent = app.agents.values().next().expect("agent");
-    assert!(agent.chat_kind, "conversation entry → agent chat_kind");
-}
-/// Process-wide `--chat` + non-conversation resume of a non-disk id still
-/// loads (gateway conversation) with agent chat_kind from sticky mode.
-#[test]
-fn chat_mode_resume_without_local_disk_loads_as_chat() {
-    let mut app = test_app();
-    app.chat_mode = true;
-    let effects = dispatch(
-        Action::LoadSession("remote-conv-only".into(), None, false),
+fn pick_over_cli_seed_keeps_display_as_rollback_target() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let displayed = acp::ModelId::new(std::sync::Arc::from("displayed-model"));
+    let cli_model = acp::ModelId::new(std::sync::Arc::from("cli-model"));
+    let picked = acp::ModelId::new(std::sync::Arc::from("picked-model"));
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.session.session_id = None;
+    agent.session.models.current = Some(displayed.clone());
+    agent.session.deferred_model_switch = Some(crate::app::agent::DeferredModelSwitch {
+        model_id: cli_model,
+        effort: None,
+        prev_model_id: None,
+    });
+    dispatch(
+        Action::SwitchModel(ModelChoice::new(picked.clone())),
         &mut app,
     );
-    assert!(matches!(
-        &effects[..],
-        [Effect::LoadSession {
-            session_id,
-            chat_kind: false,
-            ..
-        }] if session_id == "remote-conv-only"
-    ));
+    assert_eq!(
+        agent_ref(&app, id).session.deferred_model_switch,
+        Some(crate::app::agent::DeferredModelSwitch {
+            model_id: picked,
+            effort: None,
+            prev_model_id: Some(displayed),
+        })
+    );
+}
+#[test]
+fn deferred_switch_updates_display_and_persists() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let model_id = acp::ModelId::new(std::sync::Arc::from("model-b"));
+    app.agents.get_mut(&id).unwrap().session.session_id = None;
+    let effects = dispatch(
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
+        &mut app,
+    );
+    let agent = agent_ref(&app, id);
+    assert_eq!(
+        agent.session.models.current,
+        Some(model_id.clone()),
+        "pre-session pick must update the displayed model immediately"
+    );
+    assert_eq!(
+        agent.session.deferred_model_switch,
+        Some(crate::app::agent::DeferredModelSwitch {
+            model_id: model_id.clone(),
+            effort: None,
+            prev_model_id: None,
+        }),
+        "switch must still round-trip once the session exists"
+    );
+    assert!(
+        !agent.session.model_switch_pending,
+        "nothing is in flight yet — the queue must not be blocked"
+    );
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::PersistPreferredModel { model_id: m, .. }] if m == &model_id
+        ),
+        "expected a single PersistPreferredModel effect, got {effects:?}"
+    );
+    let effects = dispatch(
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
+        &mut app,
+    );
+    assert!(
+        effects.is_empty(),
+        "unchanged pre-session pick must not re-persist, got {effects:?}"
+    );
+}
+/// Under sticky `--chat`, a local disk row loaded through the history bypass stays Build for rename.
+/// Without the bypass flag this same disk row is refused (see `chat_mode_refuses_local_build_disk_load`).
+#[cfg(feature = "local-workspace")]
+#[test]
+fn load_sticky_chat_history_bypass_rename_kind_is_build() {
+    let cwd = PathBuf::from(format!("/tmp/chat-mode-hist-bypass-{}", std::process::id()));
+    let session_id = format!("local-build-disk-{}", std::process::id());
+    let sess_dir = plant_local_build_session(&cwd, &session_id);
+    let mut app = test_app();
+    app.cwd = cwd;
+    app.chat_mode = true;
+    app.welcome_history_load_as_build = true;
+    let effects = dispatch(
+        Action::LoadSession(session_id.clone(), None, false),
+        &mut app,
+    );
+    let _ = std::fs::remove_dir_all(&sess_dir);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::LoadSession {
+                session_id: sid,
+                chat_kind: false,
+                ..
+            }] if sid == &session_id
+        ),
+        "history-bypass must load the local disk row, got {effects:?}"
+    );
     let agent = app.agents.values().next().expect("agent");
     assert!(
         agent.chat_kind,
-        "sticky --chat must set agent chat_kind even without entry bit"
+        "sticky --chat still sets the UI chat_kind bit"
     );
     assert!(
-        agent.app_chat_mode,
-        "app.chat_mode must propagate to AgentView::app_chat_mode"
+        !agent.conversation_entry,
+        "history-bypass local build must not open as chat"
     );
-}
-/// Process-wide `--chat` refuses local Build disk rows (no LoadSession).
-#[test]
-fn chat_mode_refuses_local_build_disk_load() {
-    let cwd = PathBuf::from(format!(
-        "/tmp/chat-mode-build-refuse-{}",
-        std::process::id()
-    ));
-    let session_id = format!("build-disk-{}", std::process::id());
-    let sess_dir = plant_local_build_session(&cwd, &session_id);
-    let mut app = test_app();
-    app.cwd = cwd;
-    app.chat_mode = true;
-    let effects = dispatch(Action::LoadSession(session_id, None, false), &mut app);
-    let _ = std::fs::remove_dir_all(&sess_dir);
-    assert!(
-        effects.is_empty(),
-        "local Build under --chat must refuse, got {effects:?}"
+    assert_eq!(
+        agent.rename_kind(),
+        codel_shell::session::unified_list::SessionKind::Build
     );
-    assert!(
-        app.agents.is_empty(),
-        "refuse must not allocate an agent slot"
-    );
-}
-/// Conversation entry under `--chat` still loads even if a local path exists.
-#[test]
-fn chat_mode_allows_conversation_entry_even_if_local_path() {
-    let cwd = PathBuf::from(format!("/tmp/chat-mode-conv-ok-{}", std::process::id()));
-    let session_id = format!("conv-also-local-{}", std::process::id());
-    let sess_dir = plant_local_build_session(&cwd, &session_id);
-    let mut app = test_app();
-    app.cwd = cwd;
-    app.chat_mode = true;
-    let effects = dispatch(Action::LoadSession(session_id, None, true), &mut app);
-    let _ = std::fs::remove_dir_all(&sess_dir);
-    assert!(matches!(
-        &effects[..],
-        [Effect::LoadSession {
-            chat_kind: true,
-            ..
-        }]
-    ));
-}
-#[test]
-fn view_catalog_entry_emits_fetch_effect() {
-    let mut app = test_app_with_agent();
-    let effects = dispatch(
-        Action::ViewCatalogEntry {
-            kind: "persona".into(),
-            name: "researcher".into(),
+    let rename = dispatch(
+        Action::RenameSession {
+            title: "local title".into(),
         },
         &mut app,
     );
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(
-        &effects[0],
-        Effect::FetchCatalogEntry { kind, name }
-        if kind == "persona" && name == "researcher"
-    ));
+    assert!(
+        matches!(
+            rename.as_slice(),
+            [Effect::RenameSession { kind, title, .. }]
+                if *kind == codel_shell::session::unified_list::SessionKind::Build
+                    && title == "local title"
+        ),
+        "history-bypass rename must send kind=build, got {rename:?}"
+    );
 }
 /// End-to-end regression test for the "always re-asks" requirement.
-///
-/// Drives the full user-visible production pipeline twice, with no
-/// manual modal poking between rounds:
-///   round 1: dispatch(Action::Fork) -> modal opens.
-///            select option 0 ("Yes") on the modal.
-///            submit_question_answers(skipped=false)
-///              -> InputOutcome::Action(ForkAnswered { worktree=true })
-///              -> question_view cleared by the same submit call.
-///            dispatch(inner Action) -> placeholder + Effect.
-///   round 2: switch focus back to parent (Y-inert, picker cause).
-///            dispatch(Action::Fork) -> modal MUST re-open.
-///
-/// This catches BOTH:
-///   (a) "no persistence in dispatch_fork" -- the only remaining
-///       source of truth for whether the modal opens is the absence
-///       of `args.worktree_override`; and
-///   (b) "submit_question_answers clears question_view" -- a future
-///       refactor that breaks the clear would also break "always
-///       re-asks" in production (open_fork_question refuses when a
-///       question is already on screen), so we exercise it here.
+/// dispatch(Action::Fork) -> modal MUST re-open.
+/// (a) "no persistence in dispatch_fork": whether the modal opens is decided only by the absence of `args.worktree_override`; and (b) "submit_question_answers clears question_view": open_fork_question refuses while a question is already on screen.
 #[test]
 fn dispatch_fork_no_flag_always_reopens_modal_after_previous_answer() {
     use crate::views::question_view::QuestionSelection;
@@ -1620,19 +1132,22 @@ fn dispatch_fork_no_flag_always_reopens_modal_after_previous_answer() {
     app.fork_worktree_mode = crate::app::app_view::WorktreeMode::Ask;
     let effects = dispatch(Action::Fork(fork_args(None, None)), &mut app);
     assert!(effects.is_empty(), "round 1: no effects until answered");
-    let qv1 = app.agents[&AgentId(0)]
+    let qv1 = agent_ref(&app, AgentId(0))
         .question_view
         .as_ref()
         .expect("round 1: modal opened");
     assert_eq!(
-        qv1.questions[0].options.len(),
-        4,
+        qv1.questions.first().map(|q| q.options.len()),
+        Some(4),
         "round 1: modal offers exactly 4 options (Yes/No/Always/Never)"
     );
     {
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         let qv = agent.question_view.as_mut().expect("modal still present");
-        qv.selections[0] = QuestionSelection::Single(Some(0));
+        let Some(slot) = qv.selections.first_mut() else {
+            panic!("expected first question selection");
+        };
+        *slot = QuestionSelection::Single(Some(0));
     }
     let outcome = app
         .agents
@@ -1648,7 +1163,7 @@ fn dispatch_fork_no_flag_always_reopens_modal_after_previous_answer() {
         "submit must produce ForkAnswered with worktree=true, got {inner:?}"
     );
     assert!(
-        app.agents[&AgentId(0)].question_view.is_none(),
+        agent_ref(&app, AgentId(0)).question_view.is_none(),
         "submit must clear question_view on the parent agent"
     );
     let effects = dispatch(inner, &mut app);
@@ -1659,13 +1174,13 @@ fn dispatch_fork_no_flag_always_reopens_modal_after_previous_answer() {
     switch_to_agent(&mut app, AgentId(0), SwitchCause::Picker);
     let effects = dispatch(Action::Fork(fork_args(None, None)), &mut app);
     assert!(effects.is_empty(), "round 2: no effects until answered");
-    let qv2 = app.agents[&AgentId(0)]
+    let qv2 = agent_ref(&app, AgentId(0))
         .question_view
         .as_ref()
         .expect("round 2: modal must re-open (choice never persisted)");
     assert_eq!(
-        qv2.questions[0].options.len(),
-        4,
+        qv2.questions.first().map(|q| q.options.len()),
+        Some(4),
         "round 2: modal still offers exactly 4 options (Yes/No/Always/Never)"
     );
 }
@@ -1755,7 +1270,10 @@ fn translate_local_submit_out_of_range_index_returns_changed_no_action() {
         vec![q],
         crate::views::prompt_widget::StashedPrompt::default(),
     );
-    state.selections[0] = crate::views::question_view::QuestionSelection::Single(Some(99));
+    let Some(slot) = state.selections.first_mut() else {
+        panic!("expected first question selection");
+    };
+    *slot = crate::views::question_view::QuestionSelection::Single(Some(99));
     let kind = LocalQuestionKind::Fork { directive: None };
     let outcome = crate::app::agent_view::translate_local_submit_for_test(&state, kind, false);
     assert!(matches!(
@@ -1785,14 +1303,14 @@ fn handle_ask_user_question_does_not_push_system_block_when_displaced_acp_modal(
     };
     app.agents.get_mut(&id).unwrap().question_view =
         Some(QuestionViewState::new("first-acp".into(), vec![q], stashed));
-    let scrollback_len_before = app.agents[&id].scrollback.len();
+    let scrollback_len_before = agent_ref(&app, id).scrollback.len();
     let (args, _rx) = make_ask_user_question_args("second-acp");
     let handled = crate::app::acp_handler::handle_ask_user_question(args, &mut app);
     assert!(handled);
-    let qv = app.agents[&id].question_view.as_ref().unwrap();
+    let qv = agent_ref(&app, id).question_view.as_ref().unwrap();
     assert_eq!(qv.tool_call_id, "second-acp");
     assert_eq!(
-        app.agents[&id].scrollback.len(),
+        agent_ref(&app, id).scrollback.len(),
         scrollback_len_before,
         "no system block when displaced modal was an ACP question, not a local one"
     );
@@ -1820,7 +1338,7 @@ fn entry_title_uses_display_name_when_set() {
     if let Some(a) = app.agents.get_mut(&AgentId(0)) {
         a.display_name = Some("custom title".into());
     }
-    let title = entry_title(&app.agents[&AgentId(0)]);
+    let title = entry_title(agent_ref(&app, AgentId(0)));
     assert_eq!(title, "custom title");
 }
 #[test]
@@ -1844,12 +1362,8 @@ fn find_agent_by_session_id_finds_inactive_agent() {
         Some(acp::SessionId::new("sess-B"))
     );
 }
-/// Cross-setting smoke test.
-/// Verifies that the dispatcher routes each Action to the
-/// correct setter (catches a copy-paste registration bug
-/// where two setters were swapped). The original 5-setting
-/// matrix shrank to 2 after the user-feedback drop of
-/// `session_picker_grouped` / `load_envrc` / `use_leader`.
+/// Verifies that the dispatcher routes each Action to its own setter (catches a copy-paste registration bug where two setters were swapped).
+/// The original 5-setting matrix shrank to 2 after the user-feedback drop of `session_picker_grouped` / `load_envrc` / `use_leader`.
 #[test]
 fn pr13_each_setter_writes_to_its_own_mirror() {
     let mut app = test_app_with_agent();
@@ -1862,12 +1376,8 @@ fn pr13_each_setter_writes_to_its_own_mirror() {
     assert_eq!(app.auto_update, Some(false));
     assert_eq!(app.show_tips, Some(false));
 }
-/// Three-way alignment pin: the PAGER registry default must agree
-/// with `PagerLocalSnapshot::default()` (covered by
-/// `defaults_match_pager_state` in `registry::tests`) AND with
-/// `AgentView::new`'s runtime initializer. This is the third leg
-/// of the triangle that was previously missing — the
-/// registry test alone can't see `AgentView::new`'s constant.
+/// The PAGER registry default must agree with `PagerLocalSnapshot::default()` and with `AgentView::new`'s runtime initializer.
+/// `defaults_match_pager_state` in `registry::tests` covers the snapshot leg; the registry test alone can't see `AgentView::new`'s constant.
 #[test]
 fn pager_registry_default_matches_agent_view_new_initializer() {
     use crate::settings::{SettingKind, SettingOwner, SettingsRegistry};
@@ -1930,10 +1440,8 @@ fn pager_registry_default_matches_agent_view_new_initializer() {
         }
     }
 }
-/// If the user picks the regular "Yes, proceed" option (NOT
-/// enable-always-approve), the dispatcher must behave exactly as
-/// before — no PersistPermissionMode effect, no YOLO flip. Pins
-/// that the new code path is gated strictly on the id check.
+/// Picking the regular "Yes, proceed" option (NOT enable-always-approve) must behave as before: no PersistPermissionMode effect, no YOLO flip.
+/// Pins that the always-approve code path is gated strictly on the id check.
 #[test]
 fn regular_allow_once_does_not_trigger_always_approve_persist() {
     use std::sync::Arc;
@@ -1951,76 +1459,13 @@ fn regular_allow_once_does_not_trigger_always_approve_persist() {
              the always-approve mode is opt-in via the dedicated option only",
     );
     assert!(
-        !app.agents[&AgentId(0)].session.is_yolo(),
+        !agent_ref(&app, AgentId(0)).session.is_yolo(),
         "session.yolo_mode must remain OFF when the regular AllowOnce option is picked",
     );
     assert!(
         !app.default_yolo,
         "app.default_yolo must remain OFF when the regular AllowOnce option is picked",
     );
-}
-/// Launch-time blocked `--yolo` in the TUI: the one-shot notice is
-/// surfaced (toast + durable system line) on the first agent view and
-/// consumed so later switches stay quiet.
-#[test]
-fn switch_to_agent_surfaces_launch_block_notice_once() {
-    let mut app = test_app();
-    app.yolo_launch_block_notice = Some(POLICY_WARNING);
-    let id = AgentId(0);
-    let session = make_test_agent_session(&app, id, "test-session");
-    app.agents
-        .insert(id, AgentView::new(session, ScrollbackState::new()));
-    switch_to_agent(&mut app, id, SwitchCause::New);
-    let agent = &app.agents[&id];
-    assert_eq!(
-        agent.toast.as_ref().map(|(s, _)| s.as_str()),
-        Some(POLICY_WARNING),
-    );
-    let system_texts: Vec<&str> = agent
-        .scrollback
-        .iter_entries()
-        .filter_map(|(_, e)| match &e.block {
-            crate::scrollback::block::RenderBlock::System(s) => Some(s.text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        system_texts,
-        vec![POLICY_WARNING],
-        "warning must land in the transcript exactly once",
-    );
-    assert_eq!(
-        app.yolo_launch_block_notice, None,
-        "one-shot must be consumed"
-    );
-    let id2 = AgentId(1);
-    let session2 = make_test_agent_session(&app, id2, "test-session-2");
-    app.agents
-        .insert(id2, AgentView::new(session2, ScrollbackState::new()));
-    switch_to_agent(&mut app, id2, SwitchCause::New);
-    assert!(app.agents[&id2].toast.is_none());
-    assert_eq!(app.agents[&id2].scrollback.iter_entries().count(), 0);
-}
-/// Switching to a non-auto/non-yolo agent re-anchors a stale global
-/// `"auto"` mirror (left by a different agent) to `"ask"`, so the cycle's
-/// `sync_active_auto_flag` derive can't copy that Auto onto the now-active
-/// agent.
-#[test]
-fn switch_to_agent_reanchors_stale_global_auto() {
-    let mut app = test_app_with_agent();
-    let id2 = AgentId(1);
-    let session2 = make_test_agent_session(&app, id2, "test-session-2");
-    app.agents
-        .insert(id2, AgentView::new(session2, ScrollbackState::new()));
-    app.next_agent_id = 2;
-    app.current_ui.permission_mode = Some("auto".into());
-    switch_to_agent(&mut app, id2, SwitchCause::Picker);
-    assert_eq!(
-        app.current_ui.permission_mode.as_deref(),
-        Some("ask"),
-        "switching to a non-auto agent must clear the stale global auto"
-    );
-    assert!(!app.agents[&id2].session.is_auto());
 }
 #[test]
 fn show_tasks_empty_commits_empty_message() {
@@ -2064,13 +1509,6 @@ fn show_tasks_lists_a_scheduled_task() {
     assert!(text.contains("scheduled"), "got: {text:?}");
 }
 #[test]
-fn show_tasks_no_active_agent_is_noop() {
-    let mut app = test_app();
-    let effects = dispatch(Action::ShowTasks, &mut app);
-    assert!(effects.is_empty(), "ShowTasks without an agent is a no-op");
-}
-/// classify_top_level decision matrix.
-#[test]
 fn classify_top_level_branches() {
     use crate::views::dashboard::{RowState, classify_top_level};
     let mut app = test_app_with_agent();
@@ -2084,13 +1522,11 @@ fn classify_top_level_branches() {
     assert_eq!(classify_top_level(agent), RowState::Working);
     agent.session.loading_replay = false;
 }
-/// For Idle rows, `last_change_at` is the
-/// frozen `last_active_at` anchor. Building the row twice in
-/// rapid succession against a fixed `last_active_at` yields
-/// nearly-identical `elapsed()` values (within tolerance).
+/// For Idle rows, `last_change_at` is the frozen `last_active_at` anchor.
+/// Building the row twice in rapid succession against a fixed `last_active_at` yields nearly-identical `elapsed()` values (within tolerance).
 #[test]
 fn build_rows_idle_anchor_is_frozen_last_active_at() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     mark_agent_nonempty(&mut app, AgentId(0));
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
@@ -2098,43 +1534,47 @@ fn build_rows_idle_anchor_is_frozen_last_active_at() {
     agent.last_active_at = Some(anchor);
     agent.turn_started_at = None;
     agent.session.state = crate::app::agent::AgentState::Idle;
-    let rows1 = build_rows(
+    let rows1 = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
-    let row1 = &rows1[0];
+    let Some(row1) = rows1.first() else {
+        panic!("expected an idle dashboard row: {rows1:?}");
+    };
     assert_eq!(row1.state, crate::views::dashboard::RowState::Idle);
     let elapsed1 = row1.last_change_at.elapsed().unwrap_or_default();
     assert!(
         elapsed1 >= std::time::Duration::from_secs(299),
         "expected >= 299s, got {elapsed1:?}",
     );
-    let rows2 = build_rows(
+    let rows2 = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
-    let elapsed2 = rows2[0].last_change_at.elapsed().unwrap_or_default();
+    let Some(row2) = rows2.first() else {
+        panic!("expected an idle dashboard row: {rows2:?}");
+    };
+    let elapsed2 = row2.last_change_at.elapsed().unwrap_or_default();
     assert!(
         elapsed2 >= std::time::Duration::from_secs(299),
         "idle anchor must stay frozen across rebuilds, got {elapsed2:?}",
     );
 }
-/// Working rows anchor at `turn_started_at` so
-/// the age column shows the LIVE elapsed time within the current
-/// turn rather than the time since the previous turn ended.
+/// Working rows anchor at `turn_started_at`.
+/// The age column then shows the LIVE elapsed time within the current turn rather than the time since the previous turn ended.
 #[test]
 fn build_rows_working_anchor_is_turn_started_at() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     let turn_start = std::time::Instant::now() - std::time::Duration::from_secs(5);
@@ -2142,16 +1582,18 @@ fn build_rows_working_anchor_is_turn_started_at() {
     agent.turn_started_at = Some(turn_start);
     agent.last_active_at = Some(stale);
     agent.session.state = crate::app::agent::AgentState::TurnRunning;
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
-    let row = &rows[0];
+    let Some(row) = rows.first() else {
+        panic!("expected a working dashboard row: {rows:?}");
+    };
     assert_eq!(row.state, crate::views::dashboard::RowState::Working);
     let elapsed = row.last_change_at.elapsed().unwrap_or_default();
     assert!(
@@ -2160,52 +1602,49 @@ fn build_rows_working_anchor_is_turn_started_at() {
         "expected ~5s (turn_started_at anchor), got {elapsed:?}",
     );
 }
-/// Defensive test for the fallback
-/// path when both `turn_started_at` and `last_active_at` are
-/// `None`. The row's `last_change_at` projects the *frozen*
-/// process-wide `fallback_epoch`, so two consecutive builds yield
-/// stable `last_change_at` values (within sampling jitter) rather
-/// than re-anchoring at `now` and showing "0s" every frame.
+/// Defensive test for the fallback path when both `turn_started_at` and `last_active_at` are `None`.
+/// The row's `last_change_at` projects the *frozen* process-wide `fallback_epoch`.
+/// Two consecutive builds therefore yield stable values (within sampling jitter) rather than re-anchoring at `now` and showing "0s" every frame.
 #[test]
 fn build_rows_fallback_anchor_is_frozen_when_last_active_at_is_none() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     mark_agent_nonempty(&mut app, AgentId(0));
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     agent.last_active_at = None;
     agent.turn_started_at = None;
     agent.session.state = crate::app::agent::AgentState::Idle;
-    let rows1 = build_rows(
+    let rows1 = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
-    let rows2 = build_rows(
+    let rows2 = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
-    let (t1, t2) = (rows1[0].last_change_at, rows2[0].last_change_at);
+    let (Some(r1), Some(r2)) = (rows1.first(), rows2.first()) else {
+        panic!("expected dashboard rows: {rows1:?} {rows2:?}");
+    };
+    let (t1, t2) = (r1.last_change_at, r2.last_change_at);
     let drift = t1.duration_since(t2).unwrap_or_else(|e| e.duration());
     assert!(
         drift < std::time::Duration::from_secs(1),
         "fallback anchor must be frozen across rebuilds, drifted {drift:?}",
     );
 }
-/// While the turn is IDLE the peek header label reflects the TYPE of the
-/// most recent agent block (Response / Edit / Thought / …) via the
-/// scrollback scan. The most recent block wins; a fresh user prompt is a
-/// turn boundary with no agent response after it → "Idle". (The RUNNING
-/// case follows live turn activity — see the `extract_response_type_*`
-/// tests.)
+/// While the turn is IDLE the scrollback scan gives the peek header label the TYPE of the most recent agent block (Response / Edit / Thought / …).
+/// The most recent block wins; a fresh user prompt is a turn boundary with no agent response after it yet, so the label is "Idle".
+/// (The RUNNING case follows live turn activity; see the `extract_response_type_*` tests.)
 #[serial_test::serial(CODEL_AGENT_DASHBOARD)]
 #[test]
 fn peek_label_reflects_last_response_type() {
@@ -2228,7 +1667,7 @@ fn peek_label_reflects_last_response_type() {
         .push_block(RenderBlock::user_prompt("do it"));
     assert_eq!(extract_last_response_type(agent), "Idle");
 }
-/// agent.question_view.is_some() → NeedsInput.
+/// agent.question_view.is_some() classifies as NeedsInput.
 #[test]
 fn classify_top_level_question_view_some_is_needs_input() {
     use crate::views::dashboard::{RowState, classify_top_level};
@@ -2242,24 +1681,23 @@ fn classify_top_level_question_view_some_is_needs_input() {
     ));
     assert_eq!(classify_top_level(agent), RowState::NeedsInput);
 }
-/// ANSI escapes in `display_name` are stripped at row
-/// build time.
+/// ANSI escapes in `display_name` are stripped at row build time.
 #[test]
 fn top_level_label_strips_control_characters() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     agent.display_name = Some("a\x1b[31mevil\x1b[0m".to_string());
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
-        None,
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
-    let top = rows.iter().find(|r| r.indent == 0).expect("top row");
+    let top = rows.first().expect("top row");
     assert!(
         !top.label.contains('\x1b'),
         "label must not retain \\x1b: {:?}",
@@ -2267,7 +1705,6 @@ fn top_level_label_strips_control_characters() {
     );
     assert!(top.label.contains("evil"));
 }
-/// Build a synthetic MouseEvent for tests.
 fn mouse_event(
     kind: crossterm::event::MouseEventKind,
     col: u16,
@@ -2280,11 +1717,7 @@ fn mouse_event(
         modifiers: crossterm::event::KeyModifiers::NONE,
     }
 }
-/// Left-click on a row selects it (single click).
-/// Single left-click on a row attaches the
-/// conversation immediately (was: selects only, required
-/// double-click to attach). The user explicitly reported the
-/// previous click-to-select behaviour as unresponsive.
+/// A single left-click on a row selects it and attaches the conversation immediately.
 #[serial_test::serial(CODEL_AGENT_DASHBOARD)]
 #[test]
 fn mouse_left_click_attaches_immediately() {
@@ -2310,11 +1743,9 @@ fn mouse_left_click_attaches_immediately() {
     }
     assert_eq!(d.selected, Some(id));
 }
-/// Every left-click attaches, including
-/// rapid repeated clicks. The previous design used a 500ms window
-/// to distinguish single (select) from double (attach) click;
-/// the new design makes every click attach so the user's mental
-/// model "click = open" always holds.
+/// Every left-click attaches, including rapid repeated clicks.
+/// The previous design used a 500ms window to distinguish single (select) from double (attach) click.
+/// Now every click attaches, so the user's mental model "click = open" always holds.
 #[serial_test::serial(CODEL_AGENT_DASHBOARD)]
 #[test]
 fn mouse_repeated_click_keeps_attaching() {
@@ -2347,9 +1778,8 @@ fn mouse_repeated_click_keeps_attaching() {
         other => panic!("expected DashboardAttach on second click, got {other:?}"),
     }
 }
-/// Clicks after the previous 500ms-double-click
-/// window also attach (the previous test asserted single-click
-/// behaviour for >500ms-apart clicks; now every click attaches).
+/// Clicks after the previous 500ms double-click window also attach.
+/// (The previous test asserted single-click behaviour for clicks more than 500ms apart; now every click attaches.)
 #[serial_test::serial(CODEL_AGENT_DASHBOARD)]
 #[test]
 fn mouse_click_after_long_pause_still_attaches() {
@@ -2433,7 +1863,7 @@ fn pick_content_session_in_worktree_refuses_conversation_row() {
     );
     assert!(read_toast(&app).contains("worktree"));
 }
-/// Delete acts on local disk + registry; conversation rows have neither.
+/// Delete acts on local disk and registry; conversation rows have neither.
 #[test]
 fn delete_session_refuses_conversation_row() {
     let mut app = test_app_with_agent();
@@ -2452,8 +1882,46 @@ fn delete_session_refuses_conversation_row() {
     );
     assert!(read_toast(&app).contains("isn't supported"));
 }
-/// Expanding a conversation card must not read `chat_history.jsonl`
-/// (it doesn't exist); the row still toggles open.
+#[test]
+fn delete_session_refuses_known_read_only_workspace_member() {
+    let mut app = test_app_with_agent();
+    open_session_picker_with(&mut app, vec![make_picker_entry("read-only-delete", "/r")]);
+    app.workspace_dashboard_enabled = true;
+    let temp = tempfile::tempdir().unwrap();
+    let store =
+        codel_dashboard_store::WorkspaceStore::open(&temp.path().join("workspace.db")).unwrap();
+    app.workspace_membership.set_read_only_for_test(
+        store,
+        codel_dashboard_store::WorkspaceSnapshot {
+            grouping: codel_dashboard_store::Grouping::State,
+            members: vec![codel_dashboard_store::Member {
+                session_id: codel_dashboard_store::SessionId::new("read-only-delete").unwrap(),
+                kind: codel_dashboard_store::MemberKind::Build,
+                origin: codel_dashboard_store::MemberOrigin::Local,
+                cwd: Some("/r".into()),
+                title: Some("Read only".into()),
+                model: None,
+                last_turn_summary: None,
+                is_worktree: false,
+                last_change_unix_ms: 1,
+                pin_rank: None,
+                order_rank: None,
+            }],
+            data_version: 1,
+        },
+    );
+    let effects = dispatch(
+        Action::DeleteSession {
+            source: "local".into(),
+            session_id: "read-only-delete".into(),
+            cwd: "/r".into(),
+        },
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert!(read_toast(&app).contains("workspace is read-only"));
+}
+/// Expanding a conversation card must not read `chat_history.jsonl` (it doesn't exist); the row still toggles open.
 #[test]
 fn expand_conversation_card_skips_detail_load() {
     use crate::views::modal::ActiveModal;
@@ -2489,47 +1957,12 @@ fn expand_build_card_still_loads_detail() {
         &mut app,
     );
     assert!(
-        matches!(&effects[..], [Effect::LoadCardDetail { .. }]),
+        matches!(effects.as_slice(), [Effect::LoadCardDetail { .. }]),
         "expected LoadCardDetail, got {effects:?}"
     );
 }
-/// Welcome-screen variants of the conversation-card expand exemption.
-#[test]
-fn welcome_expand_conversation_card_skips_detail_load() {
-    let mut app = test_app();
-    app.session_picker_entries = Some(vec![make_conversation_entry("conv-exp-w1")]);
-    let effects = dispatch(
-        Action::ExpandSessionCard {
-            source: "conversation".into(),
-            session_id: "conv-exp-w1".into(),
-        },
-        &mut app,
-    );
-    assert!(
-        effects.is_empty(),
-        "no LoadCardDetail for a welcome conversation row, got {effects:?}"
-    );
-    assert!(
-        app.session_picker_state.expanded.contains(&0),
-        "row still toggles open"
-    );
-    let mut app = test_app();
-    app.session_picker_entries = Some(vec![make_picker_entry("local-exp-w1", "/r")]);
-    let effects = dispatch(
-        Action::ExpandSessionCard {
-            source: "local".into(),
-            session_id: "local-exp-w1".into(),
-        },
-        &mut app,
-    );
-    assert!(
-        matches!(&effects[..], [Effect::LoadCardDetail { .. }]),
-        "expected LoadCardDetail, got {effects:?}"
-    );
-}
-/// Collect the active agent's system-block texts.
 fn system_texts(app: &AppView, id: AgentId) -> Vec<String> {
-    app.agents[&id]
+    agent_ref(app, id)
         .scrollback
         .iter_entries()
         .filter_map(|(_, e)| match &e.block {
@@ -2537,15 +1970,6 @@ fn system_texts(app: &AppView, id: AgentId) -> Vec<String> {
             _ => None,
         })
         .collect()
-}
-#[test]
-fn toggle_fps_hud_round_trips() {
-    let mut app = test_app();
-    assert!(!app.fps_hud.enabled(), "FPS HUD must start off");
-    let _ = dispatch(Action::ToggleFpsHud, &mut app);
-    assert!(app.fps_hud.enabled());
-    let _ = dispatch(Action::ToggleFpsHud, &mut app);
-    assert!(!app.fps_hud.enabled());
 }
 /// `/debug` bare: one system line reporting every toggle's state.
 #[test]
@@ -2592,4 +2016,65 @@ fn toggle_scroll_log_flips_recorder_and_reports_path() {
         texts.iter().any(|t| t == "scroll log: off"),
         "disable must be confirmed, got {texts:?}"
     );
+}
+#[serial_test::serial(CODEL_TEST_OPEN_URL_FILE)]
+#[test]
+fn open_managed_connectors_starts_wait_when_modal_open() {
+    use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab};
+    let url_file = std::env::temp_dir().join(format!(
+        "codel-managed-connectors-open-{}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&url_file);
+    unsafe { std::env::set_var("CODEL_TEST_OPEN_URL_FILE", &url_file) };
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().extensions_modal =
+        Some(ExtensionsModalState::new(ExtensionsTab::McpServers));
+    let effects = dispatch(Action::OpenManagedConnectors, &mut app);
+    assert!(effects.is_empty());
+    assert!(
+        agent_ref(&app, id)
+            .extensions_modal
+            .as_ref()
+            .is_some_and(|modal| modal.is_managed_connectors_wait())
+    );
+    let recorded = std::fs::read_to_string(&url_file).unwrap_or_default();
+    assert!(
+        recorded
+            .lines()
+            .any(|line| line == crate::views::mcps_modal::managed_connectors_url(None)),
+        "opener seam must record the connectors URL; got {recorded:?}"
+    );
+    unsafe { std::env::remove_var("CODEL_TEST_OPEN_URL_FILE") };
+    let _ = std::fs::remove_file(&url_file);
+}
+#[test]
+fn refresh_mcp_list_clears_managed_connectors_wait() {
+    use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab, TabDataState};
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let mut modal = ExtensionsModalState::new(ExtensionsTab::McpServers);
+        modal.begin_managed_connectors_wait();
+        agent.extensions_modal = Some(modal);
+    }
+    let effects = dispatch(Action::RefreshMcpList, &mut app);
+    let modal = agent_ref(&app, id)
+        .extensions_modal
+        .as_ref()
+        .expect("modal stays open");
+    assert!(!modal.is_managed_connectors_wait());
+    assert!(matches!(modal.mcps_data, TabDataState::Loading));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::FetchMcpsList { cache: false, .. }]
+    ));
+}
+fn agent_ref(app: &AppView, id: AgentId) -> &AgentView {
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    agent
 }

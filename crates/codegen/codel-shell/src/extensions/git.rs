@@ -1,57 +1,21 @@
-//! Git extension API layer.
+//! Each method resolves its git root from an explicit `gitRoot`, falling back to a session lookup via `sessionId`.
+//! The work itself is delegated to the pure functions in `session::git::*`.
 //!
-//! Routing: prefers explicit `gitRoot`, falls back to session lookup via `sessionId`.
-//! Business logic delegated to `session::git::*` pure functions.
-//!
-//! **Phase 4 design note**: Git/JJ functions (`git_cli`, `status`,
-//! `detect_vcs_kind`, `find_git_root_from_path`, etc.) are stateless
-//! utilities that take a `&Path` and shell out to `git`/`jj`. They do
-//! not access workspace state and therefore remain direct calls rather
-//! than routing through `WorkspaceChannel`. The channel's VCS stubs
-//! (`git_status`, `git_diff`, etc.) are reserved for future stateful
-//! operations (e.g. cached VCS state, cross-session conflict detection).
+//! Git and JJ helpers (`git_cli`, `status`, `detect_vcs_kind`, `find_git_root_from_path`, etc.) take a `&Path` and shell out to `git` or `jj`.
+//! They do not touch workspace state, so they stay direct calls rather than routing through `WorkspaceChannel`.
+//! The channel's VCS stubs (`git_status`, `git_diff`, etc.) are reserved for stateful operations (cached VCS state, cross-session conflict detection).
 use super::{Empty, ExtResult, parse_params, to_ext_response, to_ext_response_partial};
 use crate::agent::MvpAgent;
 use crate::session::ExtMethodResult;
 use agent_client_protocol as acp;
-use parking_lot::Mutex;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Instant;
-use codel_workspace::session::git::{
-    self, DiscardScope, GIT_STATUS_CACHE_TTL, GitDiffsData, GitStatusData, check_diff_size_limits,
-};
+use codel_workspace::session::git::{self, DiscardScope, GitDiffsData, check_diff_size_limits};
 use codel_workspace::workspace_ops::{
     GitBranchesReq, GitCheckoutCommitReq, GitCheckoutReq, GitCommitReq, GitCurrentCommitReq,
     GitDiffReq, GitDiscardReq, GitFilesReq, GitInfoReq, GitStageContentReq, GitStageReq,
     GitStashReq, GitStatusExtReq, GitStatusFormat, GitUnstageReq,
 };
-/// Global cache for git status results, keyed by git_root path.
-/// This provides caching at the extension API layer while keeping git::status pure.
-static GIT_STATUS_CACHE: std::sync::LazyLock<Mutex<HashMap<PathBuf, GitStatusCacheEntry>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-struct GitStatusCacheEntry {
-    result: GitStatusData,
-    commit: String,
-    cached_at: Instant,
-    include_untracked: bool,
-    include_stats: bool,
-}
-impl GitStatusCacheEntry {
-    fn is_valid(&self, commit: &str, include_untracked: bool, include_stats: bool) -> bool {
-        self.commit == commit
-            && self.include_untracked == include_untracked
-            && self.include_stats == include_stats
-            && self.cached_at.elapsed() < GIT_STATUS_CACHE_TTL
-    }
-}
-/// Invalidate the git status cache for a given git_root.
-/// Should be called after any mutation operation (stage, unstage, discard, commit).
-fn invalidate_status_cache(git_root: &PathBuf) {
-    let mut cache = GIT_STATUS_CACHE.lock();
-    cache.remove(git_root);
-}
 fn default_head() -> String {
     "HEAD".to_string()
 }
@@ -60,7 +24,7 @@ fn default_working() -> String {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitStatusRequest {
+pub(crate) struct GitStatusRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -72,7 +36,7 @@ pub struct GitStatusRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitFilesRequest {
+pub(crate) struct GitFilesRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -83,7 +47,7 @@ pub struct GitFilesRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitDiffsRequest {
+pub(crate) struct GitDiffsRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -107,7 +71,7 @@ pub struct GitDiffsRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitStageRequest {
+pub(crate) struct GitStageRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -116,7 +80,7 @@ pub struct GitStageRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitStageContentRequest {
+pub(crate) struct GitStageContentRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -126,7 +90,7 @@ pub struct GitStageContentRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitUnstageRequest {
+pub(crate) struct GitUnstageRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -152,7 +116,7 @@ impl From<GitDiscardScope> for DiscardScope {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitDiscardRequest {
+pub(crate) struct GitDiscardRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -165,7 +129,7 @@ pub struct GitDiscardRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitCommitRequest {
+pub(crate) struct GitCommitRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -182,7 +146,7 @@ pub struct GitCommitRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitStashRequest {
+pub(crate) struct GitStashRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -192,7 +156,7 @@ pub struct GitStashRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitCheckoutRequest {
+pub(crate) struct GitCheckoutRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -212,7 +176,7 @@ struct CheckoutSessionHeadRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitInfoRequest {
+pub(crate) struct GitInfoRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -220,7 +184,7 @@ pub struct GitInfoRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitBranchesRequest {
+pub(crate) struct GitBranchesRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -228,16 +192,15 @@ pub struct GitBranchesRequest {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitCurrentCommitRequest {
+pub(crate) struct GitCurrentCommitRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
     pub git_root: Option<String>,
 }
-/// Request for codel/git/checkout_commit extension method.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitCheckoutCommitRequest {
+pub(crate) struct GitCheckoutCommitRequest {
     #[serde(default)]
     pub session_id: Option<acp::SessionId>,
     #[serde(default)]
@@ -308,6 +271,7 @@ async fn try_resolve_git_root(
     }
     None
 }
+#[tracing::instrument(name = "ext.git", skip_all, fields(method = %args.method))]
 pub async fn handle(
     agent: &MvpAgent,
     ops: &codel_workspace::WorkspaceOps,
@@ -344,42 +308,15 @@ pub async fn handle(
         }
         "codel/git/status" => {
             let req = parse_params::<GitStatusRequest>(args)?;
-            let include_untracked = req.include_untracked.unwrap_or(true);
+            let include_untracked = req.include_untracked.unwrap_or(false);
             let include_stats = req.include_stats.unwrap_or(false);
             let ignore_submodules = req.ignore_submodules.unwrap_or(true);
             let include_patches = req.include_patches.unwrap_or(false);
             let git_root = resolve_git_root(agent, ops, req.git_root, req.session_id.as_ref())
                 .await
                 .ok();
-            if let Some(ref git_root) = git_root {
-                let current_commit = ops
-                    .dispatch(
-                        &codel_workspace::workspace_ops::GitCurrentCommitReq {
-                            git_root: git_root.clone(),
-                        },
-                        None,
-                    )
-                    .await
-                    .unwrap_or(None);
-                if let Some(commit) = &current_commit {
-                    let cached_result = {
-                        let cache = GIT_STATUS_CACHE.lock();
-                        cache.get(git_root).and_then(|entry| {
-                            if entry.is_valid(commit, include_untracked, include_stats) {
-                                tracing::debug!("git.status (cached)");
-                                Some(entry.result.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    };
-                    if let Some(result) = cached_result {
-                        return to_ext_response(Ok(result));
-                    }
-                }
-            }
             let op = GitStatusExtReq {
-                git_root: git_root.clone(),
+                git_root,
                 include_untracked,
                 include_stats,
                 ignore_submodules,
@@ -393,21 +330,6 @@ pub async fn handle(
             let result = response.data.ok_or_else(|| {
                 acp::Error::internal_error().data("git_status_ext returned no structured data")
             })?;
-            if let Some(git_root) = git_root
-                && let Some(ref commit) = result.commit
-            {
-                let mut cache = GIT_STATUS_CACHE.lock();
-                cache.insert(
-                    git_root,
-                    GitStatusCacheEntry {
-                        result: result.clone(),
-                        commit: commit.clone(),
-                        cached_at: Instant::now(),
-                        include_untracked,
-                        include_stats,
-                    },
-                );
-            }
             to_ext_response(Ok(result))
         }
         "codel/git/files" => {
@@ -468,9 +390,6 @@ pub async fn handle(
                 .dispatch(&op, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-            if let Some(ref git_root) = git_root {
-                invalidate_status_cache(git_root);
-            }
             to_ext_response(Ok(result))
         }
         "codel/git/stage/content" => {
@@ -486,9 +405,6 @@ pub async fn handle(
             ops.dispatch(&op, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-            if let Some(ref git_root) = git_root {
-                invalidate_status_cache(git_root);
-            }
             to_ext_response(Ok(Empty {}))
         }
         "codel/git/unstage" => {
@@ -503,9 +419,6 @@ pub async fn handle(
             ops.dispatch(&op, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-            if let Some(ref git_root) = git_root {
-                invalidate_status_cache(git_root);
-            }
             to_ext_response(Ok(Empty {}))
         }
         "codel/git/discard" => {
@@ -522,9 +435,6 @@ pub async fn handle(
             ops.dispatch(&op, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-            if let Some(ref git_root) = git_root {
-                invalidate_status_cache(git_root);
-            }
             to_ext_response(Ok(Empty {}))
         }
         "codel/git/commit" => {
@@ -539,14 +449,12 @@ pub async fn handle(
                 signoff: req.signoff,
                 push: req.push,
                 sync: req.sync,
+                ..Default::default()
             };
             let commit_result = ops
                 .dispatch(&op, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-            if let Some(ref git_root) = git_root {
-                invalidate_status_cache(git_root);
-            }
             to_ext_response_partial(Ok(commit_result.data), commit_result.warning)
         }
         "codel/git/checkout" => {
@@ -562,9 +470,6 @@ pub async fn handle(
             ops.dispatch(&op, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-            if let Some(ref git_root) = git_root {
-                invalidate_status_cache(git_root);
-            }
             to_ext_response(Ok(Empty {}))
         }
         "codel/git/stash" => {
@@ -579,9 +484,6 @@ pub async fn handle(
             ops.dispatch(&op, None)
                 .await
                 .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-            if let Some(ref git_root) = git_root {
-                invalidate_status_cache(git_root);
-            }
             to_ext_response(Ok(Empty {}))
         }
         "codel/git/info" => {
@@ -661,7 +563,6 @@ pub async fn handle(
                 )
                 .await
                 .map_err(|e| acp::Error::internal_error().data(format!("checkout failed: {e}")))?;
-            invalidate_status_cache(&git_root);
             super::to_raw_response(&result)
         }
         "codel/git/checkout_commit" => {
@@ -694,7 +595,6 @@ pub async fn handle(
                 )
                 .await
                 .map_err(|e| acp::Error::internal_error().data(format!("checkout failed: {e}")))?;
-            invalidate_status_cache(&git_root);
             super::to_raw_response(&result)
         }
         _ => Err(acp::Error::method_not_found()),

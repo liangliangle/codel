@@ -1,12 +1,7 @@
-//! Session context — legacy name "ToolContext".
+//! Session context, kept under its legacy name "ToolContext".
 //!
-//! This struct holds session-level state (cwd, gateway, filesystem, hunk tracker, etc.)
-//! that the session actor needs for non-tool operations (ACP communication, git, rewind, etc.).
-//!
-//! Tool execution goes through the ToolBridge, which has its own SessionContext from
-//! codel-tools. This struct is NOT used for tool execution — it's session infrastructure.
-//!
-//! Note: Could be renamed to `SessionConfig` or flattened onto `SessionActor` in a future PR.
+//! The session actor needs it for non-tool operations (ACP communication, git, rewind, etc.).
+//! Tool execution goes through the ToolBridge, which has its own SessionContext from codel-tools.
 use crate::terminal::AsyncTerminalRunner;
 use agent_client_protocol as acp;
 use std::collections::HashMap;
@@ -16,6 +11,7 @@ use codel_paths::AbsPathBuf;
 use codel_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
 use codel_workspace::session::file_state::FileStateHandle;
 use codel_hunk_tracker::HunkTrackerHandle;
+use codel_tty_utils::ProcessScope;
 #[derive(Debug, Clone, Default)]
 pub struct TaskOutputTokenBudget {
     inner: Arc<parking_lot::Mutex<TaskOutputTokenBudgetState>>,
@@ -41,7 +37,7 @@ impl TaskOutputTokenBudget {
         let state = self.inner.lock();
         state.total.map(|total| total.saturating_sub(state.spent))
     }
-    pub fn clamp_request(&self, configured: Option<u32>) -> Option<u32> {
+    pub(crate) fn clamp_request(&self, configured: Option<u32>) -> Option<u32> {
         let remaining = self.remaining()?;
         if remaining == 0 {
             return Some(0);
@@ -49,7 +45,7 @@ impl TaskOutputTokenBudget {
         let remaining = u32::try_from(remaining).unwrap_or(u32::MAX);
         Some(configured.map_or(remaining, |configured| configured.min(remaining)))
     }
-    pub fn record_reported_output(&self, output_tokens: u64) {
+    pub(crate) fn record_reported_output(&self, output_tokens: u64) {
         let mut state = self.inner.lock();
         state.spent = state.spent.saturating_add(output_tokens);
         if let Some(total) = state.total
@@ -59,7 +55,7 @@ impl TaskOutputTokenBudget {
             state.incomplete = true;
         }
     }
-    pub fn mark_incomplete_and_exhaust(&self) {
+    pub(crate) fn mark_incomplete_and_exhaust(&self) {
         let mut state = self.inner.lock();
         state.incomplete = true;
         if let Some(total) = state.total {
@@ -70,15 +66,16 @@ impl TaskOutputTokenBudget {
         let state = self.inner.lock();
         (state.spent, state.incomplete)
     }
-    pub fn is_limited(&self) -> bool {
-        self.inner.lock().total.is_some()
-    }
 }
 pub struct BlockingWaitState(std::sync::Mutex<BlockingWaitInner>);
 #[derive(Default)]
 struct BlockingWaitInner {
     depth: usize,
     generation: u64,
+    /// Union of waits aborted by a mid-turn interjection.
+    /// Concurrent aborts merge so a side-work wait cannot replace the implement set.
+    /// Extras drop only when the next interruptible wait contains every remembered id plus at least one new one.
+    interrupted_wait_ids: Option<Vec<String>>,
 }
 impl BlockingWaitState {
     pub(crate) fn new() -> Self {
@@ -97,10 +94,56 @@ impl BlockingWaitState {
             .expect("blocking wait state mutex poisoned")
             .depth = depth;
     }
+    pub(crate) fn generation(&self) -> u64 {
+        self.0
+            .lock()
+            .expect("blocking wait state mutex poisoned")
+            .generation
+    }
+    /// Hold the wait-memory lock for one read-and-maybe-write so a parallel abort cannot land between a check and a clear.
+    /// No-op if `generation` does not match (cancel already reset).
+    pub(crate) fn update_interrupted_wait<R>(
+        &self,
+        generation: u64,
+        f: impl FnOnce(&mut Option<Vec<String>>) -> R,
+    ) -> Option<R> {
+        let mut inner = self.0.lock().expect("blocking wait state mutex poisoned");
+        if inner.generation != generation {
+            return None;
+        }
+        Some(f(&mut inner.interrupted_wait_ids))
+    }
+    #[cfg(test)]
+    pub(crate) fn note_interrupted_wait(&self, ids: Vec<String>) {
+        self.update_interrupted_wait(self.generation(), |remembered| {
+            if ids.is_empty() {
+                return;
+            }
+            match remembered {
+                Some(existing) => {
+                    for id in ids {
+                        if !existing.contains(&id) {
+                            existing.push(id);
+                        }
+                    }
+                }
+                None => *remembered = Some(ids),
+            }
+        });
+    }
+    #[cfg(test)]
+    pub(crate) fn interrupted_wait_ids(&self) -> Option<Vec<String>> {
+        self.0
+            .lock()
+            .expect("blocking wait state mutex poisoned")
+            .interrupted_wait_ids
+            .clone()
+    }
     pub(crate) fn reset(&self) {
         let mut state = self.0.lock().expect("blocking wait state mutex poisoned");
         state.generation = state.generation.wrapping_add(1);
         state.depth = 0;
+        state.interrupted_wait_ids = None;
     }
 }
 pub(crate) struct BlockingWaitGuard {
@@ -108,6 +151,9 @@ pub(crate) struct BlockingWaitGuard {
     generation: u64,
 }
 impl BlockingWaitGuard {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
     pub(crate) fn enter(state: Arc<BlockingWaitState>) -> Self {
         let generation = {
             let mut inner = state.0.lock().expect("blocking wait state mutex poisoned");
@@ -137,7 +183,6 @@ pub(crate) fn subagent_foreground_wait(
     )
 }
 /// Session-level context. NOT used for tool execution (bridge handles that).
-/// Holds ACP gateway, cwd, hunk tracker, etc. for session infrastructure.
 #[derive(Clone)]
 pub struct ToolContext {
     pub gateway: Option<GatewaySender>,
@@ -148,37 +193,36 @@ pub struct ToolContext {
     pub file_state_handle: Option<FileStateHandle>,
     pub session_env: Arc<HashMap<String, String>>,
     pub hunk_tracker_handle: HunkTrackerHandle,
-    /// Whether hunk tracking is active for this session. `false` when the
-    /// resolved mode is `off`/`disabled` — `hunk_tracker_handle` is then a
-    /// `noop()` and the fs-notify loop skips forwarding to avoid per-event cost.
+    /// `false` when the resolved mode is `off`/`disabled`.
+    /// `hunk_tracker_handle` is then a `noop()` and the fs-notify loop skips forwarding to avoid per-event cost.
     pub hunk_tracking_enabled: bool,
     pub prompt_index: Arc<tokio::sync::Mutex<usize>>,
-    /// Current subagent nesting depth for this session.
+    /// Lock-free mirror of `prompt_index`, read synchronously to attribute an active message to its parent prompt.
+    pub(crate) active_message_parent_prompt_index: Arc<std::sync::atomic::AtomicUsize>,
     /// Top-level sessions start at 0; child sessions are parent_depth + 1.
     pub subagent_depth: u32,
-    /// Unified subagent event sender — carries spawn, query, cancel,
-    /// list-active, completions, and outstanding messages to the coordinator.
+    /// Carries spawn, query, cancel, list-active, completions, and outstanding messages to the coordinator.
     /// `None` if subagent support is not enabled.
     pub subagent_event_tx: Option<
         tokio::sync::mpsc::UnboundedSender<
             codel_tools::implementations::codel_build::task::types::SubagentEvent,
         >,
     >,
-    /// Shared LSP runtime — cloned cheaply (Arc) from parent to child.
-    /// Same pattern as `fs` and `terminal`.
+    pub subagent_coordinator_sender: Option<
+        codel_tools::implementations::codel_build::task::backend::SubagentCoordinatorSender,
+    >,
+    /// Shared LSP runtime, cloned cheaply (Arc) from parent to child.
     pub lsp: Option<Arc<dyn codel_tools::implementations::lsp::LspBackend>>,
-    /// LSP server names snapshot from session creation (not updated mid-session).
+    /// LSP server names captured at session creation (not updated mid-session).
     pub lsp_server_names: Vec<String>,
-    /// Shared turn-active flag — set `true` at turn start, `false` at turn end.
+    /// Shared turn-active flag: set `true` at turn start, `false` at turn end.
     /// Used by the between-turn completion drain in `handle_prompt`.
     pub is_turn_active: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) unattributed_background_usage: Arc<std::sync::atomic::AtomicBool>,
-    /// Shared buffer for mid-turn monitor event notifications.
-    /// Events pushed here are drained by the session turn loop
-    /// (`inject_pending_monitor_events`) and surfaced as ONE hidden
-    /// synthetic user message before the next sampling step.
+    /// The session turn loop (`inject_pending_monitor_events`) drains events pushed here.
+    /// They are injected as ONE hidden synthetic user message before the next sampling step.
     pub monitor_event_buffer:
-        Option<codel_tools::implementations::codel_build::task::types::MonitorEventBuffer>,
+        Option<codel_tools::implementations::codel_build::monitor::types::MonitorEventBuffer>,
     pub task_completion_reservations:
         Option<codel_tools::reminders::task_completion::TaskCompletionReservations>,
     pub task_wake_suppressed:
@@ -186,8 +230,7 @@ pub struct ToolContext {
     /// Channel for requesting trace uploads for synthetic auto-wake turns.
     pub(crate) synthetic_trace_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>>,
-    /// Shared slot for the synthetic trace channel. Populated by
-    /// `start_subagent_coordinator` after the notification bridge is spawned.
+    /// Populated by `start_subagent_coordinator` after the notification bridge is spawned.
     /// The notification bridge reads from this slot on each completion event.
     pub(crate) synthetic_trace_tx_shared: Option<
         std::sync::Arc<
@@ -203,19 +246,24 @@ pub struct ToolContext {
     /// Resolved name of the `BackgroundTaskAction` tool in the current toolset.
     /// Used by auto-wake to format completion messages with the correct tool name.
     pub task_output_tool_name: String,
-    /// Whether auto-wake is enabled. When `false`, background task and subagent
-    /// completions fall back to the idle-gated notification drain.
+    /// Resolved name of the scheduled-task deletion tool, when available.
+    pub scheduler_delete_tool_name: Option<String>,
+    pub scheduler_create_tool_name: Option<String>,
+    /// When `false`, background task and subagent completions fall back to the idle-gated notification drain.
     pub auto_wake_enabled: bool,
-    /// When set, bash + subagent auto-wake synthetic prompts are suppressed.
-    /// Shared `Arc` written at one chokepoint — see
-    /// `SessionActor::set_goal_loop_active_resource` for the rationale.
+    /// When set, bash and subagent auto-wake synthetic prompts are suppressed.
+    /// Shared `Arc` written at one chokepoint; see `SessionActor::set_goal_loop_active_resource` for the rationale.
     pub goal_loop_active_gate: Arc<std::sync::atomic::AtomicBool>,
-    /// Count of interruptible blocking waits the running turn is parked in (via
-    /// [`BlockingWaitGuard`]). `queue_input` reads it: a prompt arriving while
-    /// non-zero takes the send-now path.
+    /// Count of interruptible blocking waits the running turn is parked in (via [`BlockingWaitGuard`]).
+    /// `queue_input` reads it: a prompt arriving while non-zero takes the send-now path.
     pub blocking_wait_depth: Arc<BlockingWaitState>,
     pub task_output_token_budget: Option<TaskOutputTokenBudget>,
     pub(crate) sampler_retry_only_before_output: bool,
+    /// This session's child-process reaper, set at session spawn; `None` for contexts without one (subagents, defaults).
+    /// Spawn sites enroll children into it; enrolled children are killed when the session closes.
+    pub process_scope: Option<ProcessScope>,
+    /// Same Arc as `SessionRegistry`'s retained heal lock so the actor tick and tray `list_running` cannot double-emit `SubagentFinished`.
+    pub(crate) live_orphan_heal_lock: Arc<tokio::sync::Mutex<()>>,
 }
 impl ToolContext {
     pub(crate) fn clamp_task_model_request(
@@ -240,7 +288,10 @@ impl ToolContext {
             budget.mark_incomplete_and_exhaust();
         }
     }
-    pub fn new(
+    /// Test-only: empty session env.
+    /// Production goes through [`Self::with_preloaded_env`].
+    #[cfg(test)]
+    pub(crate) fn new(
         cwd: AbsPathBuf,
         gateway: Option<GatewaySender>,
         session_id: Option<acp::SessionId>,
@@ -248,42 +299,17 @@ impl ToolContext {
         terminal: Arc<dyn AsyncTerminalRunner>,
         hunk_tracker_handle: HunkTrackerHandle,
     ) -> Self {
-        let session_env = codel_workspace::envrc::load_envrc_or_empty_when_trusted(
-            cwd.as_path(),
-            crate::agent::folder_trust::project_scope_allowed(cwd.as_path()),
-        );
-        Self {
+        Self::with_preloaded_env(
+            cwd,
             gateway,
             session_id,
-            fs: AsyncFsWrapper::new(fs),
+            fs,
             terminal,
-            cwd,
-            file_state_handle: None,
-            session_env: Arc::new(session_env),
             hunk_tracker_handle,
-            hunk_tracking_enabled: true,
-            prompt_index: Arc::new(tokio::sync::Mutex::new(0)),
-            subagent_depth: 0,
-            subagent_event_tx: None,
-            lsp: None,
-            lsp_server_names: Vec::new(),
-            is_turn_active: None,
-            unattributed_background_usage: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            monitor_event_buffer: None,
-            task_completion_reservations: None,
-            task_wake_suppressed: None,
-            synthetic_trace_tx: None,
-            synthetic_trace_tx_shared: None,
-            task_output_tool_name:
-                codel_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string(),
-            auto_wake_enabled: true,
-            goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            blocking_wait_depth: Arc::new(BlockingWaitState::new()),
-            task_output_token_budget: None,
-            sampler_retry_only_before_output: false,
-        }
+            HashMap::new(),
+        )
     }
-    pub fn with_preloaded_env(
+    pub(crate) fn with_preloaded_env(
         cwd: AbsPathBuf,
         gateway: Option<GatewaySender>,
         session_id: Option<acp::SessionId>,
@@ -303,8 +329,10 @@ impl ToolContext {
             hunk_tracker_handle,
             hunk_tracking_enabled: true,
             prompt_index: Arc::new(tokio::sync::Mutex::new(0)),
+            active_message_parent_prompt_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             subagent_depth: 0,
             subagent_event_tx: None,
+            subagent_coordinator_sender: None,
             lsp: None,
             lsp_server_names: Vec::new(),
             is_turn_active: None,
@@ -316,24 +344,23 @@ impl ToolContext {
             synthetic_trace_tx_shared: None,
             task_output_tool_name:
                 codel_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string(),
+            scheduler_delete_tool_name: None,
+            scheduler_create_tool_name: None,
             auto_wake_enabled: true,
             goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blocking_wait_depth: Arc::new(BlockingWaitState::new()),
             task_output_token_budget: None,
             sampler_retry_only_before_output: false,
+            process_scope: None,
+            live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
-    pub fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
+    pub(crate) fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
         self.file_state_handle = Some(handle);
         self
     }
-    pub fn with_prompt_index(mut self, prompt_index: Arc<tokio::sync::Mutex<usize>>) -> Self {
-        self.prompt_index = prompt_index;
-        self
-    }
-    /// Set whether hunk tracking is active. `false` pairs with a `noop()`
-    /// `hunk_tracker_handle` so the fs-notify loop skips the per-event forward.
-    pub fn with_hunk_tracking_enabled(mut self, enabled: bool) -> Self {
+    /// `false` pairs with a `noop()` `hunk_tracker_handle` so the fs-notify loop skips the per-event forward.
+    pub(crate) fn with_hunk_tracking_enabled(mut self, enabled: bool) -> Self {
         self.hunk_tracking_enabled = enabled;
         self
     }
@@ -380,7 +407,7 @@ mod tests {
     use codel_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
     use codel_hunk_tracker::HunkTrackerHandle;
     impl ToolContext {
-        pub fn new_local_context(
+        pub(crate) fn new_local_context(
             cwd: AbsPathBuf,
             fs: Arc<dyn AsyncFileSystem>,
             terminal: Arc<dyn AsyncTerminalRunner>,
@@ -396,8 +423,12 @@ mod tests {
                 hunk_tracker_handle: HunkTrackerHandle::noop(),
                 hunk_tracking_enabled: true,
                 prompt_index: Arc::new(tokio::sync::Mutex::new(0)),
+                active_message_parent_prompt_index: Arc::new(std::sync::atomic::AtomicUsize::new(
+                    0,
+                )),
                 subagent_depth: 0,
                 subagent_event_tx: None,
+                subagent_coordinator_sender: None,
                 lsp: None,
                 lsp_server_names: Vec::new(),
                 is_turn_active: None,
@@ -409,11 +440,15 @@ mod tests {
                 synthetic_trace_tx_shared: None,
                 task_output_tool_name:
                     codel_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string(),
+                scheduler_delete_tool_name: None,
+                scheduler_create_tool_name: None,
                 auto_wake_enabled: true,
                 goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 blocking_wait_depth: Arc::new(BlockingWaitState::new()),
                 task_output_token_budget: None,
                 sampler_retry_only_before_output: false,
+                process_scope: None,
+                live_orphan_heal_lock: Arc::new(tokio::sync::Mutex::new(())),
             }
         }
     }

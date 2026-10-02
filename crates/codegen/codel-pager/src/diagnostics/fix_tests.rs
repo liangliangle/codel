@@ -17,6 +17,7 @@ pub(super) fn report() -> DiagnosticReport {
                 set_clipboard: crate::diagnostics::TmuxOptionFact::Unavailable,
                 allow_passthrough_support: crate::diagnostics::TmuxSupportFact::Unavailable,
                 allow_passthrough: crate::diagnostics::TmuxOptionFact::Unavailable,
+                color_passthrough: crate::diagnostics::TmuxColorPassthrough::Unknown,
             },
             color: crate::diagnostics::ColorFacts {
                 level: crate::diagnostics::RuntimeFact::Unavailable,
@@ -73,6 +74,7 @@ fn terminal() -> TerminalContext {
         vte_version: None,
         tmux_extended_keys: None,
         term_program_version: None,
+        term_features: None,
         env_term_version: None,
     }
 }
@@ -128,7 +130,11 @@ fn applicable_fix_listing_uses_report_metadata_and_planner_availability() {
     );
 
     let mut manual_only = report;
-    manual_only.findings[0].automatic_remediation = None;
+    if let Some(finding) = manual_only.findings.get_mut(0) {
+        finding.automatic_remediation = None;
+    } else {
+        panic!("expected finding: {:?}", manual_only.findings);
+    }
     assert!(
         applicable_automatic_fixes_with(&manual_only, &local, |_| {
             Err(FixError::HomeUnavailable)
@@ -177,6 +183,11 @@ fn tmux_report(id: DiagnosticId, evidence: TmuxEvidence) -> DiagnosticReport {
             }
             .to_owned(),
         ),
+        color_passthrough: if evidence == TmuxEvidence::ColorPassthrough {
+            crate::diagnostics::TmuxColorPassthrough::Reduced
+        } else {
+            crate::diagnostics::TmuxColorPassthrough::Forwarded
+        },
     };
     report.findings.push(DiagnosticFinding {
         id,
@@ -251,6 +262,11 @@ fn tmux_specs_plan_exact_independent_managed_items() {
             TmuxEvidence::ExtendedKeys,
             "set -g extended-keys on",
         ),
+        (
+            TMUX_TRUECOLOR_ID,
+            TmuxEvidence::ColorPassthrough,
+            "set -as terminal-features \",*:RGB\"",
+        ),
     ] {
         let plan = plan_fix(
             tmux_request(temp.path(), id),
@@ -296,11 +312,11 @@ fn safe_absolute_directory_rejects_hostile_home_and_byobu_values() {
 fn reload_instruction_shell_quotes_and_markdown_escapes_paths() {
     assert_eq!(
         reload_instruction(Path::new("/tmp/a b/q'v.conf")),
-        "Reload tmux with `tmux source-file '/tmp/a b/q'\\''v.conf'`, or detach and reattach."
+        "Reload tmux with `tmux source-file '/tmp/a b/q'\\''v.conf'`, or restart the tmux server."
     );
     assert_eq!(
         reload_instruction(Path::new("/tmp/a`b.conf")),
-        "Reload tmux with ``tmux source-file '/tmp/a`b.conf'``, or detach and reattach."
+        "Reload tmux with ``tmux source-file '/tmp/a`b.conf'``, or restart the tmux server."
     );
     assert_eq!(
         shell_quote_path(Path::new("/tmp/a`b.conf")).unwrap(),
@@ -308,7 +324,7 @@ fn reload_instruction_shell_quotes_and_markdown_escapes_paths() {
     );
     assert_eq!(
         reload_instruction(Path::new("/tmp/bad\npath")),
-        "Detach and reattach to activate the persistent tmux setting."
+        "Reload your tmux config, or restart the tmux server, to activate the persistent setting."
     );
     assert_eq!(markdown_code_path(Path::new("/tmp/a`b")), "``/tmp/a`b``");
 }
@@ -319,7 +335,7 @@ fn full_preview_safely_renders_backtick_requested_symlink_target_and_backup_path
     use std::os::unix::fs::symlink;
 
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = dunce::canonicalize(temp.path()).unwrap();
     let home = root.join("home`dir");
     let target_dir = root.join("target`dir");
     std::fs::create_dir_all(&home).unwrap();
@@ -407,6 +423,11 @@ fn tmux_managed_items_coexist_and_each_apply_is_one_transaction() {
             TmuxEvidence::ExtendedKeys,
             "set -g extended-keys on",
         ),
+        (
+            TMUX_TRUECOLOR_ID,
+            TmuxEvidence::ColorPassthrough,
+            "set -as terminal-features \",*:RGB\"",
+        ),
     ] {
         let plan = plan_fix(
             tmux_request(temp.path(), id),
@@ -422,7 +443,12 @@ fn tmux_managed_items_coexist_and_each_apply_is_one_transaction() {
     }
     let content = std::fs::read_to_string(&path).unwrap();
     assert_eq!(content.matches("# >>> codel doctor >>>").count(), 1);
-    for id in [TMUX_CLIPBOARD_ID, DCS_PASSTHROUGH_ID, TMUX_EXTENDED_KEYS_ID] {
+    for id in [
+        TMUX_CLIPBOARD_ID,
+        DCS_PASSTHROUGH_ID,
+        TMUX_EXTENDED_KEYS_ID,
+        TMUX_TRUECOLOR_ID,
+    ] {
         assert_eq!(content.matches(&format!("# >>> {id} >>>")).count(), 1);
     }
 }
@@ -431,7 +457,9 @@ fn tmux_managed_items_coexist_and_each_apply_is_one_transaction() {
 fn tmux_scanner_handles_server_scopes_separators_prefixes_and_native_blocks() {
     let path = Path::new("/tmp/tmux.conf");
     for spec in [&TMUX_CLIPBOARD_SPEC, &TMUX_EXTENDED_KEYS_SPEC] {
-        let healthy = spec.healthy_values[0];
+        let Some(&healthy) = spec.healthy_values.first() else {
+            panic!("expected healthy value: {:?}", spec.healthy_values);
+        };
         for assignment in [
             format!("set {} {healthy}\n", spec.option),
             format!("set -s {} {healthy}\n", spec.option),
@@ -905,8 +933,7 @@ fn validator_prefers_custom_executable_shell_and_uses_path_for_basename_only() {
     assert_eq!(resolve_validator_program(&custom), Some(custom.clone()));
 
     std::fs::set_permissions(&custom, std::fs::Permissions::from_mode(0o644)).unwrap();
-    // A non-executable explicit SHELL path is not silently substituted with a
-    // different same-basename shell from PATH.
+    // A non-executable explicit SHELL path is not silently substituted with a different same-basename shell from PATH
     assert_eq!(resolve_validator_program(&custom), None);
 
     assert_eq!(
@@ -978,9 +1005,8 @@ fn stale_plan_is_rejected_and_apply_verifies_postcondition() {
 
 #[test]
 fn ssh_wrap_outcome_verifies_with_planned_shell_not_process_shell() {
-    // Post-apply verification must use the shell stored on the outcome. Even if
-    // `$SHELL` is missing or points at a different shell family, a successful
-    // apply against bash must still report the managed alias as configured.
+    // Post-apply verification must use the shell stored on the outcome
+    // Even if `$SHELL` is missing or points at a different shell family, a successful apply against bash must still report the alias configured
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join(".bashrc");
     let plan = plan_fix(request(temp.path(), "/bin/bash"), &report(), &terminal()).unwrap();
@@ -989,8 +1015,8 @@ fn ssh_wrap_outcome_verifies_with_planned_shell_not_process_shell() {
     assert_eq!(outcome.changed_path(), path);
     assert!(outcome.managed_alias_is_configured());
 
-    // Fish uses a different alias syntax; checking the bash-written path with
-    // fish must not count as configured. The outcome keeps bash regardless.
+    // Fish uses a different alias syntax; checking the bash-written path with fish must not count as configured
+    // The outcome keeps bash regardless
     assert!(!managed_alias_configured(&path, ShellKind::Fish));
     assert!(
         outcome.managed_alias_is_configured(),
@@ -1189,4 +1215,46 @@ fn shell_aliases_expand_to_exact_argv_and_bypass_is_explicit() {
     } else {
         eprintln!("fish unavailable; fish runtime alias test skipped explicitly");
     }
+}
+
+/// An accumulating remedy is additive, so a user's own `terminal-features` lines are not a conflict.
+/// tmux applies Codel's managed block last and the features merge.
+/// A direct-assignment remedy would refuse to touch the file.
+#[test]
+fn tmux_truecolor_fix_appends_alongside_existing_terminal_features() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(".tmux.conf");
+    std::fs::write(
+        &path,
+        "set -g mouse on\nset -as terminal-features \",xterm-256color:RGB\"\n",
+    )
+    .unwrap();
+
+    let plan = plan_fix(
+        tmux_request(temp.path(), TMUX_TRUECOLOR_ID),
+        &tmux_report(TMUX_TRUECOLOR_ID, TmuxEvidence::ColorPassthrough),
+        &tmux_terminal(false),
+    )
+    .unwrap();
+    let outcome = apply_fix(plan).unwrap();
+
+    assert_eq!(outcome.status(), FixStatus::Applied);
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("set -as terminal-features \",xterm-256color:RGB\""));
+    assert!(content.contains("set -as terminal-features \",*:RGB\""));
+}
+
+#[test]
+fn tmux_truecolor_fix_requires_a_reducing_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let report = tmux_report(TMUX_TRUECOLOR_ID, TmuxEvidence::Clipboard);
+
+    assert!(matches!(
+        plan_fix(
+            tmux_request(temp.path(), TMUX_TRUECOLOR_ID),
+            &report,
+            &tmux_terminal(false)
+        ),
+        Err(FixError::TmuxNotApplicable)
+    ));
 }

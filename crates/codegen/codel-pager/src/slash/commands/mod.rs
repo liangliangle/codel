@@ -1,8 +1,4 @@
-//! Concrete slash command implementations.
-//!
-//! Each command lives in its own submodule. This module re-exports
-//! command structs and provides `builtin_commands()` for registry
-//! construction.
+//! Each command lives in its own submodule. This module re-exports command structs and provides `builtin_commands()` for registry construction.
 pub mod always_approve;
 pub mod announcements;
 pub mod auto;
@@ -12,9 +8,11 @@ pub mod compact;
 pub mod compact_mode;
 pub mod config_agents;
 pub mod context;
+pub mod context_window;
 pub mod copy;
 pub mod dashboard;
 pub mod debug;
+pub mod delete;
 pub mod docs;
 pub mod doctor;
 pub mod edit_prompt;
@@ -36,6 +34,8 @@ pub mod import_claude;
 pub mod jump;
 pub mod loop_cmd;
 pub mod mcps;
+pub mod memory;
+pub mod memory_ops;
 pub mod model;
 pub mod multiline;
 pub mod new;
@@ -51,7 +51,6 @@ pub mod rename;
 pub mod resume;
 pub mod rewind;
 pub mod screen_mode_switch;
-pub mod scroll_debug;
 pub mod session_info;
 pub mod settings_cmd;
 pub mod share;
@@ -66,84 +65,96 @@ pub mod usage;
 pub mod view_plan;
 pub mod vim_mode;
 pub mod voice;
+pub mod workflow;
 pub mod workflows;
 use super::command::SlashCommand;
 use std::sync::Arc;
-/// All pager-local builtin commands, in display order.
+/// All pager-local builtin commands, in menu order: this vec breaks ties after MRU recency and tags, so moving an entry moves it in the menu.
 ///
-/// This is the single source of truth for the builtin command set.
-/// The registry is constructed from this list.
+/// This is the single source of truth for the builtin command set. The registry is constructed from this list.
 pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
     vec![
-        Arc::new(exit::ExitCommand),
-        Arc::new(help::HelpCommand),
-        Arc::new(docs::DocsCommand),
-        Arc::new(home::HomeCommand),
+        // The rows the dropdown shows before it scrolls.
+        Arc::new(tutorial::TutorialCommand),
+        Arc::new(settings_cmd::SettingsCommand),
+        Arc::new(dashboard::DashboardCommand),
+        Arc::new(workflows::WorkflowsCommand),
+        Arc::new(plugin::PluginsCommand),
+        Arc::new(btw::BtwCommand),
+        Arc::new(voice::VoiceCommand),
         Arc::new(new::NewCommand),
-        Arc::new(fork::ForkCommand),
+        // Per turn.
+        Arc::new(effort::EffortCommand),
+        Arc::new(context_window::ContextWindowCommand),
+        Arc::new(model::ModelCommand),
+        Arc::new(context::ContextCommand),
         Arc::new(compact::CompactCommand),
+        Arc::new(fork::ForkCommand),
+        Arc::new(resume::ResumeCommand),
+        // Steering the work in front of you.
+        Arc::new(loop_cmd::LoopCommand),
+        Arc::new(plan::PlanCommand),
+        Arc::new(view_plan::ViewPlanCommand),
+        Arc::new(remember::RememberCommand),
+        Arc::new(memory::MemoryCommand),
+        Arc::new(memory_ops::FlushCommand),
+        Arc::new(memory_ops::DreamCommand),
+        Arc::new(recap::RecapCommand),
+        Arc::new(rewind::RewindCommand),
+        Arc::new(jump::JumpCommand),
+        Arc::new(expand::ExpandCommand),
+        Arc::new(edit_prompt::EditPromptCommand),
+        Arc::new(queue::QueueCommand),
+        // This session and what came out of it.
+        Arc::new(session_info::SessionInfoCommand),
+        Arc::new(share::ShareCommand),
+        Arc::new(rename::RenameCommand),
+        Arc::new(history::HistoryCommand),
+        Arc::new(transcript::TranscriptCommand),
+        Arc::new(export::ExportCommand),
         Arc::new(copy::CopyCommand),
         Arc::new(find::FindCommand),
-        Arc::new(history::HistoryCommand),
-        Arc::new(export::ExportCommand),
-        Arc::new(transcript::TranscriptCommand),
-        Arc::new(edit_prompt::EditPromptCommand),
-        Arc::new(expand::ExpandCommand),
-        Arc::new(context::ContextCommand),
+        Arc::new(usage::UsageCommand),
+        Arc::new(tasks::TasksCommand),
+        // Extending the agent.
+        Arc::new(plugin::SkillsCommand),
+        Arc::new(mcps::McpsCommand),
+        Arc::new(plugin::HooksCommand),
+        Arc::new(plugin::MarketplaceCommand),
+        Arc::new(workflow::WorkflowCommand),
+        Arc::new(personas::PersonasCommand),
+        Arc::new(config_agents::ConfigAgentsCommand),
+        // Settings and display.
+        Arc::new(theme::ThemeCommand),
+        Arc::new(auto::AutoCommand),
+        Arc::new(always_approve::AlwaysApproveCommand),
+        Arc::new(vim_mode::VimModeCommand),
+        Arc::new(multiline::MultilineCommand),
+        Arc::new(compact_mode::CompactModeCommand),
+        Arc::new(timestamps::TimestampsCommand),
+        Arc::new(toggle_mouse_reporting::ToggleMouseReportingCommand),
         // Screen-mode switchers: visible only in the opposite mode.
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::minimal()),
         Arc::new(screen_mode_switch::ScreenModeSwitchCommand::fullscreen()),
-        Arc::new(model::ModelCommand),
-        Arc::new(effort::EffortCommand),
-        Arc::new(always_approve::AlwaysApproveCommand),
-        Arc::new(auto::AutoCommand),
-        Arc::new(multiline::MultilineCommand),
-        Arc::new(compact_mode::CompactModeCommand),
-        Arc::new(vim_mode::VimModeCommand),
-        Arc::new(plugin::HooksCommand),
-        Arc::new(plugin::PluginsCommand),
-        Arc::new(plugin::MarketplaceCommand),
-        Arc::new(plugin::SkillsCommand),
-        Arc::new(share::ShareCommand),
-        Arc::new(session_info::SessionInfoCommand),
-        Arc::new(rename::RenameCommand),
-        Arc::new(dashboard::DashboardCommand),
+        // Reached for occasionally.
+        Arc::new(timeline::TimelineCommand),
         Arc::new(cd::CdCommand),
-        Arc::new(theme::ThemeCommand),
-        Arc::new(feedback::FeedbackCommand),
-        Arc::new(announcements::AnnouncementsCommand),
-        Arc::new(remember::RememberCommand),
-        Arc::new(plan::PlanCommand),
-        Arc::new(view_plan::ViewPlanCommand),
-        Arc::new(resume::ResumeCommand),
-        Arc::new(mcps::McpsCommand),
-        Arc::new(workflows::WorkflowsCommand),
-        Arc::new(btw::BtwCommand),
-        Arc::new(recap::RecapCommand),
-        Arc::new(doctor::DoctorCommand),
-        Arc::new(voice::VoiceCommand),
-        Arc::new(loop_cmd::LoopCommand),
         Arc::new(imagine::ImagineCommand),
         Arc::new(imagine_video::ImagineVideoCommand),
-        Arc::new(timestamps::TimestampsCommand),
-        Arc::new(timeline::TimelineCommand),
-        Arc::new(toggle_mouse_reporting::ToggleMouseReportingCommand),
-        Arc::new(settings_cmd::SettingsCommand),
-        Arc::new(privacy::PrivacyCommand),
-        Arc::new(rewind::RewindCommand),
-        Arc::new(jump::JumpCommand),
-        Arc::new(import_claude::ImportClaudeCommand),
-        Arc::new(usage::UsageCommand),
-        Arc::new(queue::QueueCommand),
-        Arc::new(tasks::TasksCommand),
+        // Docs, account and one-off maintenance.
+        Arc::new(docs::DocsCommand),
         Arc::new(release_notes::ReleaseNotesCommand),
-        Arc::new(tutorial::TutorialCommand),
-        Arc::new(config_agents::ConfigAgentsCommand),
-        Arc::new(personas::PersonasCommand),
+        Arc::new(announcements::AnnouncementsCommand),
+        Arc::new(feedback::FeedbackCommand),
+        Arc::new(privacy::PrivacyCommand),
+        Arc::new(doctor::DoctorCommand),
+        Arc::new(import_claude::ImportClaudeCommand),
+        Arc::new(home::HomeCommand),
+        Arc::new(delete::DeleteCommand),
+        Arc::new(help::HelpCommand),
+        Arc::new(exit::ExitCommand),
         // Hidden easter egg: never listed, runs on bare `/gboom`.
         Arc::new(gboom::GboomCommand),
-        // Hidden diagnostic: never listed, toggles the scroll-debug HUD.
-        Arc::new(scroll_debug::ScrollDebugCommand),
         // Debug toggles: always registered, listed only on debug binaries.
         Arc::new(debug::DebugCommand),
     ]
@@ -153,13 +164,13 @@ mod tests {
     use super::*;
     use crate::acp::model_state::ModelState;
     use crate::app::actions::Action;
-    use crate::slash::command::{CommandExecCtx, CommandResult};
+    use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
     use crate::slash::registry::CommandRegistry;
     use agent_client_protocol as acp;
     /// Build a ModelState with two models for testing.
     fn sample_models() -> ModelState {
         let mut models = ModelState::default();
-        let id_fast = acp::ModelId::new(Arc::from("test-model"));
+        let id_fast = acp::ModelId::new(Arc::from("codel-4.5"));
         models.available.insert(
             id_fast.clone(),
             acp::ModelInfo::new(id_fast.clone(), "Codel 4.5".to_string()),
@@ -189,7 +200,6 @@ mod tests {
             session_id: None,
             bundle_state: &DEFAULT_BUNDLE_STATE,
             screen_mode: crate::app::ScreenMode::Inline,
-            billing_surface_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot {
                 multiline_mode: false,
                 yolo_mode: false,
@@ -237,113 +247,6 @@ mod tests {
         assert!(reg.get("loop").is_some());
     }
     #[test]
-    fn shell_collision_contract_covers_every_pager_command_and_alias() {
-        const SHELL_RESERVED: &[&str] = &[
-            "agents",
-            "agents-dashboard",
-            "always-approve",
-            "announcements",
-            "auto",
-            "btw",
-            "cd",
-            "changelog",
-            "chat",
-            "clear",
-            "cloud",
-            "compact",
-            "compact-mode",
-            "config",
-            "config-agents",
-            "context",
-            "copy",
-            "cost",
-            "dashboard",
-            "debug",
-            "docs",
-            "doctor",
-            "edit-prompt",
-            "effort",
-            "exit",
-            "expand",
-            "export",
-            "feedback",
-            "find",
-            "fork",
-            "full",
-            "fullscreen",
-            "gboom",
-            "guides",
-            "help",
-            "history",
-            "home",
-            "hooks",
-            "howto",
-            "imagine",
-            "imagine-video",
-            "import-claude",
-            "jump",
-            "log",
-            "loop",
-            "m",
-            "marketplace",
-            "mcps",
-            "minimal",
-            "ml",
-            "model",
-            "multiline",
-            "new",
-            "onboarding",
-            "personas",
-            "plan",
-            "plan-view",
-            "plugins",
-            "preferences",
-            "prefs",
-            "privacy",
-            "queue",
-            "quit",
-            "recap",
-            "release-notes",
-            "remember",
-            "rename",
-            "resume",
-            "rewind",
-            "scroll-debug",
-            "session-info",
-            "sessions",
-            "settings",
-            "share",
-            "show-plan",
-            "skills",
-            "summarize",
-            "tasks",
-            "terminal-check",
-            "terminal-info",
-            "terminal-setup",
-            "theme",
-            "timeline",
-            "timestamps",
-            "title",
-            "toggle-mouse-reporting",
-            "tour",
-            "transcript",
-            "tutorial",
-            "t",
-            "usage",
-            "view-plan",
-            "vim-mode",
-            "voice",
-            "welcome",
-            "workflows",
-            "yolo",
-        ];
-        for command in builtin_commands() {
-            for key in std::iter::once(command.name()).chain(command.aliases().iter().copied()) {
-                assert!(SHELL_RESERVED.contains(&key), "unreserved pager key {key}");
-            }
-        }
-    }
-    #[test]
     fn builtin_registry_lookup_by_alias() {
         let reg = CommandRegistry::new(builtin_commands());
         assert!(reg.get("exit").is_some());
@@ -352,6 +255,7 @@ mod tests {
         assert!(reg.get("welcome").is_some());
         assert!(reg.get("show-plan").is_some());
         assert!(reg.get("plan-view").is_some());
+        assert!(reg.get("undo").is_some());
     }
     #[test]
     fn aliases_resolve_to_same_command() {
@@ -365,6 +269,9 @@ mod tests {
             assert_eq!(reg.get(alias).unwrap().name(), doctor.name());
             assert_eq!(reg.get(alias).unwrap().usage(), doctor.usage());
         }
+        let rewind = reg.get("rewind").unwrap();
+        assert_eq!(reg.get("undo").unwrap().name(), rewind.name());
+        assert_eq!(reg.get("undo").unwrap().usage(), rewind.usage());
     }
     #[test]
     fn exit_returns_quit_action() {
@@ -391,6 +298,19 @@ mod tests {
         assert!(matches!(result, CommandResult::Action(Action::ExitSession)));
     }
     #[test]
+    fn delete_requires_session_and_dispatches() {
+        let models = ModelState::default();
+        let cmd = delete::DeleteCommand;
+        let mut ctx = make_ctx(&models);
+        assert!(matches!(cmd.run(&mut ctx, ""), CommandResult::Error(_)));
+        let session_id = acp::SessionId::new("sess-delete");
+        ctx.session_id = Some(&session_id);
+        assert!(matches!(
+            cmd.run(&mut ctx, ""),
+            CommandResult::Action(Action::DeleteCurrentSession)
+        ));
+    }
+    #[test]
     fn view_plan_returns_show_plan_action() {
         let models = ModelState::default();
         let mut ctx = make_ctx(&models);
@@ -410,16 +330,16 @@ mod tests {
         }
     }
     #[test]
-    fn compact_with_context_returns_queue_command_with_args() {
+    fn compact_with_args_is_refused() {
         let models = ModelState::default();
         let mut ctx = make_ctx(&models);
         let cmd = compact::CompactCommand;
         let result = cmd.run(&mut ctx, "focus on auth");
         match result {
-            CommandResult::QueueCommand(text) => {
-                assert_eq!(text, "/compact focus on auth")
+            CommandResult::Error(text) => {
+                assert_eq!(text, "/compact takes no arguments.")
             }
-            other => panic!("expected QueueCommand, got {other:?}"),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
     #[test]
@@ -433,8 +353,8 @@ mod tests {
             other => panic!("expected QueueCommand, got {other:?}"),
         }
     }
-    /// Bare `/model <name>` → `SetDefaultModel` (switch + persist).
-    /// `/model <name> <effort>` → `SwitchModel` (session-scoped).
+    /// Bare `/model <name>` returns `SetDefaultModel`, which switches and persists.
+    /// `/model <name> <effort>` returns `SwitchModel`, which is session-scoped.
     #[test]
     fn model_resolves_by_display_name() {
         let models = sample_models();
@@ -443,7 +363,7 @@ mod tests {
         let result = cmd.run(&mut ctx, "Codel 4.5");
         match result {
             CommandResult::Action(Action::SetDefaultModel(id)) => {
-                assert_eq!(id.0.as_ref(), "test-model");
+                assert_eq!(id.0.as_ref(), "codel-4.5");
             }
             other => panic!("expected Action(SetDefaultModel), got {other:?}"),
         }
@@ -469,7 +389,7 @@ mod tests {
         let result = cmd.run(&mut ctx, "codel 4.5");
         match result {
             CommandResult::Action(Action::SetDefaultModel(id)) => {
-                assert_eq!(id.0.as_ref(), "test-model");
+                assert_eq!(id.0.as_ref(), "codel-4.5");
             }
             other => panic!("expected Action(SetDefaultModel), got {other:?}"),
         }
@@ -513,9 +433,11 @@ mod tests {
             models: &models,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
-            billing_surface_visible: true,
             workflows_available: true,
+            saved_workflows: &[],
+            workflow_runs: &[],
             screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
         };
         let cmd = model::ModelCommand;
         let items = cmd.suggest_args(&ctx, "").expect("should have suggestions");
@@ -538,9 +460,11 @@ mod tests {
             models: &models,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
-            billing_surface_visible: true,
             workflows_available: true,
+            saved_workflows: &[],
+            workflow_runs: &[],
             screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
         };
         let cmd = model::ModelCommand;
         assert!(cmd.suggest_args(&ctx, "").is_none());
@@ -580,74 +504,19 @@ mod tests {
             CommandResult::Action(Action::EnterRememberMode)
         ));
     }
-    fn run_usage(args: &str, billing: bool) -> CommandResult {
+    fn run_usage(args: &str) -> CommandResult {
         let models = ModelState::default();
         let mut ctx = make_ctx(&models);
-        ctx.billing_surface_visible = billing;
         usage::UsageCommand.run(&mut ctx, args)
     }
     #[test]
-    fn usage_consumer_show_and_manage() {
+    fn usage_is_bare_and_argless() {
         assert!(matches!(
-            run_usage("", true),
+            run_usage(""),
             CommandResult::Action(Action::ShowUsage)
         ));
-        assert!(matches!(
-            run_usage("show", true),
-            CommandResult::Action(Action::ShowUsage)
-        ));
-        assert!(matches!(
-            run_usage("  manage  ", true),
-            CommandResult::Action(Action::ManageBilling)
-        ));
-        assert!(matches!(run_usage("delete", true), CommandResult::Error(_)));
-    }
-    #[test]
-    fn usage_non_consumer_is_bare_only() {
-        assert!(matches!(
-            run_usage("", false),
-            CommandResult::Action(Action::ShowUsage)
-        ));
-        assert!(matches!(
-            run_usage("manage", false),
-            CommandResult::Error(_)
-        ));
-        assert!(matches!(run_usage("show", false), CommandResult::Error(_)));
-    }
-    #[test]
-    fn usage_takes_args_only_for_consumer() {
-        let models = ModelState::default();
-        let mut ctx = crate::slash::command::AppCtx {
-            models: &models,
-            cwd: std::path::Path::new("."),
-            has_session_announcements: false,
-            billing_surface_visible: true,
-            workflows_available: true,
-            screen_mode: crate::app::ScreenMode::Fullscreen,
-        };
-        let cmd = usage::UsageCommand;
-        assert!(cmd.takes_args_now(&ctx));
-        ctx.billing_surface_visible = false;
-        assert!(!cmd.takes_args_now(&ctx));
-    }
-    #[test]
-    fn usage_suggest_args_consumer_only() {
-        let models = ModelState::default();
-        let mut ctx = crate::slash::command::AppCtx {
-            models: &models,
-            cwd: std::path::Path::new("."),
-            has_session_announcements: false,
-            billing_surface_visible: true,
-            workflows_available: false,
-            screen_mode: crate::app::ScreenMode::Fullscreen,
-        };
-        let items = usage::UsageCommand.suggest_args(&ctx, "").unwrap();
-        assert_eq!(
-            items.iter().map(|i| i.display.as_str()).collect::<Vec<_>>(),
-            ["show", "manage"]
-        );
-        ctx.billing_surface_visible = false;
-        assert!(usage::UsageCommand.suggest_args(&ctx, "").is_none());
+        assert!(matches!(run_usage("manage"), CommandResult::Error(_)));
+        assert!(matches!(run_usage("show"), CommandResult::Error(_)));
     }
     #[test]
     fn usage_registered_in_builtin_commands() {
@@ -656,6 +525,23 @@ mod tests {
                 .get("usage")
                 .is_some()
         );
+    }
+    #[test]
+    fn usage_is_visible_and_offers_no_args() {
+        let models = ModelState::default();
+        let ctx = crate::slash::command::AppCtx {
+            models: &models,
+            cwd: std::path::Path::new("."),
+            has_session_announcements: false,
+            workflows_available: false,
+            saved_workflows: &[],
+            workflow_runs: &[],
+            screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
+        };
+        assert!(usage::UsageCommand.visible(&ctx));
+        assert!(!usage::UsageCommand.takes_args_now(&ctx));
+        assert!(usage::UsageCommand.suggest_args(&ctx, "").is_none());
     }
     #[test]
     fn cd_registered_in_builtin_commands() {
@@ -703,9 +589,11 @@ mod tests {
             models: &models,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
-            billing_surface_visible: true,
             workflows_available: true,
+            saved_workflows: &[],
+            workflow_runs: &[],
             screen_mode: crate::app::ScreenMode::Fullscreen,
+            current_title: None,
         };
         assert!(
             !gboom::GboomCommand.visible(&ctx),
@@ -791,5 +679,47 @@ mod tests {
         assert!(reg.get("voice").is_some());
         reg.set_voice_visible(false);
         assert!(reg.get("voice").is_none());
+    }
+    /// Every pager builtin trigger key must appear in the shell's `PAGER_COMMAND_KEYS`.
+    /// Add new names there when adding a pager builtin.
+    #[test]
+    fn pager_builtin_triggers_are_reserved_in_shell() {
+        let reserved: std::collections::HashSet<&str> = codel_shell::session::PAGER_COMMAND_KEYS
+            .iter()
+            .copied()
+            .collect();
+        let missing: Vec<String> = builtin_commands()
+            .iter()
+            .flat_map(|cmd| {
+                std::iter::once(cmd.name().to_string())
+                    .chain(cmd.aliases().iter().map(|a| a.to_string()))
+            })
+            .filter(|key| !reserved.contains(key.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "pager builtin trigger keys missing from the shell's \
+             PAGER_COMMAND_KEYS (codel-shell/src/session/slash_commands.rs); \
+             a skill with one of these names would shadow or be shadowed by \
+             the pager builtin: {missing:?}"
+        );
+    }
+    #[test]
+    fn pager_blocked_acp_names_are_reserved_in_shell() {
+        let reserved: std::collections::HashSet<&str> = codel_shell::session::PAGER_COMMAND_KEYS
+            .iter()
+            .copied()
+            .collect();
+        let missing: Vec<&str> = crate::slash::registry::BLOCKED_ACP_NAMES
+            .iter()
+            .copied()
+            .filter(|name| !reserved.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "pager BLOCKED_ACP_NAMES missing from PAGER_COMMAND_KEYS; \
+             a skill with one of these names is advertised bare and then \
+             dropped: {missing:?}"
+        );
     }
 }

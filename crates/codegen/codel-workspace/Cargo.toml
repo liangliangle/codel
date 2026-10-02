@@ -8,25 +8,21 @@ description = "Core host-local workspace library (FS, VCS, execution, discovery)
 [dependencies]
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-# Diagnostics HTTP server (in-guest readiness/status endpoint); pinned to the
-# workspace version already used by the sibling preview proxy.
-axum = { workspace = true }
 dunce = { workspace = true }
 codel-version = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 fs2 = { workspace = true }
-dirs = "6"
 parking_lot = { workspace = true }
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 ignore = { workspace = true }
-md5 = { workspace = true }
 regex = { workspace = true }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+strum = { workspace = true }
 tokio = { workspace = true, features = [
     "fs",
     "io-std",
@@ -35,23 +31,34 @@ tokio = { workspace = true, features = [
     "rt",
     "rt-multi-thread",
     "sync",
+    "time",
 ] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v5", "v7"] }
 codel-agent = { path = "../codel-agent" }
 codel-tools = { path = "../codel-tools" }
 codel-tools-api = { path = "../codel-tools-api" }
+# `DiagHandle`, held by the hub config and threaded through `connect_hub`.
+codel-diag-server = { workspace = true }
+# Pre-stop lifecycle broker served on the diagnostics socket by `bin/workspace_server.rs`.
+codel-lifecycle = { workspace = true }
 codel-workspace-client = { path = "../codel-workspace-client" }
+# Daemon/process-lifecycle machinery for `bin/workspace_server.rs` only; the
+# library never references it.
+codel-workspace-daemon = { path = "../codel-workspace-daemon" }
 codel-workspace-types = { path = "../codel-workspace-types" }
 codel-config = { workspace = true }
+codel-dirs = { workspace = true }
 # Leaf config value types (RemoteSettings, BoolFlag) for the folder-trust decision.
 codel-config-types = { workspace = true }
 toml = { workspace = true, features = ["preserve_order"] }
+toml_edit = { workspace = true }
 dashmap = { workspace = true }
 agent-client-protocol = { workspace = true }
 codel-acp-lib = { workspace = true }
 codel-codebase-graph = { path = "../codel-codebase-graph" }
 codel-paths = { path = "../codel-paths" }
+codel-permission-rules = { workspace = true }
 base64 = { workspace = true }
 infer = { workspace = true }
 sha2 = { workspace = true, features = ["force-soft"] }
@@ -59,17 +66,17 @@ bstr = "1.12.1"
 hashbrown = "0.16.1"
 nohash-hasher = "0.2.0"
 rustc-hash = "2.1.1"
-nucleo = { workspace = true }
+# Backs `file_system`'s fuzzy path picker (matcher + background daemon).
+codel-fuzzy-file-search = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 smallvec = { workspace = true }
 chrono = { workspace = true }
-tree-sitter = "0.25.10"
-tree-sitter-bash = "0.25"
+tree-sitter = { workspace = true }
 url = { workspace = true }
 codel-env = { workspace = true }
 humantime-serde = { workspace = true }
 prometheus = { workspace = true }
-glob = "0.3"
+codel-egress-proxy = { path = "../codel-egress-proxy" }
 codel-sandbox = { path = "../codel-sandbox", default-features = false }
 codel-hooks = { path = "../codel-hooks" }
 codel-hunk-tracker = { path = "../codel-hunk-tracker" }
@@ -79,9 +86,9 @@ codel-computer-hub-sdk = { workspace = true, features = ["metrics"] }
 codel-computer-hub-mcp-adapter = { path = "../../common/codel-computer-hub-mcp-adapter" }
 codel-mcp = { path = "../codel-mcp" }
 codel-file-utils = { path = "../codel-file-utils" }
+codel-session-events = { workspace = true }
 codel-auth = { path = "../codel-auth" }
 codel-tty-utils = { workspace = true }
-codel-sqlite-journal = { workspace = true }
 reqwest = { workspace = true }
 codel-tool-protocol = { workspace = true }
 codel-tool-runtime = { workspace = true }
@@ -91,22 +98,30 @@ urlencoding = "2"
 codel-fast-worktree = { path = "../codel-fast-worktree", features = ["metadata"] }
 # tonic: Status/Code mapping for deploy errors in workspace_ops.
 tonic = { workspace = true }
+sha1 = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
 
 codel-fsnotify = { path = "../codel-fsnotify" }
 clap = { workspace = true }
 tracing-subscriber = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+# "enable" required for the SDK's spans to record at all.
+fastrace = { workspace = true, features = ["enable"] }
+codel-tracing = { workspace = true }
+codel-extra-ca = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 tempfile = { workspace = true }
 zstd = { workspace = true }
+wait-timeout = { workspace = true }
 
-# Only referenced by the Unix self-daemonize path (fork/setsid/dup2/chdir).
+# Raw fd/dirent/poll calls in foreign-session capability probes, the fuzzy
+# walker's rlimit guard, and the envrc reader.
+codel-logging = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
-# Only referenced by the Windows self-daemonize path (SetStdHandle).
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true }
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["signal", "process"] }
 
 [[bin]]
 name = "codel-workspace-server"
@@ -120,14 +135,15 @@ path = "src/bin/workspace_server_probe.rs"
 default = ["sandbox-enforce"]
 compression = []
 test-support = []
+test-util = []
 sandbox-enforce = ["codel-sandbox/enforce"]
 default-bazel = [
     "sandbox-enforce",
     ]
 
 [dev-dependencies]
-filetime = { workspace = true }
 tempfile = { workspace = true }
+axum = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 codel-test-utils = { path = "../../common/codel-test-utils" }
 # Decode tar.gz archives produced by workspace upload helpers in tests.

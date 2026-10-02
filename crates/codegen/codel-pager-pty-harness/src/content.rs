@@ -1,10 +1,8 @@
 //! Layer 3: Content controller.
 //!
-//! An idle pager only renders a splash screen — not useful for scroll,
-//! stream, or resize scenarios. [`ContentController`] wraps the shared
-//! [`MockInferenceServer`] from `codel-test-support` and provides the
-//! env vars that point the bundled shell agent at it, so the pager ends
-//! up rendering real agent output.
+//! An idle pager only renders a splash screen, which is useless for scroll, stream, or resize scenarios.
+//! [`ContentController`] wraps the shared [`MockInferenceServer`] from `codel-test-support`.
+//! It provides the env vars that point the bundled shell agent at the mock, so the pager ends up rendering real agent output.
 //!
 //! The caller controls the response text via [`ContentController::set_response`].
 //! The mock server streams the set response to every inference request.
@@ -14,8 +12,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use codel_test_support::{MockInferenceServer, TestSandbox};
 
+pub use codel_test_support::mock_server::FeedbackPost;
 pub use codel_test_support::mock_server::LogEntry;
+pub use codel_test_support::mock_server::MockCanAdministerTeam;
 pub use codel_test_support::mock_server::MockModelEntry as MockModel;
+pub use codel_test_support::mock_server::MockUserTeam;
 pub use codel_test_support::mock_server::StorageUpload;
 pub use codel_test_support::sse;
 pub use codel_test_support::{
@@ -97,14 +98,7 @@ impl AgentTurnExpectation {
     }
 }
 
-/// Drives content into the pager by serving a mock inference endpoint that
-/// the bundled shell agent hits for `/v1/chat/completions` and `/v1/responses`.
-///
-/// Thin wrapper over the shared [`MockInferenceServer`]: adds the isolated
-/// `$HOME` sandbox and pager env plumbing, and applies the harness defaults
-/// the pager depends on (always-200 `/v1/settings`, fixed default response).
-///
-/// Shuts the server down on drop (the inner server's `Drop`).
+/// Mock inference plus an isolated `$HOME`. Always-200 `/v1/settings` and a fixed default response; the server shuts down on drop.
 pub struct ContentController {
     server: MockInferenceServer,
     sandbox: TestSandbox,
@@ -118,18 +112,15 @@ impl ContentController {
         Self::start_with_models(vec![MockModel::new("test-model")]).await
     }
 
-    /// Start the mock server with a custom set of models returned by
-    /// `GET /v1/models`. Use [`MockModel::with_agent_type`] to configure
-    /// models with different harness types for agent-type-mismatch tests.
+    /// Start the mock server with a custom set of models returned by `GET /v1/models`.
+    /// Use [`MockModel::with_agent_type`] to configure models with different harness types for agent-type-mismatch tests.
     pub async fn start_with_models(models: Vec<MockModel>) -> Result<Self> {
         let server = MockInferenceServer::start_with_models(models)
             .await
             .context("start mock inference server")?;
-        // Pre-delegation parity, both load-bearing for PTY tests: settings
-        // must be 200 `{"allow_access": true}` (the shared 404-until-set
-        // default strands the pager on the upsell screen), and the response
-        // mode must be a fixed text (the shared default is echo).
-        server.preset_allow_access();
+        // Two defaults PTY tests depend on: settings must return 200, and the response must be a fixed text.
+        // The shared server defaults to 404-until-set settings and echo responses.
+        server.set_settings(serde_json::json!({}));
         server.set_response(default_response_text());
 
         let mut sandbox = TestSandbox::builder().mock_url(server.url()).build();
@@ -155,15 +146,14 @@ impl ContentController {
         &self.sandbox
     }
 
-    /// Replace the mocked assistant response. All subsequent chat completion
-    /// requests will stream this text word-by-word.
+    /// Replace the mocked assistant response.
+    /// All subsequent chat completion requests will stream this text word-by-word.
     pub fn set_response(&self, text: impl Into<String>) {
         self.server.set_response(text);
     }
 
     /// Queue a compatibility response for the next request on `path`.
-    /// Inference callers should use a matched expectation; this remains for
-    /// non-inference one-shots such as `"/v1/settings"`.
+    /// Inference callers should use a matched expectation; this remains for non-inference one-shots such as `"/v1/settings"`.
     pub fn enqueue_response(&self, path: impl Into<String>, response: ScriptedResponse) {
         self.server.enqueue_response(path, response);
     }
@@ -174,8 +164,8 @@ impl ContentController {
     }
 
     /// Pace the mocked SSE streams: each event is emitted after `delay`.
-    /// `None` restores instant streaming. Use to hold a turn visibly
-    /// "streaming" long enough to interact with it (e.g. Esc-cancel tests).
+    /// `None` restores instant streaming.
+    /// Use to hold a turn visibly "streaming" long enough to interact with it (e.g. Esc-cancel tests).
     pub fn set_chunk_delay(&self, delay: Option<std::time::Duration>) {
         self.server.set_chunk_delay(delay);
     }
@@ -216,8 +206,7 @@ impl ContentController {
         )
     }
 
-    /// Register the same named foreground text turn for both pager backends,
-    /// blocked immediately before its terminal event.
+    /// Register the same named foreground text turn for both pager backends, blocked immediately before its terminal event.
     pub fn expect_agent_turn_blocked(
         &self,
         name: impl AsRef<str>,
@@ -287,7 +276,7 @@ impl ContentController {
         self.server.has_chat_completion_request() || self.server.has_responses_request()
     }
 
-    /// Snapshot of all received requests — useful for test diagnostics.
+    /// Snapshot of all received requests, useful for test diagnostics.
     pub fn requests(&self) -> Vec<LogEntry> {
         self.server.requests()
     }
@@ -312,12 +301,23 @@ impl ContentController {
     pub fn storage_uploads(&self) -> Vec<StorageUpload> {
         self.server.storage_uploads()
     }
+
+    /// While set, every `POST /v1/feedback` answers 500 (still recorded).
+    pub fn set_feedback_failure(&self, fail: bool) {
+        self.server.set_feedback_failure(fail);
+    }
+
+    /// Snapshot of every `POST /v1/feedback` seen, accepted or failed, in arrival order.
+    pub fn feedback_posts(&self) -> Vec<FeedbackPost> {
+        self.server.feedback_posts()
+    }
 }
 
 fn default_response_text() -> String {
     "Hello from the pty_harness mock inference server.".to_owned()
 }
 
+#[allow(clippy::disallowed_methods)] // test clients hit localhost mocks
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,11 +359,10 @@ mod tests {
             .expect("read direct foreground response")
     }
 
-    /// The pre-delegation mock always served 200 `{"allow_access": true}`;
-    /// the shared server defaults to 404-until-set. A 404 strands the pager
-    /// on the SuperCodel upsell screen and breaks every PTY test.
+    /// This harness's old private mock always served 200 settings; the shared server defaults to 404-until-set,
+    /// which leaves the pager without remote settings and breaks every PTY test.
     #[tokio::test]
-    async fn settings_endpoint_allows_access_by_default() {
+    async fn settings_endpoint_serves_remote_settings_by_default() {
         let content = ContentController::start().await.unwrap();
 
         let resp = reqwest::get(format!("{}/settings", content.url()))
@@ -371,11 +370,10 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), 200);
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body, serde_json::json!({ "allow_access": true }));
+        assert_eq!(body, serde_json::json!({}));
     }
 
-    /// The pre-delegation mock streamed a fixed default text to every
-    /// request; the shared server defaults to echo.
+    /// This harness's old private mock streamed a fixed default text to every request; the shared server defaults to echo.
     #[tokio::test]
     async fn default_response_streams_fixed_text() {
         let content = ContentController::start().await.unwrap();

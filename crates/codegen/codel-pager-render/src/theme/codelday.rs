@@ -1,8 +1,6 @@
-//! CodelDay theme — neutral gray base (light) with deepened accent colors.
-//!
-//! Light counterpart to CodelNight. Backgrounds and text use a neutral
-//! grayscale ramp (no blue/warm tint). Accent colors are the same hue
-//! family as CodelNight but deepened for contrast on light backgrounds.
+//! CodelDay is the light counterpart to CodelNight.
+//! Backgrounds and text use a neutral grayscale ramp (no blue/warm tint).
+//! Accent colors are the same hue family as CodelNight but deepened for contrast on light backgrounds.
 
 use ratatui::style::{Color, Modifier};
 
@@ -88,8 +86,6 @@ impl Theme {
             accent_plan: rgb(168, 120, 10), // #A8780A — deep golden
 
             accent_verify: rgb(120, 80, 160), // deep violet (readable on light bg)
-
-            accent_feedback: GREEN1,
 
             accent_remember: rgb(76, 175, 80), // #4CAF50 — Material Design green (readable on light bg)
 

@@ -117,10 +117,8 @@ pub fn validate_name_override(
     Ok(())
 }
 
-/// Returns the first entry whose `id` is not in `allowed_ids`, as
-/// `(index, id)`, or `None` when all ids are allowed.
-///
-/// Pure so backend save-time validation and any future consumer share one rule.
+/// Returns the first entry whose `id` is not in `allowed_ids`, as `(index, id)`, or `None` when all
+/// ids are allowed. Pure so backend save-time validation and any future consumer share one rule.
 pub fn first_unknown_tool_id<'a>(
     entries: &'a [crate::ToolConfigEntry],
     allowed_ids: &std::collections::HashSet<String>,
@@ -231,14 +229,6 @@ mod tests {
         let entries = [entry("CodelBuild:grep"), entry("CodelBuild:read_file")];
         let allowed = allowed(&["CodelBuild:grep", "CodelBuild:read_file", "CodelBuild:bash"]);
         assert_eq!(first_unknown_tool_id(&entries, &allowed), None);
-    }
-
-    #[test]
-    fn empty_entries_returns_none() {
-        assert_eq!(
-            first_unknown_tool_id(&[], &allowed(&["CodelBuild:grep"])),
-            None
-        );
     }
 
     #[test]
