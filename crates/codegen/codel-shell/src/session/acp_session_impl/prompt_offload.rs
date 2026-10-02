@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::session::prompt_parser::{ParsedPrompt, PromptLayout};
-use std::ops::Range;
 use codel_logging::region;
 use codel_logging::region::Parent;
 use codel_tools::implementations::codel_build::read_file::{
@@ -13,6 +12,7 @@ use codel_tools::implementations::codel_build::read_file::{
 use codel_tools::types::resources::TruncationCfg;
 use codel_tools::types::template_renderer::TemplateRenderer;
 use codel_tools::types::tool::ToolKind;
+use std::ops::Range;
 
 /// Budget for the inline excerpt: read_file's per-call cap in bytes, so an offloaded prompt's excerpt is never larger than one read would return.
 pub(crate) const LARGE_PROMPT_THRESHOLD: usize =

@@ -255,8 +255,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn undefined_model_provider_fails_closed() {
         use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
@@ -485,8 +483,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn model_inherits_provider_static_key() {
         let raw_config: toml::Value = toml::from_str(
@@ -569,8 +565,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn model_headers_shadow_provider_headers() {
         let raw_config: toml::Value = toml::from_str(
@@ -645,7 +639,6 @@ mod tests {
             cfg.config_warnings
         );
     }
-
 
     #[test]
     fn model_inherits_provider_query_params_and_env_http_headers() {

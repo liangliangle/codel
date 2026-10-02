@@ -51,8 +51,6 @@ async fn handle_hydrate_team_capability(agent: &MvpAgent, args: &acp::ExtRequest
     })
 }
 
-
-
 async fn handle_get_bearer_token(agent: &MvpAgent) -> ExtResult {
     // Fail closed for session tokens: desktop resume treats non-null as success. Never return a hard-expired access token
     // Still return wire-valid session tokens and static user-supplied keys (process model key, env, or disk api_key) That keeps non-session sessions working when AuthManager has no OIDC entry
@@ -96,12 +94,6 @@ fn handle_set_api_key(args: &acp::ExtRequest) -> ExtResult {
         .to_ext_response()
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))
 }
-
-
-
-
-
-
 
 fn handle_info(agent: &MvpAgent) -> ExtResult {
     #[derive(Serialize)]

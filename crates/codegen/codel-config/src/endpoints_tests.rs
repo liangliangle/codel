@@ -16,7 +16,10 @@ fn endpoints(
 #[test]
 fn inference_url_defaults_to_proxy() {
     let ep = endpoints("https://proxy.codel.dev/v1", None, None);
-    assert_eq!(ep.resolve_inference_base_url(), "https://proxy.codel.dev/v1");
+    assert_eq!(
+        ep.resolve_inference_base_url(),
+        "https://proxy.codel.dev/v1"
+    );
 }
 
 #[test]
@@ -61,7 +64,10 @@ fn list_url_derived_from_base_url() {
         Some("https://api.codel.dev/v1"),
         None,
     );
-    assert_eq!(ep.resolve_models_list_url(), "https://api.codel.dev/v1/models");
+    assert_eq!(
+        ep.resolve_models_list_url(),
+        "https://api.codel.dev/v1/models"
+    );
 }
 
 #[test]
@@ -71,3 +77,8 @@ fn list_url_explicit_overrides_derivation() {
         Some("https://inference.acme.com/v1"),
         Some("https://registry.acme.com/api/list-models"),
     );
+    assert_eq!(
+        ep.resolve_models_list_url(),
+        "https://registry.acme.com/api/list-models"
+    );
+}

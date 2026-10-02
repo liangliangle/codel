@@ -530,8 +530,12 @@ mod tests {
             );
         }
 
-        let err = resolve_version("current", "CodelBuild:read_file", Some("pre-block-until-ms"))
-            .expect_err("read_file has no pre-block-until-ms version");
+        let err = resolve_version(
+            "current",
+            "CodelBuild:read_file",
+            Some("pre-block-until-ms"),
+        )
+        .expect_err("read_file has no pre-block-until-ms version");
         assert!(err.contains("is not supported for tool"), "got: {err}");
     }
 
@@ -667,8 +671,9 @@ mod tests {
 
     #[test]
     fn resolve_with_warnings_unsupported_version_errors_with_list() {
-        let err = resolve_version_with_warnings("current", "CodelBuild:grep", Some("legacy-0.4.10"))
-            .unwrap_err();
+        let err =
+            resolve_version_with_warnings("current", "CodelBuild:grep", Some("legacy-0.4.10"))
+                .unwrap_err();
         assert!(
             err.contains("is not supported for tool"),
             "expected 'not supported' error, got: {err}"

@@ -9,8 +9,8 @@
 //!   per-session gateway bridge actor and routes prompts through it.
 //!   When unset, sessions created in gateway mode fall back to [`CodelBuildEnvironment::gateway_ws_url`] and everything else stays in local mode.
 pub use codel_env::{
-    CodelBuildEnvironment, PROD_ASSET_SERVER_URL, PROD_CLI_CHAT_PROXY_BASE_URL, PROD_GATEWAY_WS_URL,
-    PROD_RELAY_WS_URL, PROD_WS_ORIGIN,
+    CodelBuildEnvironment, PROD_ASSET_SERVER_URL, PROD_CLI_CHAT_PROXY_BASE_URL,
+    PROD_GATEWAY_WS_URL, PROD_RELAY_WS_URL, PROD_WS_ORIGIN,
 };
 /// Public Computer Hub WebSocket URL used by the local-workspace supervisor (`workspace_server --hub-url`) when `agent_config.hub.url` is unset.
 pub const PROD_COMPUTER_HUB_WS_URL: &str = "wss://computer-hub.codel.dev/v1/tools";

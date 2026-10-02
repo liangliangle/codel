@@ -56,6 +56,9 @@ pub mod workspace_ops;
 pub mod worktree;
 pub use capability::CapabilityMode;
 pub use channel::{TransportCallResult, TransportContext, TransportError, TransportNotification};
+pub use codel_hunk_tracker::HunkTrackerHandle;
+pub use codel_workspace_client::WorkspaceClient;
+pub use codel_workspace_types::WorkspaceEvent;
 pub use config::{
     AgentSessionConfig, BindMcpConfig, DEFAULT_EVENT_BUFFER_CAPACITY, HookSourceConfig,
     IsolationMode, MemoryConfig, SessionContextFactory, SessionTerminalBackend, WorkspaceConfig,
@@ -77,9 +80,6 @@ pub use session::{McpServerOutcome, WorkspaceSession, WorkspaceShared};
 pub use session::{file_state, git, jj};
 pub use upload::environment::{WorkspaceEnvironment, WorkspaceIdentity};
 pub use workspace_ops::{WorkspaceOp, WorkspaceOps};
-pub use codel_workspace_client::WorkspaceClient;
-pub use codel_workspace_types::WorkspaceEvent;
-pub use codel_hunk_tracker::HunkTrackerHandle;
 /// Zero-init every workspace metric family so idle panels render a `0` baseline instead of "No data".
 /// Idempotent; call once at workspace-server startup.
 pub fn init_metrics() {

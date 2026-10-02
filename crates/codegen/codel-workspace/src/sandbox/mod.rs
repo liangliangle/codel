@@ -13,9 +13,8 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 use codel_config_types::RemoteSettings;
+use codel_logging::events::{SandboxCommandOutcome, SandboxSettlement};
 use codel_sandbox::SandboxProfile;
 pub use codel_sandbox::command::CallId;
 pub use codel_sandbox::command::GrantError;
@@ -30,7 +29,8 @@ use codel_sandbox::command::{
     BackendName, GitConfigEnv, GrantStore, HostProbe, ObserveSummary, RefusedUnderGrant,
     SandboxPolicy, ServedRoot, Violation, decode, detect_backend, refused_under_grant,
 };
-use codel_logging::events::{SandboxCommandOutcome, SandboxSettlement};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::permission::PermissionHookTransport;
 use crate::sandbox_mode::{

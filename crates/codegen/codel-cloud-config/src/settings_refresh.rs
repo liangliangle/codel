@@ -1,8 +1,8 @@
 //! This module caches no settings.
 //! [`crate::settings_cache`] keeps settings on disk between launches.
 
-use tokio::sync::watch;
 use codel_login::CodelAuth;
+use tokio::sync::watch;
 
 /// Shares one live settings fetch between concurrent mid-session refreshes.
 #[derive(Default)]

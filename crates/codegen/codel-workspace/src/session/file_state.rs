@@ -919,8 +919,8 @@ mod tests {
     use super::ToolContext; // from stub above
     use super::*;
     use crate::file_system::MockFs;
-    use std::sync::Arc;
     use codel_paths::AbsPathBuf;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_rewind_point_creation() {

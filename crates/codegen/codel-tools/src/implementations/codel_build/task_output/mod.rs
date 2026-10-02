@@ -794,17 +794,19 @@ impl crate::types::tool_metadata::ToolMetadata for TaskOutputTool {
         // renders it context-aware from the finalized toolset. This static
         // fallback mirrors the default codel-build toolset.
         static DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-            codel_tool_types::build_task_output_description(&codel_tool_types::TaskOutputToolNaming {
-                monitor_tool: Some("monitor"),
-                read_tool: Some("read_file"),
-                // The current bash tool has no `is_background` param
-                bash_background_param: None,
-                bash_block_param: Some("block_until_ms"),
-                subagent_background_param: Some("run_in_background"),
-                task_ids_param: "task_ids",
-                timeout_ms_param: "timeout_ms",
-                task_id_param: "task_id",
-            })
+            codel_tool_types::build_task_output_description(
+                &codel_tool_types::TaskOutputToolNaming {
+                    monitor_tool: Some("monitor"),
+                    read_tool: Some("read_file"),
+                    // The current bash tool has no `is_background` param
+                    bash_background_param: None,
+                    bash_block_param: Some("block_until_ms"),
+                    subagent_background_param: Some("run_in_background"),
+                    task_ids_param: "task_ids",
+                    timeout_ms_param: "timeout_ms",
+                    task_id_param: "task_id",
+                },
+            )
         });
         &DESC
     }

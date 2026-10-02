@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
 use codel_message_delivery_core::{AgentId, AttemptId};
+use tokio::sync::mpsc;
 
 use crate::implementations::codel_build::task::active_message::{
     ActiveAgentMessageQuotaKind, ActiveMessageIngress,

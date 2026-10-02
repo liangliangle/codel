@@ -4,11 +4,11 @@
 use super::commands::SessionCommand;
 use super::persistence::{LocalFeedbackEntry, PersistenceMsg};
 use agent_client_protocol as acp;
+use codel_file_utils::queue::UploadQueue;
+use codel_hunk_tracker::HunkTrackerHandle;
+use codel_sampling_types::ReasoningEffort;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
-use codel_file_utils::queue::UploadQueue;
-use codel_sampling_types::ReasoningEffort;
-use codel_hunk_tracker::HunkTrackerHandle;
 /// Coarse lifecycle state of a session as known to the leader/agent.
 /// A codel session is a resumable log on disk with no terminal status field of its own, so "liveness" is residency plus turn state, not a pid.
 /// The agent's join-handle supervisor tracks this per session so a panicked actor is demoted to `Dormant` instead of lingering in the roster.
@@ -146,12 +146,10 @@ pub struct SessionHandle {
     /// Typed workspace operations handle (agent sessions use local ops).
     pub workspace_ops: codel_workspace::WorkspaceOps,
     /// Subagents inherit the parent's backend so background tasks and monitors survive the subagent's exit.
-    pub terminal_backend:
-        Option<std::sync::Arc<dyn codel_tools::computer::types::TerminalBackend>>,
+    pub terminal_backend: Option<std::sync::Arc<dyn codel_tools::computer::types::TerminalBackend>>,
     /// Notification handle for this session's tool bridge.
     /// Subagents use this to reparent surviving tasks' notification handles on exit so events route to the parent's notification bridge.
-    pub tools_notification_handle:
-        Option<codel_tools::notification::types::ToolNotificationHandle>,
+    pub tools_notification_handle: Option<codel_tools::notification::types::ToolNotificationHandle>,
     /// Subagents inherit the parent's handle so scheduled tasks survive the subagent's exit.
     pub scheduler_handle:
         Option<codel_tools::implementations::codel_build::scheduler::types::SchedulerHandle>,

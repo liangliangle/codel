@@ -7,10 +7,10 @@
 
 use std::collections::BTreeMap;
 
+use codel_shell::util::config::{ConsentAnswer, ConsentGate};
 use crossterm::event::{Event, KeyEventKind, MouseButton, MouseEventKind};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-use codel_shell::util::config::{ConsentAnswer, ConsentGate};
 
 use crate::app::actions::Action;
 use crate::app::app_view::InputOutcome;

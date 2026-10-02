@@ -34,8 +34,7 @@ fn install_releases_registry_lock_before_post_install_config_write() {
 
     let source = src.path().display().to_string();
     let cwd = std::env::current_dir().unwrap();
-    let installer =
-        std::thread::spawn(move || codel_shell::plugin::install_plugin(&source, &cwd));
+    let installer = std::thread::spawn(move || codel_shell::plugin::install_plugin(&source, &cwd));
 
     // The registry save lands before the post-install config write starts.
     let install_dir = codel_home.path().join("installed-plugins");

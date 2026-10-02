@@ -1,8 +1,8 @@
 use crate::implementations::codel_build::send_subagent_message::SendSubagentMessageOutput;
+use codel_tool_types::SubagentCompletedOutput;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use strip_ansi_escapes::strip_str;
-use codel_tool_types::SubagentCompletedOutput;
 /// `(added, removed)` line counts for the `edit.lines` telemetry counter.
 pub fn line_diff(old: &str, new: &str) -> (i64, i64) {
     let mut added = 0i64;
@@ -1168,7 +1168,9 @@ impl codel_tool_runtime::ToolOutput for ToolOutput {
     fn chat_completion_output(&self) -> Option<codel_tool_runtime::ToolChatCompletionResponse> {
         match self {
             Self::Bash(bash) => codel_tool_runtime::ToolOutput::chat_completion_output(bash),
-            Self::SearchReplace(edit) => codel_tool_runtime::ToolOutput::chat_completion_output(edit),
+            Self::SearchReplace(edit) => {
+                codel_tool_runtime::ToolOutput::chat_completion_output(edit)
+            }
             _ => None,
         }
     }
@@ -1272,9 +1274,9 @@ impl codel_tool_runtime::ToolOutput for MCPOutput {}
 mod tests {
     use super::*;
     use crate::implementations::codel_build::todo::{TodoPriority, TodoStatus};
-    use serde_json::json;
     use codel_tool_types::KillTaskResult;
     use codel_tool_types::TaskOutputResult;
+    use serde_json::json;
     #[test]
     fn send_subagent_message_error_classification_is_closed() {
         use crate::implementations::codel_build::send_subagent_message::SendSubagentMessageOutput::*;
@@ -2935,7 +2937,8 @@ mod tests {
             0,
             false,
         );
-        let dropped = codel_tool_runtime::TypedToolOutput::from_value(typed.tool_id, expected_value);
+        let dropped =
+            codel_tool_runtime::TypedToolOutput::from_value(typed.tool_id, expected_value);
         assert!(dropped.chat_completion_output.is_none());
     }
     #[test]

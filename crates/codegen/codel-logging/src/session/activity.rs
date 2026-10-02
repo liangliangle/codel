@@ -110,4 +110,3 @@ pub fn work_is_idle() -> bool {
         .filter(|gauge| gauge.kind == GaugeKind::Work)
         .all(|gauge| gauge.get() == 0)
 }
-

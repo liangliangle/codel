@@ -310,7 +310,6 @@ async fn build_session_info_used_reflects_recorded_response() {
         .await;
 }
 
-
 /// `record_response_token_usage` must also stash the per-turn `TokenUsage` in chat state.
 /// The next `PromptResponse._meta` carries the input/output token counts to the bot's telemetry.
 #[tokio::test(flavor = "current_thread")]

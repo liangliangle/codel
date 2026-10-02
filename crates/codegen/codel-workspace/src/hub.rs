@@ -24,22 +24,22 @@
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::handle::WorkspaceHandle;
 use async_trait::async_trait;
-use serde_json::Value;
-use std::sync::Arc;
-use tokio::task::JoinHandle;
-use url::Url;
 use codel_computer_hub_sdk::{
     AuthProvider, CLOSE_CODE_SANDBOX_TERMINATED, ClientError, HubConnectionPool,
     InitialConnectPolicy, RefusalCode, ToolServer, ToolServerBuilder, ToolServerHandler,
 };
 use codel_diag_server::DiagHandle;
-use codel_tools::registry::types::ToolConfig;
 use codel_tool_protocol::ToolId;
 use codel_tool_runtime::{
     ToolCallContext, ToolError, ToolErrorKind, ToolStream, ToolStreamItem, TypedToolOutput,
     terminal_only,
 };
 use codel_tool_types::ToolDescription;
+use codel_tools::registry::types::ToolConfig;
+use serde_json::Value;
+use std::sync::Arc;
+use tokio::task::JoinHandle;
+use url::Url;
 /// Configuration for connecting to a server instance, via [`WorkspaceConfig::hub_config`](crate::config::WorkspaceConfig::hub_config).
 /// When `Some`, connect after construction via [`WorkspaceHandle::connect_hub`](crate::handle::WorkspaceHandle::connect_hub).
 #[derive(Clone)]
@@ -767,8 +767,8 @@ mod tests {
         };
         assert_eq!(first.id, "hub:tool_a");
     }
-    use futures::StreamExt;
     use codel_tool_runtime::{SessionContext, ToolCallId};
+    use futures::StreamExt;
     fn make_handler(workspace: &WorkspaceHandle, tool_name: &str) -> SessionRoutedToolHandler {
         SessionRoutedToolHandler::new(
             tool_name.to_owned(),
@@ -1039,7 +1039,9 @@ mod tests {
             )
             .expect("register_tool must succeed");
     }
-    async fn drain_counts<T>(mut stream: codel_tool_runtime::ToolStream<T>) -> (usize, usize, bool) {
+    async fn drain_counts<T>(
+        mut stream: codel_tool_runtime::ToolStream<T>,
+    ) -> (usize, usize, bool) {
         let mut progress = 0;
         let mut terminal = 0;
         let mut last_is_terminal = false;
@@ -1084,9 +1086,9 @@ mod tests {
     }
     use crate::capability::CapabilityMode;
     use crate::session::tool_config::test_support::tc;
-    use std::time::Duration;
     use codel_tools::notification::types::{ToolNotification, ToolNotificationHandle};
     use codel_tools::registry::types::ToolServerConfig;
+    use std::time::Duration;
     fn bg_config() -> ToolServerConfig {
         ToolServerConfig {
             tools: vec![
@@ -1148,9 +1150,7 @@ mod tests {
         }
     }
     fn bg_started_notif(task_id: &str) -> ToolNotification {
-        use codel_tools::notification::types::{
-            BashExecutionBackgrounded, BashNotificationBase,
-        };
+        use codel_tools::notification::types::{BashExecutionBackgrounded, BashNotificationBase};
         ToolNotification::BashExecutionBackgrounded(BashExecutionBackgrounded {
             base: BashNotificationBase {
                 tool_call_id: task_id.to_owned(),
@@ -1965,8 +1965,7 @@ mod tests {
             &self,
             _ctx: codel_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> Result<codel_tools::types::output::ToolOutput, codel_tool_runtime::ToolError>
-        {
+        ) -> Result<codel_tools::types::output::ToolOutput, codel_tool_runtime::ToolError> {
             let stdout = "/workspace/conv-abc/out.txt";
             Ok(codel_tools::types::output::ToolOutput::Bash(
                 codel_tools::types::output::BashOutput {

@@ -9,9 +9,9 @@ use super::agent::AgentId;
 use crate::app::status_line::StatusLineRun;
 use crate::scrollback::entry::EntryId;
 use agent_client_protocol as acp;
-use std::num::NonZeroU64;
 use codel_shell::sampling::types::ReasoningEffort;
 use codel_shell::session::unified_list::SessionKind;
+use std::num::NonZeroU64;
 /// Typed error for model switch failures.
 /// Replaces the raw `String` in `TaskResult::SwitchModelComplete` so dispatch can match on the variant instead of parsing strings.
 #[derive(Debug, Clone)]

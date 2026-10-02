@@ -103,8 +103,10 @@ fn the_reason_off_macos_names_the_os_and_the_path_checked() {
 #[test]
 fn a_probed_file_records_the_mode_bits_the_kind_or_the_error() {
     use std::os::unix::fs::PermissionsExt;
-    let root =
-        std::env::temp_dir().join(format!("codel-sandbox-detect-probed-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "codel-sandbox-detect-probed-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let binary = root.join("sandbox-exec");

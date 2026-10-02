@@ -10,9 +10,9 @@
 
 use std::ops::Range;
 
+use codel_markdown::MarkdownRenderView;
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthStr;
-use codel_markdown::MarkdownRenderView;
 
 use crate::appearance::RenderMermaid;
 use crate::scrollback::types::{BlockLine, BlockOutput};

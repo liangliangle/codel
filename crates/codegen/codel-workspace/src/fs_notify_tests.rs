@@ -47,8 +47,8 @@ fn parse_diff_name_status_all_variants() {
 #[tokio::test]
 async fn file_write_is_broadcast_as_fs_changed() {
     let root = tempfile::tempdir().expect("tempdir");
-    let source =
-        codel_fsnotify::shared(root.path().to_path_buf(), FsConfig::default()).expect("watcher init");
+    let source = codel_fsnotify::shared(root.path().to_path_buf(), FsConfig::default())
+        .expect("watcher init");
     let fs_rx = source.subscribe();
     let (events_tx, mut events_rx) = broadcast::channel(16);
     // The watcher reports paths under the canonical directory; the producer strips against that
@@ -240,7 +240,8 @@ async fn a_removal_under_a_symlinked_root_is_emitted_relative() {
     loop {
         let probe = link.clone();
         let holders = tokio::task::spawn_blocking(move || {
-            codel_fsnotify::shared(probe, FsConfig::default()).map(|probe| Arc::strong_count(&probe))
+            codel_fsnotify::shared(probe, FsConfig::default())
+                .map(|probe| Arc::strong_count(&probe))
         })
         .await
         .expect("probe join")

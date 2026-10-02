@@ -1,12 +1,12 @@
 use super::support::*;
 use super::*;
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
 use codel_test_support::sse::{
     responses_api_reasoning_then_tool_call_events, responses_api_script_exact,
 };
 use codel_test_support::{MockInferenceServer, ScriptedResponse};
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// `SessionActor` turn futures overflow the default test thread stack.
 pub(super) fn block_on_session(f: impl FnOnce() + Send + 'static) {

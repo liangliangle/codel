@@ -7,9 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use futures::StreamExt;
-use serde_json::{Value, json};
 use codel_computer_hub_sdk::ToolServerHandler;
+use codel_logging::events::SandboxCommandOutcome;
 use codel_paths::AbsPathBuf;
 use codel_sandbox::command::backend::{
     BackendCapabilities, CommandTag, OriginalArgv, RenderedPolicy, SandboxBackend,
@@ -19,14 +18,15 @@ use codel_sandbox::command::grants::FixedClock;
 use codel_sandbox::command::{
     BackendName, Blocked, CallId, GitConfigEnv, SandboxMode, SandboxPolicy,
 };
-use codel_logging::events::SandboxCommandOutcome;
-use codel_tools::registry::types::ToolServerConfig;
-use codel_tools::types::tool::ToolKind;
 use codel_tool_runtime::{
     ContentBlock, SessionContext, ToolApprovalPolicy, ToolCallContext, ToolCallId, ToolError,
     ToolErrorKind, ToolStream, ToolStreamItem, TypedToolOutput,
 };
 use codel_tool_types::ToolDescription;
+use codel_tools::registry::types::ToolServerConfig;
+use codel_tools::types::tool::ToolKind;
+use futures::StreamExt;
+use serde_json::{Value, json};
 
 use super::metrics;
 use super::result_path::PIN_LOST_TEXT;

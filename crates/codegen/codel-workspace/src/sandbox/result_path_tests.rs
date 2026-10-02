@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use futures::StreamExt;
 use codel_sandbox::command::grants::FixedClock;
 use codel_sandbox::command::{CallId, GitConfigEnv, SandboxMode};
-use codel_tools::types::output::{BashOutput, TextOutput, ToolOutput, ToolRunResult};
 use codel_tool_runtime::{ToolError, ToolErrorKind, ToolProgress, ToolStream, ToolStreamItem};
+use codel_tools::types::output::{BashOutput, TextOutput, ToolOutput, ToolRunResult};
+use futures::StreamExt;
 
 use super::{PIN_LOST_TEXT, ReplayBudget, run_shell_call_with_replay, signal_number, with_notes};
 use crate::handle::WorkspaceHandle;

@@ -69,7 +69,6 @@ fn show_word_select_tip_shows_and_counts_when_flag_on() {
     );
 }
 
-
 /// Already on `word_select`, the tip is redundant: skip without burning the count.
 #[test]
 fn show_word_select_tip_no_op_when_already_word_select() {
@@ -1422,7 +1421,6 @@ fn cycle_mode_pre_session_normal_to_plan_does_not_persist_permission_mode() {
         "Normal → Plan must not touch the persisted permission mode, got {effects:?}"
     );
 }
-
 
 /// Refresh contract: dispatching `SetYoloMode(true)` while the settings modal is open must refresh the modal's snapshots.
 /// Both `pager_snapshot.yolo_mode` and `ui_snapshot.permission_mode` update; without this the indicator stays stale.

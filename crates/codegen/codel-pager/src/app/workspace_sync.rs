@@ -6,13 +6,13 @@ use super::app_view::AppView;
 use super::workspace_layout::WorkspaceView;
 use super::workspace_membership::{RemovalCause, RemovalRequestError, WorkspaceMembership};
 use crate::views::dashboard::WorkspaceRowInputs;
-use indexmap::IndexMap;
-use std::collections::HashSet;
-use std::time::UNIX_EPOCH;
 use codel_dashboard_store::{
     MAX_CWD_BYTES, MAX_MODEL_BYTES, MAX_SUMMARY_BYTES, MAX_TITLE_BYTES, MemberKind, MemberMetadata,
     MemberOrigin, NewMember, SessionId,
 };
+use indexmap::IndexMap;
+use std::collections::HashSet;
+use std::time::UNIX_EPOCH;
 pub(crate) fn request(app: &mut AppView) {
     if app.workspace_dashboard_enabled {
         app.workspace_membership.request_sync();

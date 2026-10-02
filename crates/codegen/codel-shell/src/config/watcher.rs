@@ -1033,7 +1033,11 @@ mod tests {
         fs::create_dir_all(&project_codel).unwrap();
         fs::create_dir_all(&custom).unwrap();
 
-        let dirs = vec![project_claude.clone(), project_codel.clone(), custom.clone()];
+        let dirs = vec![
+            project_claude.clone(),
+            project_codel.clone(),
+            custom.clone(),
+        ];
         let plan = plan_skills_watch_targets(&dirs, &codel_home, Some(project));
 
         assert_eq!(

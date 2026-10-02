@@ -28,6 +28,7 @@ pub use client::{
     BackendClient, BackendError, FetchModelsResult, FetchedBundle, fetch_bundle,
     fetch_subagent_bundle, share_url,
 };
+pub use codel_cloud_config::{SettingsFetch, fetch_settings_blocking};
 pub use conversations_client::{
     ConvError, ConvQuery, Conversation, ConversationsClient, ListConversationsPage,
     UpdateConversationBody,
@@ -40,4 +41,3 @@ pub use skills_client::{
 };
 pub use sync::RemoteSync;
 pub use workspaces_client::{ListWorkspacesPage, Workspace, WorkspacesClient, WsError, WsQuery};
-pub use codel_cloud_config::{SettingsFetch, fetch_settings_blocking};

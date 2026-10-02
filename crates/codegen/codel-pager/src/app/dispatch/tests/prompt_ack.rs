@@ -107,7 +107,6 @@ fn expired_watch_restores_the_prompt_and_sends_a_rewind_cancel() {
     );
 }
 
-
 #[test]
 fn restore_target_decides_where_the_text_goes() {
     let mut app = test_app_with_agent();

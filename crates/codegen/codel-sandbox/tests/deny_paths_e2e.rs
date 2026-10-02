@@ -889,7 +889,8 @@ fn run_deny_case(
         }
         fs::write(&path, "hello workspace").expect("write control");
     }
-    let (status, stderr) = run_scenario(&home, &codel, &tmp, profile, targets, controls, postlaunch);
+    let (status, stderr) =
+        run_scenario(&home, &codel, &tmp, profile, targets, controls, postlaunch);
     assert!(
         status.success(),
         "[{tag}] custom-profile deny should block read/write/rename\nstderr: {stderr}"

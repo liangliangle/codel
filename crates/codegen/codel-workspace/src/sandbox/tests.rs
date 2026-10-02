@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use futures::StreamExt;
-use serde_json::{Value, json};
 use codel_config_types::RemoteSettings;
 use codel_egress_proxy::EgressProxyOptions;
 use codel_sandbox::command::backend::{
@@ -22,11 +20,13 @@ use codel_sandbox::command::{
     BackendName, GitConfigEnv, SandboxMode, SandboxPolicy, WouldVerdict, WritableLocations,
     canonical_path,
 };
-use codel_tools::sandbox_launch::SandboxLaunch;
-use codel_tools::types::output::{BackgroundTaskStarted, BashOutput, ToolOutput, ToolRunResult};
 use codel_tool_runtime::{
     ToolApprovalPolicy, ToolError, ToolErrorKind, ToolProgress, ToolStream, ToolStreamItem,
 };
+use codel_tools::sandbox_launch::SandboxLaunch;
+use codel_tools::types::output::{BackgroundTaskStarted, BashOutput, ToolOutput, ToolRunResult};
+use futures::StreamExt;
+use serde_json::{Value, json};
 
 use super::result_path::{AfterRun, PIN_LOST_TEXT, after_shell_run, run_shell_call_with_replay};
 use super::{

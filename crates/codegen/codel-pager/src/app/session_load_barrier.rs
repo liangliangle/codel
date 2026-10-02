@@ -14,9 +14,9 @@ use super::actions::TaskResult;
 use super::agent::AgentId;
 use crate::acp::meta::NotificationMeta;
 use agent_client_protocol as acp;
+use codel_acp_lib::AcpClientMessage;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
-use codel_acp_lib::AcpClientMessage;
 /// How long an unrelated ACP head may keep deferring the load before it dispatches anyway.
 /// The clock does not accrue on this-session `ReplayHead` or while input-starved.
 pub(super) const SESSION_LOADED_ACP_BARRIER: Duration = Duration::from_secs(2);

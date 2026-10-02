@@ -16,8 +16,8 @@
 //! image into the project working directory when it needs a persistent asset.
 
 use base64::Engine as _;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use codel_tool_runtime::ToolError;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 
 use crate::attribution::{SharedAttributionCallback, ToolConsumer};
 use crate::implementations::codel_build::media_bearer::MediaBearer;
@@ -151,7 +151,6 @@ impl ImageGenClient {
         }
         self
     }
-
 
     /// Wire a 401-attribution callback into this client. Idempotent;
     /// safe to call before or after the first request. Builder-style
@@ -558,7 +557,11 @@ mod tests {
             .unwrap()
             .with_session_id("sess-42");
         let req = client
-            .post_json("https://api.codel.dev/v1/images", &serde_json::json!({}), "tok")
+            .post_json(
+                "https://api.codel.dev/v1/images",
+                &serde_json::json!({}),
+                "tok",
+            )
             .build()
             .unwrap();
         assert_eq!(
@@ -652,5 +655,4 @@ mod tests {
             "Expected MissingResource error, got: {err_msg}"
         );
     }
-
 }

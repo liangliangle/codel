@@ -2350,13 +2350,7 @@ impl AgentView {
                     );
                 }
             } else if let modal::ActiveModal::UsageInfo { state } = active_modal {
-                crate::views::usage_modal::render_usage_modal(
-                    buf,
-                    area,
-                    state,
-                    compact,
-                    &theme,
-                );
+                crate::views::usage_modal::render_usage_modal(buf, area, state, compact, &theme);
             } else if let modal::ActiveModal::MemoryBrowser { state: mem_state } = active_modal {
                 crate::views::memory_modal::render_memory_modal(buf, area, mem_state, compact);
             } else if let modal::ActiveModal::Settings {
@@ -3375,8 +3369,8 @@ mod settings_memory_paste_routing_tests {
     use crate::views::memory_modal::{MemoryModalMode, MemoryModalState};
     use crate::views::modal::ActiveModal;
     use crate::views::settings_modal::SettingsModalState;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use codel_shell::agent::config::UiConfig;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     fn left() -> Event {
         Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE))

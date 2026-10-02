@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use base64::Engine;
 use chrono::Utc;
-use serde::Serialize;
 use codel_workspace::file_system::{self as wfs, FsReadEncoding};
+use serde::Serialize;
 
 #[derive(Clone, Debug)]
 pub struct FsListParams {

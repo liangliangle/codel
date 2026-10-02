@@ -3,9 +3,9 @@
 
 use super::*;
 use crate::session::persistence::{PersistedAgent, PersistenceMsg};
-use codel_login::backend::{ActiveAuthBackend, AuthBackend};
 use codel_logging::region;
 use codel_logging::region::Parent;
+use codel_login::backend::{ActiveAuthBackend, AuthBackend};
 
 const CLASSIFIER_REQUEST_TOKEN_RESERVE: u64 = 16_384;
 
@@ -381,9 +381,7 @@ impl SessionActor {
     }
 
     /// The applied overrides to echo, or `None` when backend search is off.
-    pub(crate) fn effective_tool_overrides(
-        &self,
-    ) -> Option<codel_sampling_types::ToolOverrides> {
+    pub(crate) fn effective_tool_overrides(&self) -> Option<codel_sampling_types::ToolOverrides> {
         if !self.backend_search_active() {
             return None;
         }
@@ -447,9 +445,7 @@ impl SessionActor {
         self.chat_state_handle
             .get_sampling_config()
             .await
-            .is_some_and(|config| {
-                config.api_backend == codel_sampling_types::ApiBackend::Messages
-            })
+            .is_some_and(|config| config.api_backend == codel_sampling_types::ApiBackend::Messages)
     }
 
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
@@ -462,10 +458,7 @@ impl SessionActor {
     }
 
     /// Reads and populates [`Self::model_auth_memo`]; a fresh `Unknown` falls back to the last definite entry (see the field's contract).
-    fn model_auth_state(
-        &self,
-        model_id: &str,
-    ) -> crate::agent::config::ModelAuthFacts {
+    fn model_auth_state(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
         use crate::agent::auth_method::ModelByok;
         use crate::session::acp_session::ModelAuthMemo;
         if let Some(memo) = self.model_auth_memo.borrow().as_ref()
@@ -769,11 +762,12 @@ impl SessionActor {
                             let config = session.reconstruct_full_config().await;
                             let context_window = config.context_window;
                             let model = config.model.clone();
-                            let client = codel_sampler::SamplingClient::new(config).map_err(|e| {
-                                codel_workspace::permission::ClassifierFailure::TransportError(
-                                    e.to_string(),
-                                )
-                            })?;
+                            let client =
+                                codel_sampler::SamplingClient::new(config).map_err(|e| {
+                                    codel_workspace::permission::ClassifierFailure::TransportError(
+                                        e.to_string(),
+                                    )
+                                })?;
                             (client, model, context_window)
                         }
                     };
@@ -1336,7 +1330,6 @@ impl SessionActor {
                 return Ok(self.park_uncharged_401(error.credential, false));
             }
         }
-
 
         // 4d. Bounded resubmit, after the auth arms, before the terminal paths.
         //     Budgeted workflow children stay terminal (guards above)
@@ -1967,7 +1960,6 @@ impl SessionActor {
             .await
             .map(|c| c.model)
             .unwrap_or_default();
-
 
         let Some(ref key) = current_key else { return };
 

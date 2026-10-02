@@ -2,14 +2,14 @@
 //!
 //! Individual test modules import via `use super::common::*`.
 
-pub(crate) use serde_json::json;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
 pub(crate) use codel_pager_pty_harness::{
     AgentTurnExpectation, ContentController, EnvOp, MockModel, PtyExitPoll, PtyHarness,
     ScriptedResponse, SseEvent, keys, oauth_credential_ops, pager_binary, seed_fake_oauth, sse,
     wait_for_labels_absent, wait_for_model_via_new_sessions,
 };
+pub(crate) use serde_json::json;
+pub(crate) use std::path::{Path, PathBuf};
+pub(crate) use std::time::{Duration, Instant};
 
 /// Default PTY size used by every e2e test.
 /// Large enough to render the welcome screen without wrapping, small enough to make `screen_contents()` scans cheap.
@@ -1357,7 +1357,9 @@ pub(crate) fn run_wrap_driving(
             None
         }
         Ok(PtyExitPoll::PendingStatus) => {
-            panic!("codel wrap exited but portable status remained unavailable for {WRAP_TIMEOUT:?}")
+            panic!(
+                "codel wrap exited but portable status remained unavailable for {WRAP_TIMEOUT:?}"
+            )
         }
         Err(error) => panic!("poll codel wrap exit: {error:#}"),
     };

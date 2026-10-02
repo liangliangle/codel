@@ -10,7 +10,10 @@ fn tool_features_name_the_tools_they_remove() {
             ToolFeature::AskUserQuestion,
             vec![codel_build::AskUserQuestionTool.id()],
         ),
-        (ToolFeature::ImageEdit, vec![codel_build::ImageEditTool.id()]),
+        (
+            ToolFeature::ImageEdit,
+            vec![codel_build::ImageEditTool.id()],
+        ),
         (ToolFeature::ImageGen, vec![codel_build::ImageGenTool.id()]),
         (ToolFeature::LspTools, vec![codel_build::LspTool.id()]),
         (

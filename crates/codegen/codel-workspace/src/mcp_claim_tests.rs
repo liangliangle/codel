@@ -49,7 +49,10 @@ fn a_first_party_server_wins_an_id_a_third_party_sibling_also_offers() {
     );
     assert_eq!(
         claims(&plan),
-        vec![("codel-desktop", vec!["open_tab"]), ("user", vec!["search"])]
+        vec![
+            ("codel-desktop", vec!["open_tab"]),
+            ("user", vec!["search"])
+        ]
     );
     assert_eq!((plan.rejected, plan.over_cap), (1, 0));
 }

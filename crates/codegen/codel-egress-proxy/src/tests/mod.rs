@@ -7,10 +7,10 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use codel_sandbox::{WebsiteAction, WebsiteOrigin, WebsitePolicy};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
-use codel_sandbox::{WebsiteAction, WebsiteOrigin, WebsitePolicy};
 
 use super::*;
 use crate::error::{ConnectionError, write_committed};

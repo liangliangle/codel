@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
-use rusqlite::{OpenFlags, params};
 use codel_sqlite_journal::JournalMode;
+use rusqlite::{OpenFlags, params};
 
 use crate::v2::{Result, V2StorageError};
 

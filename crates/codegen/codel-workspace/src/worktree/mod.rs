@@ -10,14 +10,14 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result};
-use git2::{DiffOptions, Oid, Repository};
-use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex as TokioMutex;
-use tokio_util::sync::CancellationToken;
 use codel_fast_worktree::{BtrfsDelegate, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder};
 use codel_logging::events::{CloneCancellationDisposition, CloneOutcome, WorktreeLifecycle};
 use codel_logging::region;
 use codel_logging::region::Parent;
+use git2::{DiffOptions, Oid, Repository};
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as TokioMutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::session::git::{
     GitFileChange, change_type_from_git2_delta, find_git_root_from_path,
@@ -856,7 +856,8 @@ pub fn resolve_label_collision(base_dir: &Path, label: &str) -> String {
 /// Codel home for worktree paths: the same resolver as `worktrees.db`, with a `temp_dir()/.codel` last resort.
 /// This is not codel-config's cwd-relative `.codel`: worktree paths need an absolute, always-writable anchor that does not move with the process cwd.
 fn codel_home() -> std::path::PathBuf {
-    codel_fast_worktree::resolve_codel_home().unwrap_or_else(|_| std::env::temp_dir().join(".codel"))
+    codel_fast_worktree::resolve_codel_home()
+        .unwrap_or_else(|_| std::env::temp_dir().join(".codel"))
 }
 
 /// Returns `~/.codel/worktrees/<repo_slug>` for the given git root.
@@ -909,7 +910,11 @@ pub(crate) fn source_git_root_for_pinned_dest(
     git_or_grove_root(source, grove_enabled).map(|p| p.to_string_lossy().into_owned())
 }
 
-fn resolve_worktree_path(codel_home: &Path, req: &CreateWorktreeRequest, git_root: &Path) -> String {
+fn resolve_worktree_path(
+    codel_home: &Path,
+    req: &CreateWorktreeRequest,
+    git_root: &Path,
+) -> String {
     if let Some(ref path) = req.worktree_path {
         return path.clone();
     }
@@ -943,7 +948,10 @@ fn worktree_record_for_cwd(cwd: &str) -> Option<(WorktreeDb, WorktreeRecord)> {
 }
 
 /// [`worktree_record_for_cwd`] against the `worktrees.db` and worktree root under an explicit codel home.
-fn worktree_record_for_cwd_in(codel_home: &Path, cwd: &str) -> Option<(WorktreeDb, WorktreeRecord)> {
+fn worktree_record_for_cwd_in(
+    codel_home: &Path,
+    cwd: &str,
+) -> Option<(WorktreeDb, WorktreeRecord)> {
     let worktrees_dir = codel_home.join("worktrees");
     let mut path = Path::new(cwd);
     if !path.starts_with(&worktrees_dir) {
@@ -1633,7 +1641,11 @@ pub async fn snapshot_subagent_worktree(
             let message = format!("subagent worktree snapshot {ref_name}");
             // Capture into the worktree's git, then make it durable in the source repo (and verify) so it survives the worktree's deletion
             codel_fast_worktree::snapshot_worktree_to_ref(&worktree_path, &ref_name, &message)?;
-            codel_fast_worktree::transfer_snapshot_to_repo(&worktree_path, &source_repo, &ref_name)?;
+            codel_fast_worktree::transfer_snapshot_to_repo(
+                &worktree_path,
+                &source_repo,
+                &ref_name,
+            )?;
             Ok(ref_name)
         })
     })
@@ -1650,7 +1662,9 @@ pub async fn remove_subagent_worktree(worktree_path: &Path) -> Result<()> {
     let delegate = btrfs_delegate_from_env();
     let span = tracing::Span::current();
     tokio::task::spawn_blocking(move || {
-        span.in_scope(|| codel_fast_worktree::remove_worktree_with_delegate(&worktree_path, delegate))
+        span.in_scope(|| {
+            codel_fast_worktree::remove_worktree_with_delegate(&worktree_path, delegate)
+        })
     })
     .await
     .map_err(|e| anyhow::anyhow!("remove_subagent_worktree task failed: {e}"))??;
@@ -2968,8 +2982,8 @@ pub fn clean_artifacts_mgmt(id_or_path: &str) -> Result<codel_fast_worktree::Cle
 pub fn worktree_auto_gc_layer_from_settings(
     s: &codel_config_types::WorktreeAutoGcSettings,
 ) -> WorktreeAutoGcLayer {
-    use std::collections::BTreeMap;
     use codel_config_types::WorktreeKindMaxAge;
+    use std::collections::BTreeMap;
 
     // Exhaustive destructure: a new settings field becomes a compile error here
     // Otherwise it would be a silently dropped knob on both the shell and workspace resolve paths

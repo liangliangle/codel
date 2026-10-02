@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use pretty_assertions::assert_eq;
 use codel_tools::computer::{file_acceleration::LatencyBuckets, local::MockFs};
+use pretty_assertions::assert_eq;
 
 use super::*;
 use crate::util::config::RemoteSettings;

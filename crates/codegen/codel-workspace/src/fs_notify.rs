@@ -7,11 +7,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::sync::broadcast;
-use tokio_util::task::AbortOnDropHandle;
 use codel_codebase_graph::{FileEvent, FileEventKind, IndexManagerHandle};
 use codel_fsnotify::{FsConfig, FsEvent, FsEventKind};
 use codel_workspace_types::WorkspaceEvent;
+use tokio::sync::broadcast;
+use tokio_util::task::AbortOnDropHandle;
 
 #[cfg(test)]
 #[path = "fs_notify_tests.rs"]
@@ -157,8 +157,12 @@ fn parse_diff_name_status_line(
     let path = parts.next()?;
 
     match status.chars().next()? {
-        'A' => Some(codel_codebase_graph::FileEvent::created(repo_root.join(path))),
-        'D' => Some(codel_codebase_graph::FileEvent::removed(repo_root.join(path))),
+        'A' => Some(codel_codebase_graph::FileEvent::created(
+            repo_root.join(path),
+        )),
+        'D' => Some(codel_codebase_graph::FileEvent::removed(
+            repo_root.join(path),
+        )),
         'R' | 'C' => {
             let new_path = parts.next()?;
             Some(codel_codebase_graph::FileEvent::renamed(

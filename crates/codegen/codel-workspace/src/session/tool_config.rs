@@ -9,13 +9,13 @@
 use crate::capability::{CapabilityMode, kind_allowed};
 use crate::config::SessionContextFactory;
 use crate::error::{WorkspaceError, WorkspaceResult};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
 use codel_tools::registry::types::{
     FinalizedToolset, ToolConfig, ToolRegistryBuilder, ToolServerConfig,
 };
 use codel_tools::types::tool::ToolKind;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 /// Test helper: same as [`resolve_session_toolset_for_host`] with a default truncation config.
 /// Production binds go through `resolve_session_toolset_for_host` so a sandbox host can cap polls.
 #[cfg(test)]
@@ -367,7 +367,10 @@ impl WorkspaceSessionContextFactory {
         }
     }
     /// Factory with auth: gen tools use the provider's live token.
-    pub fn with_auth(auth: codel_computer_hub_sdk::SharedAuthProvider, api_base_url: String) -> Self {
+    pub fn with_auth(
+        auth: codel_computer_hub_sdk::SharedAuthProvider,
+        api_base_url: String,
+    ) -> Self {
         Self {
             auth: Some(auth),
             api_base_url: Some(api_base_url),
@@ -597,16 +600,16 @@ fn default_web_search_model() -> String {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use crate::config::SessionContextFactory;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use tempfile::TempDir;
     use codel_tools::computer::local::{LocalFs, LocalTerminalBackend};
     use codel_tools::notification::ToolNotificationHandle;
     use codel_tools::registry::types::{
         SessionContext, ToolConfig, ToolRegistryBuilder, ToolServerConfig,
     };
     use codel_tools::types::tool::ToolKind;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::TempDir;
     /// Test factory: builds a `SessionContext` rooted at a per-test temp dir.
     pub struct TestSessionContextFactory {
         pub temp: TempDir,
@@ -728,10 +731,10 @@ pub mod test_support {
 mod tests {
     use super::*;
     use crate::config::SessionContextFactory;
+    use codel_tools::types::tool::ToolKind;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use codel_tools::types::tool::ToolKind;
     fn factory_for_test() -> Arc<dyn SessionContextFactory> {
         Arc::new(test_support::TestSessionContextFactory::new())
     }

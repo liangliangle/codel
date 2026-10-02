@@ -347,11 +347,7 @@ pub(crate) fn render_dashboard(
 
     if let Some(modal) = state.usage_modal.as_mut() {
         crate::views::usage_modal::render_usage_modal(
-            buf,
-            area,
-            modal,
-            /* compact */ false,
-            &theme,
+            buf, area, modal, /* compact */ false, &theme,
         );
         return None;
     }

@@ -1,6 +1,6 @@
 use agent_client_protocol as acp;
-use serde::{Deserialize, Serialize};
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use serde::{Deserialize, Serialize};
 
 // The workspace crate defines these for fuzzy search; this module only re-exports them
 pub use codel_workspace::file_system::{ClientId, TargetClientId};

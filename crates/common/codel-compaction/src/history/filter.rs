@@ -518,7 +518,8 @@ mod tests {
     #[test]
     fn extract_prior_user_queries_concatenates_blocks() {
         let inner = "<codel_user_queries>\n<codel_query>first</codel_query>\n</codel_user_queries>";
-        let inner2 = "<codel_user_queries>\n<codel_query>second</codel_query>\n</codel_user_queries>";
+        let inner2 =
+            "<codel_user_queries>\n<codel_query>second</codel_query>\n</codel_user_queries>";
         let turns = vec![MockItem::summary(inner), MockItem::summary(inner2)];
         let out = extract_prior_user_queries(&turns).expect("found prior");
         assert!(out.contains("first"));
@@ -558,7 +559,8 @@ mod tests {
 
     #[test]
     fn separate_drops_summary_item_with_no_rest() {
-        let only_queries = "<codel_user_queries>\n<codel_query>Q</codel_query>\n</codel_user_queries>";
+        let only_queries =
+            "<codel_user_queries>\n<codel_query>Q</codel_query>\n</codel_user_queries>";
         let turns = vec![MockItem::summary(only_queries), MockItem::user("hello")];
 
         let sep = separate_prior_user_queries(&turns);

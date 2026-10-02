@@ -6,9 +6,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 // Canonical in codel-workspace-types; re-exported for existing paths.
-pub use codel_workspace_types::rpc::search::{
-    ContentMatch, ContentMatchFile, ContentSearchData,
-};
+pub use codel_workspace_types::rpc::search::{ContentMatch, ContentMatchFile, ContentSearchData};
 
 #[derive(Debug, Clone, Default)]
 pub struct ContentSearchParams {

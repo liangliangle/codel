@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::de::DeserializeOwned;
-use codel_tools::implementations::codel_build::task::types::SubagentRuntimeOverrides;
 use codel_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
+use codel_tools::implementations::codel_build::task::types::SubagentRuntimeOverrides;
+use serde::de::DeserializeOwned;
 
 use crate::config::{SubagentPersona, SubagentRole};
 use crate::types::EffectiveRuntimeConfig;

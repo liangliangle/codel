@@ -541,7 +541,11 @@ fn instruction_scope(
     }
 }
 
-fn instruction_file_type(file_path: &str, codel_home: &Path, claude_imported: bool) -> &'static str {
+fn instruction_file_type(
+    file_path: &str,
+    codel_home: &Path,
+    claude_imported: bool,
+) -> &'static str {
     let path = Path::new(file_path);
     if path
         .parent()
@@ -592,16 +596,17 @@ async fn list_instructions(
     configs
         .into_iter()
         .map(|c| {
-            let (scope, file_type, vendor) =
-                if c.source == codel_agent::prompt::agents_md::InstructionSource::Configured {
-                    (Scope::Global, "rules", None)
-                } else {
-                    (
-                        instruction_scope(&c.file_path, &codel_home, &vendor_homes, &workspace_root),
-                        instruction_file_type(&c.file_path, &codel_home, imported),
-                        derive_vendor(&c.file_path).map(String::from),
-                    )
-                };
+            let (scope, file_type, vendor) = if c.source
+                == codel_agent::prompt::agents_md::InstructionSource::Configured
+            {
+                (Scope::Global, "rules", None)
+            } else {
+                (
+                    instruction_scope(&c.file_path, &codel_home, &vendor_homes, &workspace_root),
+                    instruction_file_type(&c.file_path, &codel_home, imported),
+                    derive_vendor(&c.file_path).map(String::from),
+                )
+            };
             let size = c.content.len();
             InstructionFile {
                 size_bytes: size,
@@ -935,9 +940,7 @@ async fn list_skills(
         .collect()
 }
 
-fn slash_name_counts(
-    skills: &[codel_agent::prompt::skills::SkillInfo],
-) -> HashMap<String, usize> {
+fn slash_name_counts(skills: &[codel_agent::prompt::skills::SkillInfo]) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for skill in skills.iter().filter(|s| s.user_invocable && s.enabled) {
         *counts.entry(skill.name.to_lowercase()).or_default() += 1;
@@ -1993,7 +1996,10 @@ mod tests {
             );
         }
 
-        for path in ["/repo/.codel/rules/team.md", r"C:\repo\.codel\rules\team.md"] {
+        for path in [
+            "/repo/.codel/rules/team.md",
+            r"C:\repo\.codel\rules\team.md",
+        ] {
             assert_eq!(
                 instruction_file_type(path, Path::new("/home/user/.codel"), false),
                 "rules"
@@ -2320,7 +2326,8 @@ mod tests {
     fn requirements_lock_reports_always_approve_enforced() {
         let lock = codel_workspace::permission::resolution::YoloPolicyLock {
             source_label: "/etc/codel/requirements.toml".to_string(),
-            reason: codel_workspace::permission::resolution::YoloPinReason::DisableBypassPermissionsMode,
+            reason:
+                codel_workspace::permission::resolution::YoloPinReason::DisableBypassPermissionsMode,
         };
         let PermissionPolicyReport {
             enforced,
@@ -2352,7 +2359,8 @@ mod tests {
     fn mdm_pin_attributes_enforced_row_to_mdm_layer() {
         let lock = codel_workspace::permission::resolution::YoloPolicyLock {
             source_label: crate::config::MDM_REQUIREMENTS_SOURCE.to_string(),
-            reason: codel_workspace::permission::resolution::YoloPinReason::DisableBypassPermissionsMode,
+            reason:
+                codel_workspace::permission::resolution::YoloPinReason::DisableBypassPermissionsMode,
         };
 
         let PermissionPolicyReport {
@@ -2520,7 +2528,11 @@ mod tests {
             ConfigSource::Server { .. }
         ));
 
-        let s = skill_fixture("e", "/home/u/.codel/bundled/e/SKILL.md", SkillScope::Bundled);
+        let s = skill_fixture(
+            "e",
+            "/home/u/.codel/bundled/e/SKILL.md",
+            SkillScope::Bundled,
+        );
         assert!(matches!(
             skill_entry_source(&s),
             ConfigSource::Bundled { .. }
@@ -2751,17 +2763,12 @@ mod tests {
         }
     }
 
-
-
-
     fn native_lockdown(source: &str) -> LockdownSource {
         LockdownSource {
             source: source.to_string(),
             advisory: false,
         }
     }
-
-
 
     /// The report's lockdown lists come from the loaded policy: a zero-entry
     /// lockdown source surfaces, a populated source does not.
@@ -2802,6 +2809,4 @@ mod tests {
             assert!(!src.advisory);
         }
     }
-
-
 }

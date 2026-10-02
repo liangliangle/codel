@@ -38,6 +38,7 @@ pub use attribution::{
     Auth401AttributionCallback, BEARER_SUFFIX_LEN, SamplingConsumer, SharedAttributionCallback,
 };
 pub use client::{ApiBackend, SamplingClient, user_agent_string_for};
+pub use codel_sampling_types::ConversationGroupId;
 pub use config::{
     AuthScheme, BearerResolver, HeaderInjector, OriginClientInfo, RequestCompression, RetryPolicy,
     SamplerConfig, SharedBearerResolver, SharedHeaderInjector,
@@ -57,4 +58,3 @@ pub use retry::{
 pub use sampling_log::AuthInfo;
 pub use stream::{collect_response, stream_chat_completions, stream_messages, stream_responses};
 pub use types::RequestId;
-pub use codel_sampling_types::ConversationGroupId;

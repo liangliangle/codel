@@ -5,8 +5,8 @@ use super::plan_mode::PromptMode;
 use crate::extensions::notification::SessionNotification;
 use crate::session::signals::TurnDeltaSnapshot;
 use agent_client_protocol as acp;
-use tokio::sync::oneshot;
 use codel_tools::types::skill_discovery_tracker::SkillUpdateKind;
+use tokio::sync::oneshot;
 /// Structured context for a cancelled turn.
 /// Clients deserialize into this same type.
 /// Absent fields are skipped.
@@ -563,8 +563,9 @@ pub enum SessionCommand {
     /// `dry_run` only reports.
     RepairHistory {
         dry_run: bool,
-        respond_to:
-            oneshot::Sender<anyhow::Result<codel_chat_state::compaction_utils::HistoryRepairReport>>,
+        respond_to: oneshot::Sender<
+            anyhow::Result<codel_chat_state::compaction_utils::HistoryRepairReport>,
+        >,
     },
     GetRewindPoints {
         respond_to: oneshot::Sender<RewindPointsResponse>,
@@ -788,8 +789,7 @@ pub enum SessionCommand {
     },
     /// This session's plugin registry, as served by `codel/plugins/list`.
     PluginsList {
-        respond_to:
-            oneshot::Sender<Option<std::sync::Arc<codel_agent::plugins::PluginRegistry>>>,
+        respond_to: oneshot::Sender<Option<std::sync::Arc<codel_agent::plugins::PluginRegistry>>>,
     },
     /// Inject a notification (monitor event or bash task completion) into the session's notification queue.
     /// Notifications wait for an idle session and are batched by `maybe_drain_notifications`.
@@ -978,8 +978,7 @@ pub enum SessionCommand {
     /// Routed through the session actor (like `TakeTurnMessages`) so the drain is ordered ahead of any subsequent turn's harness recording.
     /// Each `Vec` is one turn's synthetic `task` pairs, uploaded as its own sibling `turn_{N}` artifact.
     TakeHarnessTraceTurns {
-        respond_to:
-            oneshot::Sender<Vec<Vec<codel_sampling_types::conversation::ConversationItem>>>,
+        respond_to: oneshot::Sender<Vec<Vec<codel_sampling_types::conversation::ConversationItem>>>,
     },
     /// Returns `Some(...)` when the current turn streamed reasoning or text but the canonical assistant response never reached `chat_state`.
     /// The consumer uploads it as `streaming_partial.json` for trace inspection; `chat_state` is never mutated by this command.

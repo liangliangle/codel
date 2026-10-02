@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use rusqlite::params;
-use codel_tools::util::truncate_str;
 use codel_sqlite_journal::JournalMode;
+use codel_tools::util::truncate_str;
+use rusqlite::params;
 
 use crate::v2_topic_reads::{compare_observations_newest_first, compare_topics_by_use};
 

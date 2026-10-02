@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
-use tokio_util::task::AbortOnDropHandle;
 use codel_hooks::trust::Trust;
 use codel_workspace::plugins::SessionPluginDirs;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::agent::folder_trust::{self, TrustScan};
 
@@ -76,10 +76,7 @@ impl SessionCreatePrefetch {
         Self {
             cwd: PathBuf::new(),
             scan: TrustScan::skipped(),
-            plugin_handle: codel_agent::plugins::SharedPluginRegistryHandle::new(
-                None,
-                Vec::new(),
-            ),
+            plugin_handle: codel_agent::plugins::SharedPluginRegistryHandle::new(None, Vec::new()),
             session_plugin_dirs: SessionPluginDirs::default(),
             reconciled: Some(true),
             plugins: PrefetchSlot::ready(plugin_registry),
@@ -134,10 +131,7 @@ impl SessionCreatePrefetch {
         Self {
             cwd: PathBuf::new(),
             scan,
-            plugin_handle: codel_agent::plugins::SharedPluginRegistryHandle::new(
-                None,
-                Vec::new(),
-            ),
+            plugin_handle: codel_agent::plugins::SharedPluginRegistryHandle::new(None, Vec::new()),
             session_plugin_dirs: SessionPluginDirs::default(),
             reconciled: Some(true),
             plugins: PrefetchSlot::spawn(plugins),

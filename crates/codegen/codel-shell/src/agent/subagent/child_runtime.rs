@@ -1,9 +1,9 @@
-use tokio::sync::mpsc;
+use codel_message_delivery_core::DeliveryEnvelope;
 use codel_tools::implementations::codel_build::task::coordinator::{
     ActiveMessageAdmission, ChildControl, LocalBoxFuture, SendBoxFuture, SubagentProgress,
 };
 use codel_tools::implementations::codel_build::task::types::ActiveAgentMessageDelivery;
-use codel_message_delivery_core::DeliveryEnvelope;
+use tokio::sync::mpsc;
 
 use super::prompt_turn_receipt::{PromptTurnReceipt, cancel_shell_child_turn};
 use crate::session::{SessionCommand, SessionThread};

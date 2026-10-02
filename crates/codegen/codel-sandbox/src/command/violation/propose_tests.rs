@@ -17,8 +17,10 @@ struct Scratch {
 
 impl Scratch {
     fn new(tag: &str) -> Scratch {
-        let root =
-            std::env::temp_dir().join(format!("codel-sandbox-propose-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "codel-sandbox-propose-{tag}-{}",
+            std::process::id()
+        ));
         let ws = root.join("projects").join("ws");
         let home = root.join("home");
         std::fs::create_dir_all(&ws).unwrap();

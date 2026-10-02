@@ -9,12 +9,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol as acp;
-use tokio::sync::mpsc;
-use tokio::time::sleep_until;
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use codel_fsnotify::{FsEvent, FsEventKind};
-use codel_workspace::file_system::{CodebaseIndexManager, FileIndex, WalkOptions};
 use codel_hunk_tracker::HunkTrackerHandle;
+use codel_workspace::file_system::{CodebaseIndexManager, FileIndex, WalkOptions};
+use tokio::sync::mpsc;
+use tokio::time::sleep_until;
 
 use crate::session::acp_session::SessionActor;
 use crate::session::persistence::PersistenceMsg;
@@ -156,8 +156,12 @@ fn parse_diff_name_status_line(
     let path = parts.next()?;
 
     match status.chars().next()? {
-        'A' => Some(codel_codebase_graph::FileEvent::created(repo_root.join(path))),
-        'D' => Some(codel_codebase_graph::FileEvent::removed(repo_root.join(path))),
+        'A' => Some(codel_codebase_graph::FileEvent::created(
+            repo_root.join(path),
+        )),
+        'D' => Some(codel_codebase_graph::FileEvent::removed(
+            repo_root.join(path),
+        )),
         'R' | 'C' => {
             let new_path = parts.next()?;
             Some(codel_codebase_graph::FileEvent::renamed(
@@ -563,8 +567,7 @@ impl FsWatchPlan {
         });
 
         let hunk = (caps.hunk_tracking && deps.hunk_tracking_enabled).then(|| {
-            let git_root =
-                codel_workspace::session::git::find_git_root_from_path(&deps.cwd).ok();
+            let git_root = codel_workspace::session::git::find_git_root_from_path(&deps.cwd).ok();
             HunkTracking {
                 handle: deps.hunk_tracker,
                 cwd: deps.cwd.clone(),
@@ -969,8 +972,8 @@ pub(crate) fn spawn(plan: FsWatchPlan) -> FsWatchHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use codel_workspace::file_system::FileIndexDelta;
+    use std::path::PathBuf;
 
     #[test]
     fn fs_event_to_delta_create() {

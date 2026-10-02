@@ -4,8 +4,8 @@
 //! legacy `[memory.*]`, isolated `[memory_v2]`, and memory-owned
 //! `[compaction.*]` tables.
 
-use serde::{Deserialize, Serialize};
 pub use codel_config::{MemoryV2Rollout, MemoryV2Settings};
+use serde::{Deserialize, Serialize};
 
 /// Persistent-memory implementation selected for a session.
 ///

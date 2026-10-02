@@ -1,7 +1,7 @@
 use super::support::*;
 use super::*;
-use std::time::Duration;
 use codel_mcp::servers::{McpInitStrategy, SharedMcpState};
+use std::time::Duration;
 
 async fn timed<F: Future>(f: F) -> (F::Output, Duration) {
     let start = tokio::time::Instant::now();

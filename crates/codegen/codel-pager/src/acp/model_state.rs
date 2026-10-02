@@ -1,10 +1,10 @@
 use agent_client_protocol as acp;
-use indexmap::IndexMap;
 use codel_shell::sampling::types::{
     ModelNotice, ReasoningEffort, ReasoningEffortOption, parse_canonical_effort_token,
     parse_context_window_meta, parse_context_windows_meta, parse_model_notice_meta,
     parse_reasoning_effort_meta, parse_reasoning_efforts_meta, supports_reasoning_effort_meta,
 };
+use indexmap::IndexMap;
 
 use crate::slash::commands::effort_levels::legacy_effort_options;
 

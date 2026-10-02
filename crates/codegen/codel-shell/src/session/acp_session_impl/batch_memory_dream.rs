@@ -8,14 +8,14 @@ use crate::session::batch_dream::{
     BatchDreamLimit, BatchDreamOptions, BatchDreamReport, BatchDreamStop, ModelReply,
     run_batch_dream,
 };
-use codel_memory::SharedV2Clock;
-use codel_memory::batch_dream::CatalogTier;
-use codel_sampling_types::{SamplingError, StopReason};
 use codel_logging::memory_telemetry::{
     MemoryV2BatchDreamEndStatus, MemoryV2BatchDreamEnded, MemoryV2BatchDreamLimit,
     MemoryV2CatalogTier, MemoryV2DreamDisposition, MemoryV2DreamLifecycle, MemoryV2FailureClass,
     MemoryV2ModelUsage,
 };
+use codel_memory::SharedV2Clock;
+use codel_memory::batch_dream::CatalogTier;
+use codel_sampling_types::{SamplingError, StopReason};
 
 const MAX_REQUEST_BYTES: usize = 480 * 1024;
 const MODEL_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -267,7 +267,6 @@ fn log_batch_dream_ended(
         BatchDreamLimit::RequestBytes => MemoryV2BatchDreamLimit::RequestBytes,
         BatchDreamLimit::Truncations => MemoryV2BatchDreamLimit::Truncations,
     });
-
 }
 
 fn add_usage(total: &mut MemoryV2ModelUsage, call: &MemoryV2ModelUsage) {

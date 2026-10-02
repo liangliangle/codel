@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use codel_message_delivery_core::{AgentId, AttemptId};
 use futures::StreamExt;
 use tokio::sync::mpsc;
-use codel_message_delivery_core::{AgentId, AttemptId};
 
 use super::*;
 use crate::implementations::codel_build::task::coordinator::active_message::tests::{

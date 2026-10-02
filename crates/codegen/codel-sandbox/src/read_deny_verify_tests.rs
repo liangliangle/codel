@@ -11,11 +11,7 @@ fn temp_workspace(tag: &str, toml_body: &str) -> PathBuf {
     let ws = std::env::temp_dir().join(format!("codel-rdv-{tag}-{}-{nanos}", std::process::id()));
     let codel = ws.join(".codel");
     std::fs::create_dir_all(&codel).unwrap();
-    std::fs::write(
-        codel.join(codel_config::SANDBOX_CONFIG_FILENAME),
-        toml_body,
-    )
-    .unwrap();
+    std::fs::write(codel.join(codel_config::SANDBOX_CONFIG_FILENAME), toml_body).unwrap();
     ws
 }
 

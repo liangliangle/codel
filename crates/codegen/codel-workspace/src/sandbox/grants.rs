@@ -6,7 +6,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use serde_json::{Value, json};
 use codel_sandbox::command::backend::CommandTag;
 use codel_sandbox::command::grants::{
     Expiry, Grant, GrantDecision, GrantScope, GrantSubject, SystemClock,
@@ -14,6 +13,7 @@ use codel_sandbox::command::grants::{
 use codel_sandbox::command::{
     CallId, GrantError, GrantStore, ObserveSummary, allows_not_denied, canonical_subject,
 };
+use serde_json::{Value, json};
 
 use super::{Engaged, GrantId, LiveRows, WorkspaceSandbox, WorkspaceSandboxError, metrics};
 
@@ -311,8 +311,7 @@ async fn revoke_in(store: &mut GrantStore, id: &GrantId) -> Result<(), GrantErro
         .find(|g| &g.id == id)
         .map(|g| g.scope);
     store.revoke(id).await?;
-    if let Some(scope) = scope {
-    }
+    if let Some(scope) = scope {}
     Ok(())
 }
 

@@ -7,8 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::stream::{FuturesUnordered, StreamExt};
-use serde_json::Value;
 use codel_computer_hub_mcp_adapter::{
     McpBridge, McpBridgeConfig, McpBridgeHandle, McpCallResult, McpContent, McpServerInfo,
     McpToolDefinition, McpTransport,
@@ -23,6 +21,8 @@ use codel_mcp::servers::{
 use codel_tool_protocol::{SessionId, ToolId};
 use codel_tool_runtime::{ToolCallContext, ToolStream, TypedToolOutput, render_structured_content};
 use codel_tool_types::ToolDescription;
+use futures::stream::{FuturesUnordered, StreamExt};
+use serde_json::Value;
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::mcp_claim::{ClaimOffer, McpServerTier, plan_claims};
@@ -557,18 +557,13 @@ pub(crate) async fn drive_server_starts(
             };
             let gate = call_gates.get(&server_name).cloned();
             async move {
-                let client = codel_mcp::servers::start_mcp_server(
-                    config,
-                    Some(overrides),
-                    None,
-                    None,
-                    ctx,
-                )
-                .await
-                .map_err(|error| McpStartFailure {
-                    name: server_name.clone(),
-                    error: error.to_string(),
-                })?;
+                let client =
+                    codel_mcp::servers::start_mcp_server(config, Some(overrides), None, None, ctx)
+                        .await
+                        .map_err(|error| McpStartFailure {
+                            name: server_name.clone(),
+                            error: error.to_string(),
+                        })?;
                 let client = Arc::new(client);
                 let transport: Arc<dyn McpTransport> =
                     Arc::new(McpClientTransportAdapter::new(Arc::clone(&client), gate));

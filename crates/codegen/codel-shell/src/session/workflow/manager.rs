@@ -10,9 +10,7 @@ use codel_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::host_service::{
-    HostDrainOutcome, WorkflowHostParams, spawn_workflow_host_service,
-};
+use super::host_service::{HostDrainOutcome, WorkflowHostParams, spawn_workflow_host_service};
 use super::notify::WorkflowNotifySender;
 use super::registry::{ResolvedWorkflow, WorkflowSource, bundled_file_is_managed};
 use super::store::WorkflowRunStore;

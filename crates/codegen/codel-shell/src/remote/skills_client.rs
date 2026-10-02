@@ -18,9 +18,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Deserialize;
 use codel_tools::implementations::skills::skill::extract_skill_body;
 use codel_tools::implementations::skills::types::{SkillInfo, SkillScope};
+use serde::Deserialize;
 
 use codel_login::AuthManager;
 
@@ -427,10 +427,7 @@ impl SkillsClient {
     /// Credentials to try for codel.dev product Skills REST. Primary first. When primary is OIDC on the default codel.dev host, also try non-OIDC keys for the same user from this AuthManager's `auth.json`.
     /// Team OIDC is often rejected with `oauth2-auth-forbidden`.
     /// Order / isolation (see [`skills_auth_alt_candidates`]): same-tenant-tagged alts first when primary is tagged untagged same-user alts as 403 recovery when primary is tagged untagged primary never accepts team-tagged alts
-    fn skills_auth_candidates(
-        &self,
-        primary: &codel_login::CodelAuth,
-    ) -> Vec<SkillsAuthCandidate> {
+    fn skills_auth_candidates(&self, primary: &codel_login::CodelAuth) -> Vec<SkillsAuthCandidate> {
         use codel_login::AuthMode;
         let mut out = vec![SkillsAuthCandidate {
             key: primary.key.clone(),
@@ -781,7 +778,6 @@ mod tests {
         assert!(!SkillsError::NoAuth.is_retryable());
     }
 
-
     async fn spawn_skills_mock(
         bundled_status: u16,
         bundled_body: &'static str,
@@ -836,13 +832,6 @@ mod tests {
         });
         (format!("http://{addr}"), handle)
     }
-
-
-
-
-
-
-
 
     #[test]
     fn skill_md_content_frontmatter_stripped_from_body() {

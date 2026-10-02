@@ -106,8 +106,8 @@ pub use conversation_script::{
 };
 pub use counting_server::spawn_counting_server;
 pub use env::{
-    EnvGuard, ensure_cargo_bin_with_features, ensure_default_target_with_features, env_binary,
-    git_workdir, codel_binary, isolate_codel_env, resolved_codel_binary_override,
+    EnvGuard, codel_binary, ensure_cargo_bin_with_features, ensure_default_target_with_features,
+    env_binary, git_workdir, isolate_codel_env, resolved_codel_binary_override,
     set_codel_binary_override,
 };
 pub use envelope_sink::EnvelopeSink;
@@ -144,4 +144,4 @@ pub use process::{
 pub use resources::{ResourceGrowth, ResourceSnapshot, RssMeasurement, RssOutcome, RssSampler};
 pub use sandbox::{TestSandbox, TestSandboxBuilder};
 pub use sse::UsageReport;
-pub use tools::{DAEMON_SPAWN_TOOL, CODEL_BUILD_SPAWN_TOOL, Tool};
+pub use tools::{CODEL_BUILD_SPAWN_TOOL, DAEMON_SPAWN_TOOL, Tool};

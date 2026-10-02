@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::Value;
 use codel_memory::batch_dream::{
     BatchClaimRequest, BatchCommit, BatchDreamControl, BatchDreamError, BatchDreamSession,
     BatchDreamStore, BatchLease, BatchReport, BatchResponse, CAPACITY_DEFERRAL_REASON,
@@ -16,6 +15,7 @@ use codel_memory::batch_dream::{
 };
 use codel_memory::{SharedV2Clock, V2MemoryScope};
 use codel_sampling_types::{ConversationItem, ConversationRequest, LengthPolicy};
+use serde_json::Value;
 
 /// Text and outline bytes the model may read per batch.
 pub const READ_BUDGET_BYTES: usize = 128 * 1024;

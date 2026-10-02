@@ -3,8 +3,8 @@
 //! tools server enforces at finalize/bind. Errors carry the offending input
 //! so callers can render gRPC violations without re-parsing.
 
-use serde_json::{Map, Value};
 use codel_tool_protocol::ToolId;
+use serde_json::{Map, Value};
 
 /// Why a [`ToolConfigEntry`](crate::ToolConfigEntry) is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,7 +141,8 @@ mod tests {
 
     #[test]
     fn valid_object_is_returned() {
-        let parsed = parse_params_json(0, "CodelBuild:grep", Some(r#"{"max_results":50}"#)).unwrap();
+        let parsed =
+            parse_params_json(0, "CodelBuild:grep", Some(r#"{"max_results":50}"#)).unwrap();
         assert_eq!(
             parsed,
             Some(

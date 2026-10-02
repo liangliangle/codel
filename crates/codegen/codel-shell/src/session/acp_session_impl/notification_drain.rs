@@ -466,9 +466,7 @@ impl SessionActor {
         };
         let session_dir = crate::session::persistence::session_dir(&self.session_info);
         let backend =
-            codel_tools::implementations::codel_build::task::backend::ChannelBackend::new(
-                event_tx,
-            );
+            codel_tools::implementations::codel_build::task::backend::ChannelBackend::new(event_tx);
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
         crate::agent::subagent::reconcile_live_orphaned_subagents(
             &backend,

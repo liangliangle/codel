@@ -1,4 +1,7 @@
 //! [`WorkspaceHandle`] -- public handle to a workspace instance.
+use codel_hunk_tracker::{HunkTrackerActor, HunkTrackerHandle, TrackingMode};
+use codel_tool_protocol::turn_hook::TurnHookOutcome;
+use codel_tool_protocol::{SessionId, ToolId, ToolServerStatusPayload};
 use fastrace::future::FutureExt as _;
 use fastrace::local::LocalSpan;
 use prometheus::{
@@ -8,9 +11,6 @@ use prometheus::{
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use codel_hunk_tracker::{HunkTrackerActor, HunkTrackerHandle, TrackingMode};
-use codel_tool_protocol::turn_hook::TurnHookOutcome;
-use codel_tool_protocol::{SessionId, ToolId, ToolServerStatusPayload};
 /// Default SIGTERM drain budget (ms); override via `CODEL_WORKSPACE_TERMINATION_GRACE_MS`.
 /// 45s fits under the K8s grace period.
 const DEFAULT_TERMINATION_GRACE_MS: u64 = 45_000;
@@ -194,8 +194,8 @@ use crate::telemetry::dc_log;
 use crate::workspace_ops::{
     GetFileEntry, GetFileResult, GetFilesRes, PutFileEntry, PutFileResult, PutFilesRes,
 };
-use codel_file_utils::queue::EnqueueOutcome;
 use codel_diag_server::DiagHandle;
+use codel_file_utils::queue::EnqueueOutcome;
 use codel_session_events::types::CancellationCategory;
 use codel_session_events::{Event, SessionRelationship, TurnOutcomeLabel};
 use codel_tool_protocol::turn_hook::{AfterTurnAckPayload, AfterTurnAckStatus};
@@ -420,9 +420,7 @@ pub struct WorkspaceHandle {
 }
 type AcknowledgedNotifyChannel = (
     codel_tools::notification::types::ToolNotificationHandle,
-    tokio::sync::mpsc::UnboundedReceiver<
-        codel_tools::notification::AcknowledgedToolNotification,
-    >,
+    tokio::sync::mpsc::UnboundedReceiver<codel_tools::notification::AcknowledgedToolNotification>,
 );
 /// Builds with no forwarder. They must not open the channel, because an unread one blocks every delete.
 fn acknowledged_notify_channel(_enabled: bool) -> Option<AcknowledgedNotifyChannel> {
@@ -435,7 +433,6 @@ pub(crate) struct ClientFsBase {
     pub(crate) canonical: PathBuf,
 }
 impl WorkspaceHandle {
-
     /// Construct a handle with zero sessions. Sessions are created explicitly via [`Self::create_session`] or [`Self::fork_session`].
     /// There is no implicit "main" session: callers (TUI, workspace-server binary) create their first session after construction.
     pub fn new(config: WorkspaceConfig) -> WorkspaceResult<Self> {
@@ -2611,12 +2608,12 @@ impl WorkspaceHandle {
         )
         .await?;
         if !result.started.is_empty() {
-            let _ =
-                self.shared
-                    .events
-                    .send(codel_workspace_types::WorkspaceEvent::ToolsChanged {
-                        session_id: session_id.to_owned(),
-                    });
+            let _ = self
+                .shared
+                .events
+                .send(codel_workspace_types::WorkspaceEvent::ToolsChanged {
+                    session_id: session_id.to_owned(),
+                });
         }
         Ok(result)
     }
@@ -2784,12 +2781,12 @@ impl WorkspaceHandle {
                 failed = ?delta.failed,
                 "converged session onto the published MCP configuration"
             );
-            let _ =
-                self.shared
-                    .events
-                    .send(codel_workspace_types::WorkspaceEvent::ToolsChanged {
-                        session_id: session_id.to_owned(),
-                    });
+            let _ = self
+                .shared
+                .events
+                .send(codel_workspace_types::WorkspaceEvent::ToolsChanged {
+                    session_id: session_id.to_owned(),
+                });
         }
         Some(delta)
     }
@@ -4219,9 +4216,8 @@ fn build_session_routed_handlers(
             Some(def.function.parameters.clone()),
             ws.clone(),
         ) {
-            Ok(handler) => {
-                handlers.push(Arc::new(handler) as Arc<dyn codel_computer_hub_sdk::ToolServerHandler>)
-            }
+            Ok(handler) => handlers
+                .push(Arc::new(handler) as Arc<dyn codel_computer_hub_sdk::ToolServerHandler>),
             Err(e) => {
                 tracing::warn!(
                     tool = %def.function.name,
@@ -4521,9 +4517,9 @@ pub(crate) async fn build_local_workspace(
         factory = factory.with_tool_state_home(workspace_home.clone());
     }
     if let Some(sandbox) = &sandbox {
-        factory = factory.with_sandbox_launch(
-            codel_tools::sandbox_launch::SandboxLaunchHook::new(sandbox.clone()),
-        );
+        factory = factory.with_sandbox_launch(codel_tools::sandbox_launch::SandboxLaunchHook::new(
+            sandbox.clone(),
+        ));
     }
     let hub_cfg = crate::hub::HubConfig {
         url: hub_url,
@@ -4791,7 +4787,9 @@ async fn enqueue_workspace_tool_definitions(
 }
 /// Single source of truth for mapping a turn-hook outcome to the `events.jsonl` [`TurnOutcomeLabel`].
 /// Kept as one `match` so the two enums cannot drift and the mapping is never duplicated across call sites.
-fn turn_outcome_label(outcome: codel_tool_protocol::turn_hook::TurnHookOutcome) -> TurnOutcomeLabel {
+fn turn_outcome_label(
+    outcome: codel_tool_protocol::turn_hook::TurnHookOutcome,
+) -> TurnOutcomeLabel {
     use codel_tool_protocol::turn_hook::TurnHookOutcome;
     match outcome {
         TurnHookOutcome::Completed => TurnOutcomeLabel::Completed,

@@ -854,10 +854,11 @@ async fn runner_panic_parks_until_uncertain_admission_terminalizes_failed() {
     let mut spawn = tokio::spawn({
         let backend = backend.clone();
         async move {
-            let mut request = crate::implementations::codel_build::task::coordinator::tests::request(
-                "panic-child",
-                false,
-            );
+            let mut request =
+                crate::implementations::codel_build::task::coordinator::tests::request(
+                    "panic-child",
+                    false,
+                );
             request.parent_session_id = "parent".to_owned();
             crate::implementations::codel_build::task::backend::SubagentBackend::spawn(
                 &backend, request, None,

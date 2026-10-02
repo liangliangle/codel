@@ -1,8 +1,8 @@
 use super::{ConnectAttempt, Context, EarlierAttempt, Reason, StartupFailure};
 use crate::app::connect_timeout::CONNECT_UI_TIMEOUT_TRY_COMMAND;
+use codel_logging::startup::{AgentKind, PhaseSnapshot, StartupPhase, format_duration};
 use std::fmt::Write as _;
 use std::time::Duration;
-use codel_logging::startup::{AgentKind, PhaseSnapshot, StartupPhase, format_duration};
 const WRAP_WIDTH: usize = 76;
 pub(super) fn render(failure: &StartupFailure) -> String {
     let context = &failure.context;

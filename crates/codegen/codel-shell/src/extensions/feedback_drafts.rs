@@ -25,12 +25,8 @@ pub async fn answer(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtRes
     match args.method.as_ref() {
         "codel/feedback/drafts/list" => list_feedback_drafts(args, store).await,
         "codel/feedback/drafts/get" => get_feedback_draft(args, store).await,
-        "codel/feedback/drafts/delete" => {
-            delete_feedback_draft(args, store).await
-        }
-        "codel/feedback/drafts/update" => {
-            update_feedback_draft(args, store).await
-        }
+        "codel/feedback/drafts/delete" => delete_feedback_draft(args, store).await,
+        "codel/feedback/drafts/update" => update_feedback_draft(args, store).await,
         _ => Err(acp::Error::method_not_found()),
     }
 }
@@ -135,10 +131,7 @@ async fn draft_op<T: Send + 'static>(
     response
 }
 
-async fn list_feedback_drafts(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-) -> ExtResult {
+async fn list_feedback_drafts(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     let session_id = requested_session_id(args)?;
     draft_op(
         &session_id,
@@ -154,10 +147,7 @@ async fn list_feedback_drafts(
     .await
 }
 
-async fn get_feedback_draft(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-) -> ExtResult {
+async fn get_feedback_draft(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     let request: FeedbackDraftRequest = parse_params(args)?;
     let draft_id = request.draft_id;
     draft_op(
@@ -178,10 +168,7 @@ async fn get_feedback_draft(
     .await
 }
 
-async fn update_feedback_draft(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-) -> ExtResult {
+async fn update_feedback_draft(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     let request: FeedbackDraftUpdateRequest = parse_params(args)?;
     draft_op(
         &request.session_id,
@@ -202,10 +189,7 @@ async fn update_feedback_draft(
     .await
 }
 
-async fn delete_feedback_draft(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-) -> ExtResult {
+async fn delete_feedback_draft(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     let request: FeedbackDraftRequest = parse_params(args)?;
     let draft_id = request.draft_id;
     draft_op(

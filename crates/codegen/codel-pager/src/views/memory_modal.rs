@@ -2018,8 +2018,7 @@ fn format_modified(epoch_secs: Option<u64>, now_secs: u64) -> String {
 }
 
 fn load_fullscreen_pref() -> bool {
-    let path =
-        codel_tools::util::codel_home::codel_home().join(codel_config::USER_CONFIG_FILENAME);
+    let path = codel_tools::util::codel_home::codel_home().join(codel_config::USER_CONFIG_FILENAME);
     let Some(doc) = crate::config_toml_edit::read_config_document_for_edit(&path) else {
         return false;
     };
@@ -2123,7 +2122,10 @@ mod tests {
 
     #[test]
     fn file_label_extracts_filename() {
-        assert_eq!(file_label("/home/user/.codel/memory/MEMORY.md"), "MEMORY.md");
+        assert_eq!(
+            file_label("/home/user/.codel/memory/MEMORY.md"),
+            "MEMORY.md"
+        );
         assert_eq!(
             file_label("/workspace/.codel/memory/sessions/2026-01-15-fix-bug.md"),
             "2026-01-15-fix-bug.md"

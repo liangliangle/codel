@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use rusqlite::params;
-use tempfile::TempDir;
+use codel_sqlite_journal::JournalMode;
 use codel_tools::types::memory_v2::{
     MemoryV2Access as _, MemoryV2AccessResource, MemoryV2Write, record_memory_v2_read,
     write_memory_v2_file,
 };
 use codel_tools::types::resources::Resources;
-use codel_sqlite_journal::JournalMode;
+use rusqlite::params;
+use tempfile::TempDir;
 
 use super::*;
 use crate::V2CaptureStore;

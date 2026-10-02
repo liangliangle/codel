@@ -458,9 +458,7 @@ impl ResolveInputs<'static> {
         Self {
             yolo_lock,
             managed: managed_settings(),
-            managed_config_rules: managed_config_permissions(
-                &codel_config::managed_config_layers(),
-            ),
+            managed_config_rules: managed_config_permissions(&codel_config::managed_config_layers()),
             project_trusted,
         }
     }

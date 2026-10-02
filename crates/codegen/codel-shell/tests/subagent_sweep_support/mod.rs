@@ -6,8 +6,6 @@
 use std::time::{Duration, Instant};
 
 use agent_client_protocol::{self as acp, Agent as _};
-use serde_json::{Value, json};
-use tempfile::TempDir;
 use codel_shell::waterfall;
 use codel_test_support::mock_server::LogEntry;
 use codel_test_support::{
@@ -15,6 +13,8 @@ use codel_test_support::{
     ScriptedResponse, SseEvent,
 };
 use codel_test_utils::env::env_usize;
+use serde_json::{Value, json};
+use tempfile::TempDir;
 
 use crate::acp_harness;
 use crate::perf_harness::{PerfRecorder, spawn_agent_thread};

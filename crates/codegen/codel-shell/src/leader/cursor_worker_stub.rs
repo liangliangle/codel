@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codel_login::AuthManager;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
-use codel_login::AuthManager;
 
 use crate::agent::config::CursorWorkerConfig;
 use crate::cpu_profile::{ControlError, ControlErrorCode};

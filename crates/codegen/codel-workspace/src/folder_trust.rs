@@ -617,7 +617,11 @@ mod tests {
         let tmp = repo_tmp();
         let codel = tmp.path().join(".codel");
         std::fs::create_dir_all(&codel).unwrap();
-        std::fs::write(codel.join("config.toml"), "[mcp_servers.x]\ncommand=\"y\"\n").unwrap();
+        std::fs::write(
+            codel.join("config.toml"),
+            "[mcp_servers.x]\ncommand=\"y\"\n",
+        )
+        .unwrap();
         assert!(repo_configs_present(tmp.path()));
     }
 

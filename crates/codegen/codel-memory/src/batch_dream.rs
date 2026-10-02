@@ -5,8 +5,8 @@
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
 use codel_sqlite_journal::JournalMode;
+use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
 
 use crate::batch_dream_io::{hash_bytes, read_bounded};
 use crate::{V2MemoryAccessPolicy, V2MemoryScope, V2PathClass};

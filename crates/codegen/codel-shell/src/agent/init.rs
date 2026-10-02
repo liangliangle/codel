@@ -226,7 +226,10 @@ pub async fn resolve_boot_startup_settings(
     let started = std::time::Instant::now();
     let need_settings = cfg.remote_settings.is_none();
     let query = need_settings.then(|| {
-        settings_get::SettingsQuery::resolve(warmed_auth.clone(), Some(cfg.codel_com_config.clone()))
+        settings_get::SettingsQuery::resolve(
+            warmed_auth.clone(),
+            Some(cfg.codel_com_config.clone()),
+        )
     });
     let (wait, models) = tokio::join!(
         async {

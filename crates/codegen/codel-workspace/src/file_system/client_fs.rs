@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use sha2::{Digest, Sha256};
 use codel_workspace_types::rpc::fs::{
     ClientFsListNode as FsListNode, ClientFsListReq as FsListReq, ClientFsListRes as FsListRes,
     ClientFsReadFileReq as FsReadFileReq, ClientFsReadFileRes as FsReadFileRes,
@@ -24,6 +23,7 @@ use codel_workspace_types::rpc::fs::{
     ClientFsWriteFileReq as FsWriteFileReq, ClientFsWriteFileRes as FsWriteFileRes, FsContentType,
     FsNodeType, MAX_CLIENT_FS_WRITE_CHUNK_BYTES, MAX_CLIENT_FS_WRITE_FILE_BYTES,
 };
+use sha2::{Digest, Sha256};
 
 use crate::error::{WorkspaceError, WorkspaceResult};
 use crate::handle::{ClientFsBase, WorkspaceHandle};
@@ -2273,7 +2273,11 @@ mod tests {
             b"orphan",
         )
         .unwrap();
-        std::fs::write(root.join("zz-user/.node_modules.codel-upload-u2"), b"orphan").unwrap();
+        std::fs::write(
+            root.join("zz-user/.node_modules.codel-upload-u2"),
+            b"orphan",
+        )
+        .unwrap();
 
         assert_eq!(remove_orphaned_staging(root, &|_| false), 2);
         assert!(

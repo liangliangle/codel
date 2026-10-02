@@ -366,7 +366,10 @@ mod tests {
     fn tool_metadata() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = HashlineReadTool;
-        assert_eq!(codel_tool_runtime::Tool::id(&tool).as_str(), "hashline_read");
+        assert_eq!(
+            codel_tool_runtime::Tool::id(&tool).as_str(),
+            "hashline_read"
+        );
         assert_eq!(ToolMetadata::kind(&tool), ToolKind::Read);
         assert!(codel_tool_runtime::Tool::capabilities(&tool).is_read_only);
         assert!(matches!(

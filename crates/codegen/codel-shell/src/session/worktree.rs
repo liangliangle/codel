@@ -4,10 +4,10 @@
 use crate::session::worktree_cleanup::cleanup_worktree_on_failure;
 use crate::util::config::WorktreeType as ShellWorktreeType;
 use anyhow::{Context, Result};
-use std::path::Path;
 use codel_logging::region;
 use codel_logging::region::Parent;
 pub use codel_workspace::worktree::*;
+use std::path::Path;
 const WORKTREE_LOG: &str = "codel_worktree";
 impl From<ShellWorktreeType> for WorktreeType {
     fn from(t: ShellWorktreeType) -> Self {
@@ -339,9 +339,7 @@ async fn resume_local_session_in_worktree(
                 is_jj,
                 registry_client.is_some(),
             ) {
-                codel_workspace::session::git::warn_registry_disabled_restore(
-                    resolved_session_id,
-                );
+                codel_workspace::session::git::warn_registry_disabled_restore(resolved_session_id);
             }
             let info = crate::session::info::Info {
                 id: agent_client_protocol::SessionId::new(resolved_session_id.to_owned()),

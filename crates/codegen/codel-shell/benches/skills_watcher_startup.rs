@@ -20,11 +20,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use codel_shell::config::watcher::SkillsFileWatcher;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use notify::RecursiveMode;
 use notify_debouncer_mini::new_debouncer;
 use tempfile::TempDir;
-use codel_shell::config::watcher::SkillsFileWatcher;
 
 /// Default directory count under `.claude/worktrees/` (override with `CODEL_SKILLS_WATCHER_BENCH_DIRS`).
 const DEFAULT_WORKTREE_DIRS: usize = 6_000;

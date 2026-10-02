@@ -19,6 +19,11 @@ pub use campaigns::{
     CampaignModelsDefault, campaign_driven_models_default, persist_models_default,
     sync_campaign_fields,
 };
+pub use codel_config::effective_config::{
+    EffectiveConfigLayers, load_effective_config, load_effective_config_with_layers,
+    remote_campaigns_from_settings, set_remote_campaigns_from_settings,
+};
+pub use codel_config::load_effective_config_disk_only;
 pub use consent::*;
 pub use hints::*;
 pub use load::*;
@@ -30,11 +35,6 @@ pub use resolve::*;
 pub use settings_writes::*;
 pub use tips::*;
 pub use worktree::*;
-pub use codel_config::effective_config::{
-    EffectiveConfigLayers, load_effective_config, load_effective_config_with_layers,
-    remote_campaigns_from_settings, set_remote_campaigns_from_settings,
-};
-pub use codel_config::load_effective_config_disk_only;
 // These types live in `codel-config`; the re-export keeps `crate::util::config::{RemoteSettings, GoalRoleModel}` working
 pub use codel_config_types::{
     CampaignOverride, ConsentGate, ContextualHintsRemote, DisplayRefreshSettings,

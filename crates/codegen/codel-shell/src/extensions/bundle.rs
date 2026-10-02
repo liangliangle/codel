@@ -8,10 +8,10 @@ use crate::bundle::{self, BundleManifest};
 use crate::remote::{FetchedBundle, fetch_bundle};
 use agent_client_protocol as acp;
 use anyhow::Context;
+use codel_tools::implementations::skills::discovery::extract_first_paragraph;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
-use codel_tools::implementations::skills::discovery::extract_first_paragraph;
 /// Default freshness window for the proactive bundle sync. Bypassed by `force`.
 pub(crate) const BUNDLE_SYNC_TTL: Duration = Duration::from_secs(60 * 60);
 /// Error message returned when no auth source is available for a bundle sync.
@@ -404,8 +404,7 @@ mod tests {
     }
     fn test_auth_manager() -> Arc<codel_login::AuthManager> {
         let dir = tempfile::tempdir().unwrap();
-        let mgr =
-            codel_login::AuthManager::new(dir.path(), codel_login::CodelComConfig::default());
+        let mgr = codel_login::AuthManager::new(dir.path(), codel_login::CodelComConfig::default());
         mgr.hot_swap(test_auth());
         std::mem::forget(dir);
         Arc::new(mgr)

@@ -16,8 +16,8 @@ use crate::version::{
     is_stable_channel, is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
 };
 use crate::winget::{UPGRADE_COMMAND, WINGET};
-pub use codel_logging::events::CliUpdateTrigger;
 use codel_logging::events::CliUpdateErrorKind;
+pub use codel_logging::events::CliUpdateTrigger;
 use codel_shell::util::codel_home::{codel_application, codel_home};
 use codel_shell::util::config;
 

@@ -4,9 +4,9 @@ use super::lock::{Heartbeat, try_lock_auth_file_async};
 use crate::manager::AUTH_LOCK_TIMEOUT;
 use crate::model::{CodelAuth, UserInfo, lookup_auth};
 use crate::storage::{read_auth_json, write_auth_json};
+use codel_logging::unified_log::LogLevel;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
-use codel_logging::unified_log::LogLevel;
 /// Timeout for the `/user` fetch, shared by the inline (login) and background paths.
 const USER_FETCH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 /// Logs `auth update enrichment dropped` if the task is cancelled before it finishes.

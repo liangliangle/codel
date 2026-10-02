@@ -6,9 +6,9 @@ use crate::views::permission_view::PermissionFocus;
 use crate::views::prompt_widget::StashedPrompt;
 use crate::views::question_view::QuestionViewState;
 use agent_client_protocol as acp;
+use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::Arc;
-use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
 
 const SHIFT_TAB: [(KeyCode, KeyModifiers); 3] = [
     (KeyCode::BackTab, KeyModifiers::NONE),

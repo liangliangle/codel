@@ -4,9 +4,9 @@
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol as acp;
-use serde::Serialize;
 use codel_acp_lib::{AcpAgentTx, acp_send};
 use codel_workspace::session::git::RestoreDegree;
+use serde::Serialize;
 
 use super::effects::{
     acp_send_bounded, parse_worktree_restore_payload, parse_worktree_strategy_summary,

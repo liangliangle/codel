@@ -26,13 +26,9 @@ use crate::upload::trace::{
 };
 use crate::upload::turn::{PromptTraceContext, complete_prompt_trace};
 use agent_client_protocol as acp;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
 use codel_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use codel_agent::config::{McpInheritance, ModelOverride, PermissionMode};
+use codel_hunk_tracker::HunkTrackerHandle;
 use codel_sampling_types::conversation::ConversationItem;
 use codel_session_events::types::CancellationCategory;
 use codel_subagent_resolution::ResumeSourceData;
@@ -40,16 +36,20 @@ use codel_tools::implementations::codel_build::monitor::types::MonitorEventBuffe
 use codel_tools::implementations::codel_build::task::types::*;
 use codel_tools::types::tool::ToolKind;
 use codel_workspace::file_system::AsyncFileSystem;
-use codel_hunk_tracker::HunkTrackerHandle;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 mod attempt_runner;
 mod spawn;
 mod start_artifact_publication;
+pub(crate) use codel_tools::implementations::codel_build::task::coordinator::{
+    ChildRunOutput, StartedChild,
+};
 pub(crate) use spawn::{
     emit_subagent_notification, spawn_subagent_coordinator, subagent_coordinator_channel,
     worker_runtime,
-};
-pub(crate) use codel_tools::implementations::codel_build::task::coordinator::{
-    ChildRunOutput, StartedChild,
 };
 mod attempt_store;
 mod child_runtime;
@@ -1524,10 +1524,8 @@ fn resolve_agent_definition(
         toggles: &ctx.subagent_toggle,
         allowed_types: ctx.allowed_subagent_types.as_deref(),
     };
-    let mut def = codel_subagent_resolution::discover_agent_definition(
-        subagent_type,
-        &resolution_context,
-    )?;
+    let mut def =
+        codel_subagent_resolution::discover_agent_definition(subagent_type, &resolution_context)?;
     ctx.apply_session_cli_overrides(&mut def);
     Some(def)
 }
@@ -1761,8 +1759,7 @@ fn resolve_subagent_permission_mode(
 /// Both arms MUST resolve this identically.
 fn resolve_subagent_source_repo(ctx: &SubagentSpawnContext) -> std::path::PathBuf {
     let source_cwd = parent_source_cwd(ctx);
-    codel_workspace::session::git::find_main_repo_root_from_path(&source_cwd)
-        .unwrap_or(source_cwd)
+    codel_workspace::session::git::find_main_repo_root_from_path(&source_cwd).unwrap_or(source_cwd)
 }
 enum SubagentWaitOutcome {
     Cancelled,
@@ -1826,9 +1823,7 @@ fn cancellation_error_message(
         _ => "Subagent turn was cancelled".to_string(),
     }
 }
-fn telemetry_owner_kind(
-    request: &SubagentRequest,
-) -> codel_logging::events::SubagentOwnerKind {
+fn telemetry_owner_kind(request: &SubagentRequest) -> codel_logging::events::SubagentOwnerKind {
     if request.owner.is_workflow() {
         codel_logging::events::SubagentOwnerKind::Workflow
     } else if request.from_scheduler_loop() {

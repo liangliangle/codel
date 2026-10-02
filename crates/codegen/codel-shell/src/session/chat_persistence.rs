@@ -1,8 +1,8 @@
 use std::io;
 
-use tokio::sync::{mpsc, oneshot};
 use codel_chat_state::{ChatPersistence, StrictAppendAck, StrictAppendError};
 use codel_sampling_types::ConversationItem;
+use tokio::sync::{mpsc, oneshot};
 
 use super::persistence::PersistenceMsg;
 

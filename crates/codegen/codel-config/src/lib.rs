@@ -111,10 +111,10 @@ pub use mcp_server_config::{
 };
 pub use memory_v2::{MemoryV2Rollout, MemoryV2Settings};
 pub use paths::{
-    claude_managed_settings_path, claude_managed_settings_probe_path, create_dir_all_owner_only,
-    decode_cwd_from_dirname, default_codel_home, encode_cwd_dirname, ensure_sessions_cwd_dir,
-    ensure_sessions_cwd_dir_in, codel_application, codel_application_in, codel_home, sessions_cwd_dir,
-    sessions_cwd_dir_in, set_dir_owner_only, system_config_dir, user_codel_home,
+    claude_managed_settings_path, claude_managed_settings_probe_path, codel_application,
+    codel_application_in, codel_home, create_dir_all_owner_only, decode_cwd_from_dirname,
+    default_codel_home, encode_cwd_dirname, ensure_sessions_cwd_dir, ensure_sessions_cwd_dir_in,
+    sessions_cwd_dir, sessions_cwd_dir_in, set_dir_owner_only, system_config_dir, user_codel_home,
 };
 pub use remote_announcement::{AnnouncementCta, RemoteAnnouncement};
 pub use remote_fetch::{remote_fetch_enabled_from_layers, resolve_remote_fetch_enabled};

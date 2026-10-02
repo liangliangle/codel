@@ -5,8 +5,8 @@
 
 #![deny(clippy::indexing_slicing)]
 
-use similar::{ChangeTag, TextDiff};
 use codel_tools::types::output::SearchReplaceEditDetail;
+use similar::{ChangeTag, TextDiff};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffLine {
@@ -1079,11 +1079,11 @@ mod tests {
     #[test]
     fn extract_edit_hunks_from_raw_output() {
         use agent_client_protocol as acp;
-        use std::sync::Arc;
         use codel_tools::types::output::{
             SearchReplaceEditContextInformation, SearchReplaceEditsApplied, SearchReplaceOutput,
             ToolOutput,
         };
+        use std::sync::Arc;
 
         let edits_applied = SearchReplaceEditsApplied {
             old_string: "let x = 1;".to_string(),
@@ -1184,8 +1184,8 @@ mod tests {
     fn extract_edit_hunks_from_diff_meta_structured() {
         // Strategy 2: structured edit details from Diff.meta (acp_conversion embeds SearchReplaceEditContextInformation)
         use agent_client_protocol as acp;
-        use std::sync::Arc;
         use codel_tools::types::output::SearchReplaceEditContextInformation;
+        use std::sync::Arc;
 
         let edits = SearchReplaceEditContextInformation {
             details: vec![SearchReplaceEditDetail {

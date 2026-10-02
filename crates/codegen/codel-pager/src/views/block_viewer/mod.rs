@@ -8,13 +8,13 @@
 
 use std::time::Instant;
 
+use codel_workspace::permission::mcp_titleize_segment;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidget;
-use codel_workspace::permission::mcp_titleize_segment;
 
 use crate::clipboard::SystemClipboard;
 use crate::render::scrollbar::SCROLLBAR_TOTAL_COLS;

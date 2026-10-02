@@ -1,5 +1,5 @@
-use toml::Value as TomlValue;
 use codel_sampling_types::ReasoningEffort;
+use toml::Value as TomlValue;
 
 const SESSION_RECAP_MODEL_DEFAULT: &str = "codel-4.5";
 const SESSION_RECAP_REASONING_EFFORT_DEFAULT: ReasoningEffort = ReasoningEffort::Low;

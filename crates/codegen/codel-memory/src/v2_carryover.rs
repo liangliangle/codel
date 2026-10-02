@@ -9,9 +9,9 @@ use std::collections::HashSet;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{OptionalExtension as _, params};
-use codel_tools::util::truncate_str;
 use codel_sqlite_journal::JournalMode;
+use codel_tools::util::truncate_str;
+use rusqlite::{OptionalExtension as _, params};
 
 use crate::storage::slugify;
 use crate::v2::V2MemoryScope;

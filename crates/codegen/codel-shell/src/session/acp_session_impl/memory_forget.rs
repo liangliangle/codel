@@ -210,12 +210,8 @@ mod tests {
         let storage = MemoryStorage::new_for_mode(&cwd, Some(&root), MemoryMode::V2);
         std::fs::create_dir_all(storage.global_dir()).unwrap();
         std::fs::create_dir_all(storage.workspace_dir()).unwrap();
-        codel_memory::ensure_scope_initialized(
-            &root,
-            storage.global_dir(),
-            V2MemoryScope::Global,
-        )
-        .unwrap();
+        codel_memory::ensure_scope_initialized(&root, storage.global_dir(), V2MemoryScope::Global)
+            .unwrap();
         codel_memory::ensure_scope_initialized(
             &root,
             storage.workspace_dir(),

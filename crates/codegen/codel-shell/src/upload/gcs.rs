@@ -15,15 +15,15 @@
 //!
 //! Use [`WithAuth::with_auth`] at every shell-side upload call site that has an `AuthManager` in scope.
 //! Call it immediately before passing the config to an `codel_file_utils::gcs::*` helper.
-use std::sync::Arc;
+use codel_auth::AuthCredentialProvider;
 use codel_file_utils::gcs::StorageConfig;
 use codel_file_utils::storage_client::Auth401AttributionCallback;
 use codel_file_utils::{TraceExportConfig, UploadMethod};
-use codel_auth::AuthCredentialProvider;
 use codel_login::AuthManager;
 use codel_login::credential_provider::{
     ShellAuthCredentialProvider, StorageClientAttributionBridge,
 };
+use std::sync::Arc;
 /// See the module docs for why this exists.
 /// `auth_manager == None` is supported (for tests, direct-mode upload, and a few sites without an `AuthManager` in scope).
 /// It degrades to the pre-existing snapshot-based behavior.

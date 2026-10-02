@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub use codel_dirs::{default_codel_home, codel_home, user_codel_home};
+pub use codel_dirs::{codel_home, default_codel_home, user_codel_home};
 
 #[cfg(target_os = "macos")]
 const CLAUDE_MANAGED_SETTINGS_PATH: &str =

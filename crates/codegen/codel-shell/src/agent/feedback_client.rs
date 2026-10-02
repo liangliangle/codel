@@ -58,7 +58,8 @@ pub struct FeedbackClient {
 impl FeedbackClient {
     pub fn new(base_url: impl Into<String>, user_token: Option<String>) -> Self {
         let http = crate::http::shared_client();
-        let credentials = crate::util::codel_auth_credentials::CodelAuthCredentials::new(user_token);
+        let credentials =
+            crate::util::codel_auth_credentials::CodelAuthCredentials::new(user_token);
         let client = Self::build_middleware_client(&http, &credentials);
         Self {
             http,
@@ -91,7 +92,8 @@ impl FeedbackClient {
         base_url: impl Into<String>,
         user_token: Option<String>,
     ) -> Self {
-        let credentials = crate::util::codel_auth_credentials::CodelAuthCredentials::new(user_token);
+        let credentials =
+            crate::util::codel_auth_credentials::CodelAuthCredentials::new(user_token);
         let client = Self::build_middleware_client(&http, &credentials);
         Self {
             http,
@@ -812,11 +814,11 @@ mod auth_refresh_tests {
     use super::*;
     use axum::{Router, routing::get};
     use chrono::{Duration, Utc};
+    use codel_login::{AuthManager, AuthMode, CodelAuth, CodelComConfig};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::net::TcpListener;
-    use codel_login::{AuthManager, AuthMode, CodelAuth, CodelComConfig};
 
     async fn start_server(router: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -929,7 +931,4 @@ mod auth_refresh_tests {
     struct CountingRefresher {
         calls: Arc<AtomicU32>,
     }
-
-
-
 }

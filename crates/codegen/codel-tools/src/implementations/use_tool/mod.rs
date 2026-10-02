@@ -1,9 +1,9 @@
 //! `use_tool` — dispatch to a discovered MCP tool.
 
 mod input;
+use codel_tool_runtime::render_structured_content;
 pub use input::{InlineMcpInvocation, UseToolInput, parse_arguments_file};
 use serde::{Deserialize, Serialize};
-use codel_tool_runtime::render_structured_content;
 
 use crate::types::output::{MCPOutput, ToolOutput};
 use crate::types::tool::{ToolKind, ToolNamespace};
@@ -62,7 +62,9 @@ async fn dispatch_local_mcp(
     ctx: codel_tool_runtime::ToolCallContext,
 ) -> Result<ToolOutput, codel_tool_runtime::ToolError> {
     let tool_id = codel_tool_protocol::ToolId::new(tool_name).map_err(|_| {
-        codel_tool_runtime::ToolError::invalid_arguments(format!("invalid tool name: '{tool_name}'"))
+        codel_tool_runtime::ToolError::invalid_arguments(format!(
+            "invalid tool name: '{tool_name}'"
+        ))
     })?;
     let typed = dispatch.0.call_terminal(tool_id, tool_input, ctx).await?;
     serde_json::from_value(typed.value)

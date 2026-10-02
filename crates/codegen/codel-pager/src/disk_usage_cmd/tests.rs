@@ -13,7 +13,9 @@ fn clean_flags_require_yes_and_conflict() {
         let args = args.into_iter().filter(|arg| !arg.is_empty());
         assert!(crate::app::cli::PagerArgs::try_parse_from(args).is_err());
     }
-    assert!(crate::app::cli::PagerArgs::try_parse_from(["codel", "du", "--clean", "--yes"]).is_ok());
+    assert!(
+        crate::app::cli::PagerArgs::try_parse_from(["codel", "du", "--clean", "--yes"]).is_ok()
+    );
     assert!(
         crate::app::cli::PagerArgs::try_parse_from(["codel", "du", "--clean-orphaned", "--yes"])
             .is_ok()

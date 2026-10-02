@@ -38,9 +38,7 @@ pub(super) fn minimal_auth_hint(
         // Nothing is in flight: authentication is a configuration matter, so the
         // hint names what to do rather than waiting for a flow that never starts.
         AuthState::Pending { error: None } => {
-            MinimalAuthHint::Failed(
-                codel_shell::agent::auth_method::AUTH_ERROR_API_KEY.to_owned(),
-            )
+            MinimalAuthHint::Failed(codel_shell::agent::auth_method::AUTH_ERROR_API_KEY.to_owned())
         }
         AuthState::Done if !is_zdr_blocked => {
             if let TrustState::Pending { workspace } = trust {
@@ -259,10 +257,6 @@ pub(super) fn render_auth(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &Mi
 #[cfg(test)]
 mod tests {
     use super::*;
-
-
-
-
 
     #[test]
     fn render_auth_shows_trust_question() {

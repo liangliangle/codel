@@ -34,39 +34,6 @@ fn creates_session(effects: &[Effect]) -> bool {
         .any(|e| matches!(e, Effect::CreateSession { .. }))
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /// The real Welcome-stays route: chat mode (no husk) + Local workspace without
 /// an ACK opens the y/N prompt. The forwarded `y` must not confirm it.
 #[cfg(feature = "local-workspace")]
@@ -93,42 +60,7 @@ fn leave_home_into_local_workspace_ack_keeps_the_keystroke_as_a_draft() {
     assert_eq!(app.welcome_prompt.text(), "y");
 }
 
-
-
-
-
-
-
-
-
-
-
-
 fn bind_home_session(app: &mut AppView) {
     let home = app.home_session_agent.expect("home session");
     let _ = handle_session_created(app, home, acp::SessionId::new("home-sid"), None, None);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

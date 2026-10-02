@@ -1,9 +1,9 @@
 use super::*;
 use crate::session::tool_index::ToolMetadata;
-use pretty_assertions::assert_eq;
-use serde_json::{Map, Value, json};
 use codel_tools::implementations::use_tool::InlineMcpInvocation;
 use codel_tools::types::tool_io::ToolInput;
+use pretty_assertions::assert_eq;
+use serde_json::{Map, Value, json};
 
 const SPLUNK: &str = "splunk__RunSearch";
 const COMPACT: &str = r#"{"SPL":"index=main"}"#;

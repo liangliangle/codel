@@ -21,11 +21,11 @@ pub mod api_key_probe;
 pub mod attribution;
 pub mod auth_method;
 pub mod backend;
+pub mod codel_auth_credentials;
 pub mod config;
 pub mod credential_provider;
 pub mod error;
 pub mod flow;
-pub mod codel_auth_credentials;
 pub mod jwt;
 pub mod manager;
 pub mod meta;
@@ -40,12 +40,12 @@ pub use api_key_probe::{
 };
 pub use config::CodelComConfig;
 pub use config::expand_auth_alias;
+pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use flow::{
     ensure_authenticated, ensure_authenticated_or_noninteractive, mint_session_noninteractive,
     try_ensure_fresh_auth, try_noninteractive_auth_no_mint,
 };
 pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration, parse_jwt_subject};
-pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::AuthManager;
 pub use manager::{AuthRemedy, CachedTokenState};
 pub use meta::AuthMeta;

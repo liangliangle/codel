@@ -1,16 +1,8 @@
 use crate::agent::auth_method::ModelByok;
-use crate::agent::model_providers::{
-    ModelProviderConfig, parse_model_providers,
-};
+use crate::agent::model_providers::{ModelProviderConfig, parse_model_providers};
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::{config::StorageMode, sampling::ApiBackend, tools::config::ShellToolsetConfig};
 use agent_client_protocol as acp;
-use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::num::NonZeroU64;
-use std::path::PathBuf;
-use std::sync::Arc;
 use codel_agent::prompt::skills::SkillsConfig;
 use codel_login::{AuthManager, CodelComConfig};
 use codel_sampler::{AuthScheme, SamplerConfig};
@@ -21,6 +13,12 @@ use codel_sampling_types::{
     reasoning_effort_meta_value, reasoning_efforts_meta_value,
 };
 use codel_tools::types::compat::{CompatConfig, CompatConfigToml};
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::num::NonZeroU64;
+use std::path::PathBuf;
+use std::sync::Arc;
 /// Determines behavior like relay sync enablement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentMode {
@@ -1192,8 +1190,7 @@ impl Default for Config {
             subagents_limit_behavior: Default::default(),
             workflow_max_concurrent_agents:
                 crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
-            media_gen_batch_limits: codel_tools::media_gen_limits::MediaGenBatchLimits::default(
-            ),
+            media_gen_batch_limits: codel_tools::media_gen_limits::MediaGenBatchLimits::default(),
             subagent_model_overrides: std::collections::HashMap::new(),
             subagent_toggle: std::collections::HashMap::new(),
             subagent_roles: std::collections::HashMap::new(),

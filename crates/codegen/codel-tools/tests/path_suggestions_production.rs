@@ -13,9 +13,9 @@
 //! cargo test -p codel-tools --test path_suggestions_production
 //! ```
 
+use codel_tools::util::path_suggestions::{format_not_found_error, path_not_found_hint};
 use std::path::PathBuf;
 use tempfile::TempDir;
-use codel_tools::util::path_suggestions::{format_not_found_error, path_not_found_hint};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 

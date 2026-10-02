@@ -13,8 +13,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use codel_egress_proxy::{
     BlockedRequest, Decider as _, DeciderOutcome, DenySource, EgressProxyOptions, Resolver, WouldBe,
 };
@@ -28,9 +26,11 @@ use codel_sandbox::command::grants::{
 use codel_sandbox::command::policy::NetworkPolicy;
 use codel_sandbox::command::violation::CommandExit;
 use codel_sandbox::command::{BackendName, GitConfigEnv, SandboxMode, SandboxPolicy};
+use codel_tool_runtime::{ToolApprovalPolicy, ToolStream, ToolStreamItem};
 use codel_tools::sandbox_launch::SandboxLaunch;
 use codel_tools::types::output::{BackgroundTaskStarted, BashOutput, ToolOutput, ToolRunResult};
-use codel_tool_runtime::{ToolApprovalPolicy, ToolStream, ToolStreamItem};
+use futures::StreamExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::network::{NetworkViolationSink, SandboxGrantView};
 use super::result_path::run_shell_call_with_replay;

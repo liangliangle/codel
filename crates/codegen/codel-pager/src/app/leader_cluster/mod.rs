@@ -32,9 +32,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Duration;
 
 use agent_client_protocol as acp;
-use tempfile::TempDir;
-use tokio::task::{JoinSet, LocalSet};
-use tokio_util::sync::CancellationToken;
 use codel_acp_lib::{AcpClientRx, acp_send};
 use codel_shell::agent::MvpAgent;
 use codel_shell::leader::{
@@ -44,6 +41,9 @@ use codel_shell::leader::{
     run_leader_server,
 };
 use codel_test_support::MockInferenceServer;
+use tempfile::TempDir;
+use tokio::task::{JoinSet, LocalSet};
+use tokio_util::sync::CancellationToken;
 
 use super::actions::{Action, TaskResult};
 use super::agent::AgentState;

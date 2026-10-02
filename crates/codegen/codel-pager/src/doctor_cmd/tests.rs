@@ -542,11 +542,9 @@ fn fix_preview_contains_exact_change_and_caveats() {
     let preview = String::from_utf8(preview).unwrap();
     assert_eq!(preview, crate::diagnostics::format_fix_preview(&plan));
     assert!(preview.contains("File: "));
-    assert!(
-        preview.contains(
-            "# >>> codel doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='codel wrap ssh'"
-        )
-    );
+    assert!(preview.contains(
+        "# >>> codel doctor >>>\n# >>> terminal.ssh-wrap >>>\nalias ssh='codel wrap ssh'"
+    ));
     assert!(preview.contains("To use once without changing config: `codel wrap ssh <host>`"));
     assert!(preview.contains("Use `command ssh ...` to bypass the alias."));
     assert!(preview.contains("ssh -f"));

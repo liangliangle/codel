@@ -452,9 +452,9 @@ pub(super) fn derive_child_cwd(
 
 /// Updates the cached branch/worktree display on the matching agent so the status bar can render without spawning `git` on every frame.
 pub(super) fn handle_git_head_changed(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
-    let Ok(params) = serde_json::from_str::<codel_workspace::session::git::GitHeadChanged>(
-        notif.params.get(),
-    ) else {
+    let Ok(params) =
+        serde_json::from_str::<codel_workspace::session::git::GitHeadChanged>(notif.params.get())
+    else {
         return false;
     };
 

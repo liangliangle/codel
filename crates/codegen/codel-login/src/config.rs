@@ -6,10 +6,10 @@
 //! all of that is gone; what remains is the authority's origin/URL, the header
 //! name the relay uses, and the API-key kill switch.
 
-use serde::{Deserialize, Serialize};
 pub use codel_config::CLI_CHAT_PROXY_BASE_URL_DEFAULT;
 use codel_config::{Capability, Distribution};
 use codel_shell_base::env::{PROD_RELAY_WS_URL, PROD_WS_ORIGIN};
+use serde::{Deserialize, Serialize};
 
 /// `auth.json` scope key.
 ///
@@ -29,7 +29,6 @@ pub struct CodelComConfig {
     /// Admin kill switch for API-key auth (`CODEL_DISABLE_API_KEY_AUTH`, `[codel_com_config] disable_api_key_auth`).
     pub disable_api_key_auth: Option<bool>,
 }
-
 
 /// If `config` contains `[auth]`, copy its contents under `[codel_com_config]`.
 /// `[codel_com_config]` takes precedence if both are present (explicit wins).
@@ -68,7 +67,10 @@ impl CodelComConfig {
     /// # Errors
     /// Returns an error when the section is present but does not deserialize.
     pub fn from_effective_config(config: &toml::Value) -> Result<CodelComConfig, toml::de::Error> {
-        match config.get("codel_com_config").or_else(|| config.get("auth")) {
+        match config
+            .get("codel_com_config")
+            .or_else(|| config.get("auth"))
+        {
             Some(section) => section.clone().try_into(),
             None => Ok(CodelComConfig::default()),
         }

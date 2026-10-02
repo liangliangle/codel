@@ -1,13 +1,5 @@
 use super::*;
 
-
-
-
-
-
-
-
-
 #[test]
 fn slash_new_uses_worktree_cwd() {
     let mut app = test_app_with_agent();
@@ -33,8 +25,6 @@ fn slash_new_uses_worktree_cwd() {
             .is_some_and(|a| a.session.is_worktree)
     );
 }
-
-
 
 #[test]
 fn dispatch_fork_from_welcome_toasts_and_returns_no_effect() {
@@ -180,9 +170,7 @@ fn open_fork_question_refuses_when_existing_question_is_open() {
     let mut app = fork_test_app();
     // Plant an existing question (e.g. an ACP-driven one).
     use crate::views::question_view::QuestionViewState;
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "existing ACP question?".into(),
         options: vec![QuestionOption {
@@ -502,8 +490,6 @@ fn dispatch_fork_stashes_directive_in_pending_first_prompt() {
     );
 }
 
-
-
 /// `Action::ForkAnswered { worktree: true, .. }` produces the `CreateWorktreeSession` effect (the "Yes" submit path).
 #[test]
 fn dispatch_fork_answered_worktree_true_emits_create_worktree_session() {
@@ -741,8 +727,6 @@ fn fork_session_ready_does_not_retarget_unrelated_suppress() {
     assert_eq!(app.suppress_code_restore_once.as_deref(), Some("other-sid"));
 }
 
-
-
 #[test]
 fn fork_session_ready_emits_load_session_with_new_id() {
     let mut app = fork_test_app();
@@ -904,9 +888,7 @@ fn fork_session_failed_pushes_turn_failed_block() {
 #[test]
 fn translate_local_submit_yes_returns_worktree_true_action() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: (0..2)
@@ -952,9 +934,7 @@ fn translate_local_submit_yes_returns_worktree_true_action() {
 #[test]
 fn translate_local_submit_no_returns_worktree_false_action() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: (0..2)
@@ -998,9 +978,7 @@ fn translate_local_submit_no_returns_worktree_false_action() {
 #[test]
 fn translate_local_submit_always_returns_persist_always_for_fork() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: (0..4)
@@ -1045,9 +1023,7 @@ fn translate_local_submit_always_returns_persist_always_for_fork() {
 #[test]
 fn translate_local_submit_never_returns_persist_never_for_fork() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: (0..4)
@@ -1093,9 +1069,7 @@ fn translate_local_submit_never_returns_persist_never_for_fork() {
 fn handle_ask_user_question_pushes_system_block_when_displaced_local_fork_modal() {
     use crate::scrollback::block::RenderBlock;
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
 
     let mut app = fork_test_app();
     let id = AgentId(0);

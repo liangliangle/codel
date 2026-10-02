@@ -1,9 +1,9 @@
 //! Announcement tracking for MCP servers and skills: which of them were already announced via `<system-reminder>` messages.
 //! The tracking keeps injections and resumed sessions from duplicating listings.
 
+use codel_tools::implementations::search_tool::ServerFingerprint;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use codel_tools::implementations::search_tool::ServerFingerprint;
 
 /// Persisted announcement tracking state.
 /// It is restored on session resume so the fresh actor "remembers" what was already announced.

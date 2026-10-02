@@ -26,15 +26,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use dashmap::DashMap;
-use futures::FutureExt;
-use futures::Stream;
-use futures::future::{BoxFuture, Shared};
-use indexmap::IndexMap;
-use parking_lot::RwLock;
-use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
-use url::Url;
 use codel_computer_hub_core::{
     ErasedTool, ToolHandle, decode_call_result, error_from_envelope, progress_from_frame,
     tool_error_from_wire,
@@ -52,6 +43,15 @@ use codel_tool_runtime::{
     ToolStreamItem, TypedToolOutput, terminal_only,
 };
 use codel_tool_types::ToolDescription;
+use dashmap::DashMap;
+use futures::FutureExt;
+use futures::Stream;
+use futures::future::{BoxFuture, Shared};
+use indexmap::IndexMap;
+use parking_lot::RwLock;
+use serde_json::Value;
+use tokio::sync::{mpsc, oneshot};
+use url::Url;
 
 use crate::auth::{AuthCredential, AuthProvider};
 use crate::connection::{
@@ -2518,9 +2518,9 @@ fn client_error_to_tool_error(err: ClientError) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codel_tool_types::ToolDescription;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
-    use codel_tool_types::ToolDescription;
 
     #[derive(Debug)]
     struct EchoTool {

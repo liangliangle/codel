@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
+use codel_sandbox::command::CommandTag;
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio::task::JoinSet;
-use codel_sandbox::command::CommandTag;
 
 use crate::error::{ConnectionError, ProxyError, write_error};
 use crate::metrics::ProxyOutcome;

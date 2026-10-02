@@ -631,10 +631,7 @@ mod tests {
         let [entry] = loaded.as_slice() else {
             panic!("expected 1 entry, got {}", loaded.len());
         };
-        assert_eq!(
-            entry.kind,
-            codel_tools::computer::types::TaskKind::Monitor
-        );
+        assert_eq!(entry.kind, codel_tools::computer::types::TaskKind::Monitor);
     }
 
     #[test]

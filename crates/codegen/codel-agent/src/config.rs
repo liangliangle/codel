@@ -2,19 +2,19 @@
 use crate::error::AgentBuildError;
 use crate::prompt::context::TemplateOverride;
 use crate::prompt::user_message::UserMessageTemplate;
-use serde::Deserialize;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
-use codel_tools::implementations::codex;
 use codel_tools::implementations::codel_build;
 use codel_tools::implementations::codel_build_concise;
+use codel_tools::implementations::codex;
 use codel_tools::implementations::memory;
 use codel_tools::implementations::opencode;
 use codel_tools::implementations::search_tool;
 use codel_tools::implementations::use_tool;
 use codel_tools::registry::types::{ToolConfig, ToolServerConfig};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
 /// Process-global registry of externally-provided toolset presets.
 /// Public presets are enumerated; internal presets resolve only via [`toolset_for_preset`] and never appear in the manifest.
 /// Register before the first preset resolution — earlier-resolved configs will not see later registrations.

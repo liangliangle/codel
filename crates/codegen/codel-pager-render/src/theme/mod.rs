@@ -8,10 +8,10 @@
 //! Runtime-generated colors (syntax highlighting, blending) are also quantized via [`color_support::quantize`].
 
 pub mod cache;
-pub mod color_support;
-pub mod env_appearance;
 mod codelday;
 mod codelnight;
+pub mod color_support;
+pub mod env_appearance;
 pub mod md_style;
 pub mod osc11;
 mod oscura;
@@ -641,7 +641,10 @@ mod tests {
             other => panic!("expected RGB, got {other:?}"),
         };
         let night = Theme::codelnight();
-        let faint = night.faint().fg.expect("CodelNight blends to a hard colour");
+        let faint = night
+            .faint()
+            .fg
+            .expect("CodelNight blends to a hard colour");
         assert!(luma(night.bg_base) < luma(faint) && luma(faint) < luma(night.gray_dim));
 
         let terminal = Theme::terminal_default();

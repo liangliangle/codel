@@ -69,9 +69,7 @@ async fn fetch_managed_config(
     .await
 }
 
-pub(super) fn map_transport_failure(
-    failure: codel_http::TransportFailure,
-) -> ManagedConfigError {
+pub(super) fn map_transport_failure(failure: codel_http::TransportFailure) -> ManagedConfigError {
     use codel_http::TransportFailureKind;
     match failure.kind {
         TransportFailureKind::CertificateUntrusted => {
@@ -271,8 +269,7 @@ async fn revalidate_stale_start(auth_manager: std::sync::Arc<codel_login::AuthMa
     if !store::managed_principal_present() {
         return;
     }
-    if !codel_config::is_managed_config_stale_for(&store::current_serving_identity_any_expiry())
-    {
+    if !codel_config::is_managed_config_stale_for(&store::current_serving_identity_any_expiry()) {
         return;
     }
 
@@ -344,8 +341,7 @@ async fn fetch_for_principal(
 ) -> Result<FetchedConfig, ManagedConfigError> {
     let max_attempts = budget.max_attempts();
     // Merged-config resolution: the bearer must not go to the public default URL.
-    let url =
-        codel_config::EndpointsConfig::from_effective_config().resolve_managed_config_url();
+    let url = codel_config::EndpointsConfig::from_effective_config().resolve_managed_config_url();
 
     let team_auth = team_override.or_else(store::read_active_team_auth);
 
@@ -515,10 +511,7 @@ pub async fn ensure_managed_policy_present(
     codel_logging::startup::enter(codel_logging::startup::StartupPhase::ManagedPolicy);
     let has_deployment_key = store::resolve_deployment_key().is_some();
     let signed_in_team = store::team_principal_signed_in();
-    codel_logging::startup::set_auth_mode(policy::auth_mode(
-        has_deployment_key,
-        &signed_in_team,
-    ));
+    codel_logging::startup::set_auth_mode(policy::auth_mode(has_deployment_key, &signed_in_team));
     // A parked refresh applies here, pre-sandbox, before staleness is judged; it gates
     // itself (fetch-disabled or unverifiable discards, missing principal self-refuses).
     store::apply_staged_managed_config();
@@ -527,8 +520,7 @@ pub async fn ensure_managed_policy_present(
     }
 
     let team = {
-        let mut timer =
-            codel_logging::instrumentation_timer!("startup.managed_policy.auth_wait");
+        let mut timer = codel_logging::instrumentation_timer!("startup.managed_policy.auth_wait");
         timer.with_subphase(codel_logging::startup::Subphase::ManagedPolicyAuthWait);
         refreshed_team_principal(auth_manager).await
     };
@@ -540,8 +532,7 @@ pub async fn ensure_managed_policy_present(
         return;
     }
 
-    let mut timer =
-        codel_logging::instrumentation_timer!("startup.managed_policy.config_sync");
+    let mut timer = codel_logging::instrumentation_timer!("startup.managed_policy.config_sync");
     timer.with_subphase(codel_logging::startup::Subphase::ManagedPolicyConfigSync);
     match sync_bounded(SyncBudget::SessionStart, team).await {
         Some(Ok(_)) => {}

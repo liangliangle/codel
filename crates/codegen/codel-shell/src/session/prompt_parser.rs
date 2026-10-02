@@ -1,11 +1,11 @@
 use crate::session::user_message::user_query;
 use agent_client_protocol::{self as acp, ImageContent};
-use serde::Deserialize;
-use std::ops::Range;
-use std::path::PathBuf;
 use codel_workspace::file_system::{
     FileReference, render_embedded_resource, render_file_reference,
 };
+use serde::Deserialize;
+use std::ops::Range;
+use std::path::PathBuf;
 /// Some templates put `<user_query>` last (context first); Codel puts it first.
 /// Keeping them separate lets the caller truncate context without searching for the query boundary in a flat string.
 #[derive(Debug, Clone)]
@@ -123,8 +123,7 @@ pub(crate) async fn parse_prompt_with_skills(
     is_cursor: bool,
     skill_information: String,
 ) -> Result<ParsedPrompt, acp::Error> {
-    let parse_span =
-        codel_logging::region::Region::from_span(tracing::info_span!("prompt.parse"));
+    let parse_span = codel_logging::region::Region::from_span(tracing::info_span!("prompt.parse"));
     let allows_file_expansion = authority != super::InputAuthority::ModelAuthoredUntrusted;
     let mut message_parts: Vec<String> = Vec::new();
     let mut image_parts = Vec::new();

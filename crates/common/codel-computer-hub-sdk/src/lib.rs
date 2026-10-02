@@ -42,6 +42,11 @@ pub mod server;
 pub mod oidc_provider;
 
 pub use auth::{AuthCredential, AuthIdentity, AuthProvider, PrincipalKey, SharedAuthProvider};
+pub use codel_computer_hub_core::{
+    CODEL_BOT_DEFAULT_TOOL_IDS, CODEL_BOT_TOOL_DESCRIPTIONS, CODEL_BOT_TOOL_IDS,
+    codel_bot_tool_arguments_schema, codel_bot_tool_description, is_codel_bot_default_tool,
+    is_codel_bot_tool,
+};
 pub use connection::{
     CLOSE_CODE_SANDBOX_TERMINATED, ConnKey, HubConnection, InitialConnectPolicy, ReconnectEvent,
 };
@@ -59,11 +64,6 @@ pub use pool::HubConnectionPool;
 pub use server::{
     ResolvedSessionHandlers, SessionHandlerResolver, SessionUnboundCallback, SystemNotifyAck,
     ToolServer, ToolServerBuilder, ToolServerHandler, WeakToolServer,
-};
-pub use codel_computer_hub_core::{
-    CODEL_BOT_DEFAULT_TOOL_IDS, CODEL_BOT_TOOL_DESCRIPTIONS, CODEL_BOT_TOOL_IDS,
-    codel_bot_tool_arguments_schema, codel_bot_tool_description, is_codel_bot_default_tool,
-    is_codel_bot_tool,
 };
 // Re-exported so consumers that depend only on the SDK can recognize the
 // server's `workspace_unavailable` error without also pulling in the core crate.

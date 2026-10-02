@@ -9,11 +9,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use agent_client_protocol::{self as acp, Agent as _};
+use codel_acp_lib::LineBufferedRead;
 use futures_util::future::LocalBoxFuture;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tokio_util::task::AbortOnDropHandle;
-use codel_acp_lib::LineBufferedRead;
 
 use crate::acp_policy::{ClientPolicy, Interactivity};
 

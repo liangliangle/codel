@@ -77,9 +77,7 @@ pub(super) fn unregister_all_active_sessions(app: &AppView) -> Vec<Effect> {
         })
         .collect()
 }
-fn displaced_draft_feedback_notice(
-    outcome: codel_shell::session::FeedbackOutcome,
-) -> &'static str {
+fn displaced_draft_feedback_notice(outcome: codel_shell::session::FeedbackOutcome) -> &'static str {
     match outcome {
         codel_shell::session::FeedbackOutcome::Submitted => super::notes::FEEDBACK_THANKS_NOTICE,
         codel_shell::session::FeedbackOutcome::SubmittedCleanupFailed => {
@@ -573,8 +571,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             if let Some(agent) = app.agents.get_mut(&agent_id) {
                 if let Some((raw, is_manual)) = title
-                    && let Some(t) =
-                        codel_shell::session::persistence::sanitize_and_cap_title(&raw)
+                    && let Some(t) = codel_shell::session::persistence::sanitize_and_cap_title(&raw)
                 {
                     if is_manual && agent.display_name.is_none() {
                         agent.display_name = Some(t.clone());
@@ -928,8 +925,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::ChangelogFetched { markdown, entries } => {
             app.changelog_markdown = markdown;
-            app.changelog_bullets =
-                codel_shell::util::changelog::bullets_from_entries(&entries, 3);
+            app.changelog_bullets = codel_shell::util::changelog::bullets_from_entries(&entries, 3);
             vec![]
         }
         TaskResult::ClipboardAttachmentProbed {

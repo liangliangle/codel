@@ -1,18 +1,17 @@
 //! `AuthManager` is the single source of truth for `auth.json` and the in-memory bearer cache.
 //! Mutations go through `update`; lock and enrichment helpers live in submodules.
 use chrono::{Duration, Utc};
+use codel_auth::bearer_suffix;
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
-use codel_auth::bearer_suffix;
 #[path = "manager/enrichment.rs"]
 mod enrichment;
 #[path = "manager/lock.rs"]
 pub(super) mod lock;
 #[path = "manager/remedy.rs"]
 mod remedy;
-pub use remedy::AuthRemedy;
 use super::model::AuthStore;
 #[cfg(test)]
 use super::model::UserInfo;
@@ -32,11 +31,12 @@ use crate::side_call_bearer::non_empty_key;
 use crate::token_type::TokenType;
 #[cfg(test)]
 use chrono::DateTime;
+use codel_logging::events::ManualAuthSurface;
+use codel_shell_base::util::dual_clock::DualClock;
 #[cfg(test)]
 use enrichment::apply_user_info_enrichment;
 use lock::{LockAcquire, try_lock_auth_file_async};
-use codel_shell_base::util::dual_clock::DualClock;
-use codel_logging::events::ManualAuthSurface;
+pub use remedy::AuthRemedy;
 /// Why [`AuthManager::try_use_disk_token`] (the single enforcement point for disk-token adoption) declined a disk token.
 /// Naming the decision, instead of collapsing every decline into a bare `None`, lets callers carry it into the structured log.
 /// Tests can assert the exact guard.
@@ -907,20 +907,12 @@ impl AuthManager {
         });
         match new_state {
             DiskAuthState::Ok => {
-                codel_logging::unified_log::info(
-                    "auth disk state: entry present",
-                    None,
-                    Some(ctx),
-                );
+                codel_logging::unified_log::info("auth disk state: entry present", None, Some(ctx));
             }
             DiskAuthState::FileMissing
             | DiskAuthState::EntryMissing
             | DiskAuthState::Unreadable => {
-                codel_logging::unified_log::warn(
-                    "auth disk state: entry lost",
-                    None,
-                    Some(ctx),
-                );
+                codel_logging::unified_log::warn("auth disk state: entry lost", None, Some(ctx));
             }
         }
     }
@@ -963,9 +955,9 @@ impl AuthManager {
             {
                 return Ok(auth.clone());
             }
-            if let Some(refreshed) =
-                self.try_adopt_disk_token("auth: adopted sibling token during PermanentFailure in auth()")
-            {
+            if let Some(refreshed) = self.try_adopt_disk_token(
+                "auth: adopted sibling token during PermanentFailure in auth()",
+            ) {
                 return Ok(refreshed);
             }
             return Err(err);

@@ -384,9 +384,6 @@ mod tests {
             panic!("missing codel_com_config.disable_api_key_auth: {map:?}");
         };
         assert_eq!(disable_auth.requirements, "pin");
-            panic!("missing codel_com_config.force_login_team_uuid: {map:?}");
-        };
-        assert_eq!(force_team.requirements, "pin");
     }
 
     #[test]

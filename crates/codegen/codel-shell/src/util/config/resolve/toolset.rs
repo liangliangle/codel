@@ -1,6 +1,6 @@
 use crate::util::config::RemoteSettings;
-use toml::Value as TomlValue;
 use codel_tools::implementations::codel_build::ask_user_question;
+use toml::Value as TomlValue;
 
 /// Resolve whether the bash-harness shadows that swap `find` for `bfs` and `grep` for `ugrep` are enabled.
 /// Precedence (highest first): `requirements.toml` (org policy, wins outright) > a truthy `DISABLE_EMBEDDED_SEARCH_TOOLS` master (forces off) > env > `config.toml` `[toolset.bash]` > `managed_config.toml` > default-on.
@@ -585,7 +585,10 @@ mod web_search_domains_tests {
             "allowed_domains = [\"docs.codel.dev\"]\nexcluded_domains = [\"reddit.com\"]",
         ))
         .unwrap();
-        assert_eq!(got.allowed_domains, Some(vec!["docs.codel.dev".to_string()]));
+        assert_eq!(
+            got.allowed_domains,
+            Some(vec!["docs.codel.dev".to_string()])
+        );
         assert!(got.excluded_domains.is_none());
     }
 }

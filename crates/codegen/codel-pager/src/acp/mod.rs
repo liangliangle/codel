@@ -17,25 +17,26 @@ pub(crate) use version_mismatch::{is_version_mismatch_banner, version_mismatch_b
 /// TUI dispatch, headless dispatch, and the session-load ACP barrier all share this list.
 /// A new method thus cannot be handled in one path and classified `Unrelated` in another.
 pub(crate) fn is_session_update_ext_method(method: &str) -> bool {
-    matches!(method, "codel/session_notification" | "codel/session/update")
+    matches!(
+        method,
+        "codel/session_notification" | "codel/session/update"
+    )
 }
 use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use agent_client_protocol as acp;
 use anyhow::Result;
-pub use model_state::ModelState;
-use std::io::Write;
-use tokio_util::sync::CancellationToken;
 use codel_acp_lib::{AcpAgentTx, AcpClientRx, acp_send};
-use codel_shell::agent::auth_method::AuthMethodKind;
-use codel_shell::agent::config::Config as AgentConfig;
-use codel_shell::sampling::types::ReasoningEffort;
 use codel_logging::process_info::{
     Entrypoint, Interactivity, LeaderMode, ProcessIdentity, set_identity,
 };
 use codel_logging::startup;
-pub use codel_logging::startup::{
-    AgentKind, Owner, StartupOutcome, StartupPhase, StartupTimer,
-};
+pub use codel_logging::startup::{AgentKind, Owner, StartupOutcome, StartupPhase, StartupTimer};
+use codel_shell::agent::auth_method::AuthMethodKind;
+use codel_shell::agent::config::Config as AgentConfig;
+use codel_shell::sampling::types::ReasoningEffort;
+pub use model_state::ModelState;
+use std::io::Write;
+use tokio_util::sync::CancellationToken;
 /// Construct a `METHOD_NOT_FOUND` error for `WaitForTerminalExit`.
 /// Both the interactive pager and headless mode reject this ACP method (the adapter falls back to polling).
 /// Centralised here so the error code and message format stay in sync.

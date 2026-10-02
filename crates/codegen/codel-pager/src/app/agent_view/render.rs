@@ -4850,12 +4850,10 @@ mod status_line_draw_tests {
     use crate::scrollback::render::ScratchBuffer;
     use crate::views::question_view::QuestionViewState;
     use crate::views::status_line::{SanitizedText, StatusLineDisplay, StatusLineFrame};
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Color;
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
     fn draw_script(output: &str, rows: u16) -> Buffer {
         draw_script_for(&mut make_agent(), output, rows)
     }

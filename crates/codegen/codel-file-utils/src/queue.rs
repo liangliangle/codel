@@ -14,6 +14,8 @@ use crate::storage_client::{Auth401AttributionCallback, HttpUploadError};
 use crate::{BlobCompression, TraceExportConfig, UploadMethod};
 use anyhow::Context;
 use async_compression::tokio::bufread::ZstdEncoder;
+use codel_auth::AuthCredentialProvider;
+use codel_circuit_breaker::{Disposition, RetryPolicy};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -24,8 +26,6 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::Instrument;
-use codel_circuit_breaker::{Disposition, RetryPolicy};
-use codel_auth::AuthCredentialProvider;
 /// Resolves upload credentials at upload time, plus hooks for refresh-aware creds and 401 attribution.
 /// The agent delegates to AuthManager so queued items do not retry with expired tokens.
 /// Optional hooks default to `None` so existing implementors keep compiling.

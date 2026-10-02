@@ -13,11 +13,8 @@
 //! No deadline is imposed by default ([`WorkspaceClient::with_deadline`] opts in).
 //! That preserves the `WorkspaceOps::rpc_raw` behaviour where callers own their timeouts.
 #![deny(clippy::indexing_slicing)]
-use serde_json::Value;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 use codel_computer_hub_sdk::harness::ToolHarness;
+use codel_tool_runtime::{ToolCallContext, ToolStreamItem, TypedToolOutput};
 use codel_workspace_types::rpc::agents_md::{AgentConfigFile, DiscoverAgentsMdReq};
 use codel_workspace_types::rpc::code_nav::{
     CodeFindDefinitionsReq, CodeFindReferencesReq, CodeGotoDefinitionReq, CodeGotoReferencesReq,
@@ -60,7 +57,10 @@ use codel_workspace_types::rpc::worktree::{
     WorktreeGcReq, WorktreeListReq, WorktreeShowReq,
 };
 use codel_workspace_types::rpc::{RpcEnvelope, RpcError, WORKSPACE_RPC_TOOL_ID, WorkspaceRpc};
-use codel_tool_runtime::{ToolCallContext, ToolStreamItem, TypedToolOutput};
+use serde_json::Value;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceClientError {
     /// A previous call observed a fatal transport error and no reconnect has been signalled since.
@@ -134,7 +134,9 @@ fn is_non_retryable_workspace_unavailable(err: &codel_tool_runtime::ToolError) -
             use serde::Deserialize as _;
             codel_tool_protocol::WorkspaceUnavailableDetails::deserialize(d).ok()
         })
-        .is_some_and(|d| d.code == codel_tool_protocol::WORKSPACE_UNAVAILABLE_SUBCODE && !d.retryable)
+        .is_some_and(|d| {
+            d.code == codel_tool_protocol::WORKSPACE_UNAVAILABLE_SUBCODE && !d.retryable
+        })
 }
 /// Typed client over a bound [`ToolHarness`] for `workspace.*` RPCs.
 /// Clones share the harness and the connected latch, which fast-fails after a fatal transport error; [`mark_connected`](Self::mark_connected) / [`with_connected_flag`](Self::with_connected_flag) reset it.
@@ -582,13 +584,13 @@ impl WorkspaceClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schemars::JsonSchema;
-    use serde::Deserialize;
     use codel_computer_hub_sdk::harness::LocalRegistry;
-    use codel_workspace_types::rpc::RpcActivityClass;
     use codel_tool_protocol::{SessionId, ToolId};
     use codel_tool_runtime::{Tool, ToolError};
     use codel_tool_types::ToolDescription;
+    use codel_workspace_types::rpc::RpcActivityClass;
+    use schemars::JsonSchema;
+    use serde::Deserialize;
     #[derive(Debug, Deserialize, JsonSchema)]
     struct RpcArgs {
         method: String,

@@ -6,10 +6,7 @@
 
 use std::sync::Arc;
 
-use tokio::runtime::Handle;
-use codel_config_types::{
-    ENV_FILE_ACCELERATION_ROUTES, Feature, resolve_file_acceleration_routes,
-};
+use codel_config_types::{ENV_FILE_ACCELERATION_ROUTES, Feature, resolve_file_acceleration_routes};
 use codel_logging::events::{
     FileAccelerationArm, FileAccelerationSessionEnded, FileAccelerationSessionStarted,
     FileAccelerationUnavailableHit,
@@ -21,6 +18,7 @@ use codel_tools::computer::{
     },
     types::AsyncFileSystem,
 };
+use tokio::runtime::Handle;
 
 use crate::agent::config::Config;
 

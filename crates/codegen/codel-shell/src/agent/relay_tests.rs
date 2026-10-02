@@ -1,10 +1,10 @@
 //! Tests for [`super`] (the codel.dev relay connection loop).
 //! Extracted from `relay.rs` so the implementation reads top-to-bottom; wired in via `#[path = "relay_tests.rs"] mod tests;`.
 use super::*;
+use codel_login::AuthMode;
 use serde_json::json;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio_tungstenite::tungstenite::{Utf8Bytes, protocol::Role};
-use codel_login::AuthMode;
 /// Create an in-memory WebSocket pair (no network, no handshake needed).
 async fn ws_pair() -> (
     tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,

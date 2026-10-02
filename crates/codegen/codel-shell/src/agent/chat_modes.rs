@@ -5,10 +5,10 @@ use crate::remote::chat_models_client::{
     ChatModelsClient, ChatModelsError, ListModesResponse, Mode,
 };
 use agent_client_protocol as acp;
+use codel_login::AuthManager;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use codel_login::AuthManager;
 /// ~54 min, matching codel-web's refetch cadence.
 const CACHE_TTL: Duration = Duration::from_secs(54 * 60);
 /// Cold-miss budget on the `session/load` critical path (warm/stale served instantly).

@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
 use codel_tools::implementations::codel_build::workflow::WorkflowControl;
 use codel_workflow::{PauseKind, PhaseMeta, WorkflowOutcome};
+use serde::{Deserialize, Serialize};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::AsRefStr, strum::IntoStaticStr,

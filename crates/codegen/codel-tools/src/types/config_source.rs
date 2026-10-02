@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use codel_config::mcp_servers::McpServerOrigin;
+use serde::{Deserialize, Serialize};
 
 /// Where a piece of configuration was loaded from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

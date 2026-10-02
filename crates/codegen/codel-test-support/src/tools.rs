@@ -314,7 +314,10 @@ impl Tool {
     /// The call for CodelBuild's name when the request offers it.
     pub(crate) fn pick(&self, offered: &OfferedTools, arguments: &Value) -> Option<PickedToolCall> {
         let arguments = self.codel_build_arguments(arguments);
-        if let Some(name) = self.codel_build_name().filter(|name| offered.has_tool(name)) {
+        if let Some(name) = self
+            .codel_build_name()
+            .filter(|name| offered.has_tool(name))
+        {
             return Some(PickedToolCall { name, arguments });
         }
         if let Tool::Mcp { .. } = self
@@ -333,7 +336,10 @@ impl Tool {
     }
     /// Whether a call the agent carried back in its history is this tool's under CodelBuild's name.
     pub(crate) fn is_called_by(&self, call: &HistoryToolCall) -> bool {
-        if self.codel_build_name().is_some_and(|name| call.name == name) {
+        if self
+            .codel_build_name()
+            .is_some_and(|name| call.name == name)
+        {
             return true;
         }
         if let Tool::Mcp { .. } = self

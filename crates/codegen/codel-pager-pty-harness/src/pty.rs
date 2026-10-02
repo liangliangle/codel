@@ -7,8 +7,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use portable_pty::{ExitStatus, PtySize, native_pty_system};
 use codel_test_support::{TestProcessTree, TestSandbox, process_has_exited_without_reap};
+use portable_pty::{ExitStatus, PtySize, native_pty_system};
 
 const PTY_DROP_REAP_TIMEOUT: Duration = Duration::from_millis(250);
 /// Grace after group SIGTERM before SIGKILL so a responsive child can run TERM cleanup. Wedged children fall through to SIGKILL.

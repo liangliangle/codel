@@ -726,8 +726,10 @@ fn test_effective_worktree_cwd_empty_offset() {
 
 #[test]
 fn test_effective_worktree_cwd_single_level_offset() {
-    let result =
-        effective_worktree_cwd("/home/user/.codel/worktrees/repo/ab-123-a", Path::new("src"));
+    let result = effective_worktree_cwd(
+        "/home/user/.codel/worktrees/repo/ab-123-a",
+        Path::new("src"),
+    );
     assert_eq!(result, "/home/user/.codel/worktrees/repo/ab-123-a/src");
 }
 

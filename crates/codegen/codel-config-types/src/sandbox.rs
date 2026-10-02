@@ -4,9 +4,9 @@
 //! from or written to `config.toml`, whose `[sandbox]` table (`profile`, `auto_allow_bash`) stays
 //! the `codel` CLI's.
 
-use serde::{Deserialize, Serialize};
 pub use codel_config::sandbox_mode::optional_sandbox_mode;
 use codel_sandbox::command::SandboxMode;
+use serde::{Deserialize, Serialize};
 
 /// The daemon's settings file name, under the codel home and under a folder's `.codel/`: the one
 /// name the loader reads and the floor protects.

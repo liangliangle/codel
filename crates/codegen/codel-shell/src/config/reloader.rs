@@ -477,8 +477,8 @@ fn extract_ui_fields(config: &toml::Value) -> (Option<String>, bool, Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use codel_login::CodelAuth;
+    use std::collections::BTreeMap;
 
     fn make_auth(key: &str) -> CodelAuth {
         CodelAuth {
@@ -780,10 +780,7 @@ mod tests {
     fn parse_skills_config_empty() {
         let config = toml::Value::Table(toml::map::Map::new());
         let skills = parse_skills_config(&config);
-        assert_eq!(
-            skills,
-            codel_agent::prompt::skills::SkillsConfig::default()
-        );
+        assert_eq!(skills, codel_agent::prompt::skills::SkillsConfig::default());
     }
 
     #[test]

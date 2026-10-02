@@ -25,9 +25,9 @@ use std::{
 
 use crate::acp::model_state::ModelState;
 
+use codel_tools::implementations::skills::types::SkillScope;
 use matcher::FuzzyMatcher;
 use registry::{CommandRegistry, CommandSource, CommandTrigger};
-use codel_tools::implementations::skills::types::SkillScope;
 
 pub use command::{
     AppCtx, ArgItem, CommandExecCtx, CommandProvenance, CommandResult, SlashCommand,

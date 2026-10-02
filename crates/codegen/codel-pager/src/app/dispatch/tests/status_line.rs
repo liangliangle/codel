@@ -456,7 +456,6 @@ fn row_belonging_to_another_agent_is_not_painted_under_this_one() {
     );
 }
 
-
 #[test]
 fn row_nobody_asked_for_arms_nothing_that_outlives_the_turn() {
     let now = Instant::now();

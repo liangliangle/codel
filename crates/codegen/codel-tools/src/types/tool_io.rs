@@ -11,10 +11,6 @@
 //! - `ToolOutput` — one variant per built-in tool + `Dynamic(Value)`.
 //!   `From` derive generates `From<TypedOutput>` for each inner type.
 use crate::implementations::BashToolInput;
-use crate::implementations::codex::apply_patch::tool::ApplyPatchInput;
-use crate::implementations::codex::grep_files::tool::CodexGrepFilesInput;
-use crate::implementations::codex::list_dir::tool::CodexListDirInput;
-use crate::implementations::codex::read_file::tool::CodexReadFileInput;
 use crate::implementations::codel_build::ask_user_question::AskUserQuestionInput;
 use crate::implementations::codel_build::enter_plan_mode::EnterPlanModeInput;
 use crate::implementations::codel_build::exit_plan_mode::ExitPlanModeInput;
@@ -31,17 +27,21 @@ use crate::implementations::codel_build::update_goal::UpdateGoalInput;
 use crate::implementations::codel_build::video_gen::{ImageToVideoInput, ReferenceToVideoInput};
 use crate::implementations::codel_build::web_fetch::WebFetchInput;
 use crate::implementations::codel_build::web_search::WebSearchInput;
+use crate::implementations::codex::apply_patch::tool::ApplyPatchInput;
+use crate::implementations::codex::grep_files::tool::CodexGrepFilesInput;
+use crate::implementations::codex::list_dir::tool::CodexListDirInput;
+use crate::implementations::codex::read_file::tool::CodexReadFileInput;
 use crate::implementations::lsp::LspToolInput;
 use crate::implementations::memory::types::{MemoryGetInput, MemorySearchInput};
 use crate::implementations::opencode::write::WriteInput;
 use crate::implementations::search_tool::SearchToolInput;
 use crate::implementations::skills::skill::SkillInput;
 use crate::implementations::use_tool::UseToolInput;
-use serde::{Deserialize, Serialize};
 use codel_tool_types::KillTaskToolInput;
 use codel_tool_types::TaskOutputToolInput;
 use codel_tool_types::TaskToolInput;
 use codel_tool_types::WaitTasksToolInput;
+use serde::{Deserialize, Serialize};
 /// Raw input for an MCP (Model Context Protocol) tool call.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MCPToolInput {

@@ -49,7 +49,6 @@ impl McpFileSource {
         kind: codel_logging::events::McpFileInputKind,
         model_id: String,
     ) -> Self {
-        
         McpFileSource {
             path,
             kind,
@@ -125,7 +124,6 @@ impl McpFileSource {
         {
             return;
         }
-        
     }
 
     fn log_limit(
@@ -134,7 +132,6 @@ impl McpFileSource {
         limit: usize,
         observed: usize,
     ) {
-        
     }
 }
 

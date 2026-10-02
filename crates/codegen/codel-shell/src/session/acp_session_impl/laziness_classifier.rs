@@ -389,11 +389,9 @@ pub(crate) fn build_classifier_turns(
                 };
                 if !text.is_empty() {
                     let text = neutralize_transcript_user_text(&text);
-                    let text = codel_tools::util::truncate_str_with_marker(
-                        &text,
-                        CLASSIFIER_TURN_MAX_LEN,
-                    )
-                    .into_owned();
+                    let text =
+                        codel_tools::util::truncate_str_with_marker(&text, CLASSIFIER_TURN_MAX_LEN)
+                            .into_owned();
                     turns.push(ClassifierTurn::UserText(text));
                 }
             }
@@ -403,17 +401,13 @@ pub(crate) fn build_classifier_turns(
                         .map(|v| v.to_string())
                         .unwrap_or_else(|_| tc.arguments.to_string());
                     let args = neutralize_transcript_user_text(&args);
-                    let args = codel_tools::util::truncate_str_with_marker(
-                        &args,
-                        CLASSIFIER_TURN_MAX_LEN,
-                    )
-                    .into_owned();
+                    let args =
+                        codel_tools::util::truncate_str_with_marker(&args, CLASSIFIER_TURN_MAX_LEN)
+                            .into_owned();
                     let tool = neutralize_transcript_user_text(&tc.name);
-                    let tool = codel_tools::util::truncate_str_with_marker(
-                        &tool,
-                        CLASSIFIER_TURN_MAX_LEN,
-                    )
-                    .into_owned();
+                    let tool =
+                        codel_tools::util::truncate_str_with_marker(&tool, CLASSIFIER_TURN_MAX_LEN)
+                            .into_owned();
                     turns.push(ClassifierTurn::AssistantToolUse { tool, args });
                 }
             }

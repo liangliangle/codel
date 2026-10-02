@@ -1,9 +1,9 @@
 use super::support::*;
 use super::*;
 use agent_client_protocol as acp;
+use codel_tools::types::output::{MCPOutput, ToolOutput, ToolRunResult};
 use pretty_assertions::assert_eq;
 use std::time::Duration;
-use codel_tools::types::output::{MCPOutput, ToolOutput, ToolRunResult};
 
 const SPLUNK: &str = "splunk__RunSearch";
 const COMPACT: &str = r#"{"SPL":"index=main"}"#;
@@ -42,12 +42,11 @@ async fn use_tool_actor() -> (
     tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
 ) {
     let (actor, event_rx) = open_actor().await;
-    *actor.agent.borrow_mut() = test_agent_with_tools(vec![
-        codel_tools::registry::types::ToolConfig::for_tool::<
+    *actor.agent.borrow_mut() =
+        test_agent_with_tools(vec![codel_tools::registry::types::ToolConfig::for_tool::<
             codel_tools::implementations::use_tool::UseTool,
-        >(),
-    ])
-    .await;
+        >()])
+        .await;
     (actor, event_rx)
 }
 

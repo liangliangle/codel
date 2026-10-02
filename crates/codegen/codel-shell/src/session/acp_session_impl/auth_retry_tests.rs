@@ -229,10 +229,3 @@ fn suspend_reset_requires_open_incident_and_real_drift() {
         "the failed reset checks must not charge the budget"
     );
 }
-
-
-
-
-
-
-

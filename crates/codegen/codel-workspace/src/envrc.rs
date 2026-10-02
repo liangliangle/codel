@@ -646,7 +646,8 @@ impl Drop for PipeDrain {
 
 /// Reap a killed child; abandon a D-state corpse (the zombie pins its pid).
 fn reap_with_timeout(child: &mut std::process::Child, label: &str) {
-    if let Ok(None) = wait_timeout::ChildExt::wait_timeout(child, codel_tty_utils::KILL_REAP_TIMEOUT)
+    if let Ok(None) =
+        wait_timeout::ChildExt::wait_timeout(child, codel_tty_utils::KILL_REAP_TIMEOUT)
     {
         tracing::warn!(
             label,

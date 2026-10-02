@@ -1781,8 +1781,8 @@ fn acp_question_displaces_feedback_modal_and_keeps_main_draft() {
 /// A permission request evicts the open modal through the production enqueue path.
 #[test]
 fn permission_ingress_displaces_feedback_modal() {
-    use std::sync::Arc;
     use codel_acp_lib::AcpClientMessage;
+    use std::sync::Arc;
     let mut app = test_app_with_agent();
     open_feedback_modal(&mut app, Some("unsent report"));
     let (tx, _rx) = tokio::sync::oneshot::channel();
@@ -2057,10 +2057,7 @@ fn terminal_feedback_outcomes_take_parked_consent_and_upload_only_remote_success
             true,
         ),
         (codel_shell::session::FeedbackOutcome::LocalOnly, false),
-        (
-            codel_shell::session::FeedbackOutcome::OutcomeUnknown,
-            false,
-        ),
+        (codel_shell::session::FeedbackOutcome::OutcomeUnknown, false),
     ] {
         let mut app = test_app_with_agent();
         let origin = park_send_this_session(&mut app, "terminal outcome");

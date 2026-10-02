@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use codel_config::DisplayRefreshSettings;
+use serde::{Deserialize, Serialize};
 
 use codel_status_line::StatusLineConfig;
 

@@ -224,10 +224,6 @@ fn bash_while_running_is_server_authoritative() {
     assert_eq!(front.text, "ls -la");
 }
 
-
-
-
-
 /// Without `compact_held_prompt`, clearing `in_flight_prompt` when compact starts leaves nothing for reauth to stash.
 #[test]
 fn pre_fix_compact_start_without_hold_cannot_stash_for_reauth() {
@@ -306,21 +302,9 @@ fn second_auth_failure_does_not_clobber_reauth_stash() {
     );
 }
 
-
-
-
-
 fn test_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("test runtime")
 }
-
-
-
-
-
-
-
-

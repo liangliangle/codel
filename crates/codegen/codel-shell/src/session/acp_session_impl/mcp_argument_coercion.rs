@@ -2,13 +2,13 @@
 //! The original call stays unchanged. An unsafe mismatch is not partially applied.
 use crate::session::mcp_servers::MCP_TOOL_NAME_DELIMITER;
 use crate::session::tool_index::ToolMetadata;
+use codel_tools::implementations::use_tool::{USE_TOOL_NAME, UseToolInput};
+use codel_tools::registry::types::FinalizedToolset;
+use codel_tools::types::tool_io::ToolInput;
 use serde::de::{DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fmt;
-use codel_tools::implementations::use_tool::{USE_TOOL_NAME, UseToolInput};
-use codel_tools::registry::types::FinalizedToolset;
-use codel_tools::types::tool_io::ToolInput;
 pub(super) const MCP_ARGUMENT_COERCION_MAX_DEPTH: usize = 32;
 pub(super) const MCP_ARGUMENT_COERCION_MAX_NODES: usize = 10000;
 const DEPTH_CAP: &str = "MCP_ARGUMENT_COERCION_MAX_DEPTH";

@@ -391,9 +391,7 @@ async fn snapshot_ors_ledger_incomplete_even_when_reply_complete() {
 }
 
 fn scripted_outstanding_responder(
-    replies: Vec<
-        codel_tools::implementations::codel_build::task::types::SubagentOutstandingReply,
-    >,
+    replies: Vec<codel_tools::implementations::codel_build::task::types::SubagentOutstandingReply>,
 ) -> tokio::sync::mpsc::UnboundedSender<
     codel_tools::implementations::codel_build::task::types::SubagentEvent,
 > {

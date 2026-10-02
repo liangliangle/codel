@@ -32,8 +32,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use codel_config::TRUST_BOUNDARY_FILENAMES;
+use serde::{Deserialize, Serialize};
 
 use crate::command::canonical::{
     PathGlob, ServedRoot, canonical_path, dedup_paths, fold_dots, is_same_path, is_within,

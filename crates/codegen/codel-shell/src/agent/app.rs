@@ -6,6 +6,13 @@ use crate::leader::CursorWorkerStartArgs;
 use crate::leader::protocol::InternalMethod;
 use crate::util::codel_home;
 use agent_client_protocol as acp;
+use codel_acp_lib::{
+    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
+    LineBufferedRead,
+};
+#[cfg(test)]
+use codel_login::AuthMode;
+use codel_login::{AuthManager, CodelAuth, CodelComConfig};
 use parking_lot::Mutex;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -16,13 +23,6 @@ use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tokio::time::Duration;
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 use tracing::{debug, info, warn};
-use codel_acp_lib::{
-    AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
-    LineBufferedRead,
-};
-#[cfg(test)]
-use codel_login::AuthMode;
-use codel_login::{AuthManager, CodelAuth, CodelComConfig};
 const MAX_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 use indexmap::IndexMap;
 /// Configuration for periodic auto-update checking in leader mode. A long-running leader periodically calls `check_fn` to check for updates.
@@ -777,8 +777,7 @@ pub async fn run_leader(
     let _lock = lock;
     let ctx = &agent_config.codel_com_config;
     let auth: Option<CodelAuth> =
-        codel_login::try_noninteractive_auth_no_mint(ctx, agent_config.endpoints.proxy_url())
-            .await;
+        codel_login::try_noninteractive_auth_no_mint(ctx, agent_config.endpoints.proxy_url()).await;
     let _ = auth;
     let _ = ready_tx.send(true);
     info!(

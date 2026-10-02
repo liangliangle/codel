@@ -321,8 +321,7 @@ fn a_missing_or_symlinked_session_command_directory_is_not_a_write_root() {
 fn a_codel_home_unspellable_as_a_glob_keeps_the_session_command_directory() {
     for tag in ["session-glob", "session-glob[1]"] {
         let f = Fixture::new(tag);
-        let own_session =
-            codel_config::sessions_cwd_dir_in(&f.codel_home, &f.ws.to_string_lossy());
+        let own_session = codel_config::sessions_cwd_dir_in(&f.codel_home, &f.ws.to_string_lossy());
         let policy = f.build(&[], None);
         let write = |path: PathBuf| policy.would_allow(&Blocked::FsWrite { path });
         assert!(
@@ -1888,8 +1887,7 @@ fn a_differently_spelled_codel_home_in_the_profile_still_narrows_to_the_command_
         let mut profile = profile(&f.ws, &f.codel_home);
         profile.read_write = vec![f.ws.clone(), spelling.clone()];
         let policy = build_with_profile(&f, &profile, Some(&f.home)).unwrap();
-        let own_session =
-            codel_config::sessions_cwd_dir_in(&f.codel_home, &f.ws.to_string_lossy());
+        let own_session = codel_config::sessions_cwd_dir_in(&f.codel_home, &f.ws.to_string_lossy());
         assert!(
             policy.write_roots.contains(&own_session.join("commands")),
             "{spelling:?}"

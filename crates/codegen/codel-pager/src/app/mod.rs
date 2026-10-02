@@ -14,12 +14,12 @@ pub mod agent;
 pub mod agent_view;
 pub mod app_view;
 pub mod bundle;
-pub(crate) mod voice_state;
 pub(crate) mod cancel_latency;
 pub mod cli;
 pub(crate) mod command_catalog;
 pub mod consent;
 pub(crate) mod deferred_subagent_finishes;
+pub(crate) mod voice_state;
 pub use crate::link_opener;
 use codel_logging::region;
 use codel_logging::region::Parent;
@@ -91,6 +91,7 @@ pub use cli::{
     LeaderTargetArgs, OutputFormat, PagerArgs, ServeArgs, WrapArgs,
 };
 pub use cli::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
+use codel_shell::util::config;
 use crossterm::cursor::{self, SetCursorStyle};
 use crossterm::event;
 use crossterm::execute;
@@ -105,7 +106,6 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_util::sync::CancellationToken;
 pub(crate) use turn_completion::CANCELLATION_CATEGORY_KEY;
-use codel_shell::util::config;
 /// Tracks the extra Kitty keyboard layer pushed while the `/gboom` game is open (see [`push_gboom_keyboard_flags`]).
 /// Kept separate from the base layer (`terminal::kitty_keyboard`) so teardown pops both, in LIFO order.
 static GBOOM_KEYBOARD_PUSHED: AtomicBool = AtomicBool::new(false);
@@ -1507,9 +1507,7 @@ fn init_terminal(
             })?;
         }
         if mode.is_fullscreen() {
-            codel_shell::util::with_locked_stderr(|stderr| {
-                execute!(stderr, EnterAlternateScreen)
-            })?;
+            codel_shell::util::with_locked_stderr(|stderr| execute!(stderr, EnterAlternateScreen))?;
         }
         #[cfg(windows)]
         if want_minimal {
@@ -2246,8 +2244,8 @@ mod tests {
     }
     #[test]
     fn cli_session_id_with_resume_and_fork_ok() {
-        let args =
-            try_parse_pager(&["codel-pager", "-s", "a", "--resume", "b", "--fork-session"]).unwrap();
+        let args = try_parse_pager(&["codel-pager", "-s", "a", "--resume", "b", "--fork-session"])
+            .unwrap();
         assert!(args.session_startup_intent().is_ok());
     }
     #[test]

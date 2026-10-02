@@ -10,7 +10,6 @@ use crate::views::dashboard::WorkspaceRowInputs;
 use crate::views::dashboard::peek::PeekFields;
 use crate::views::dashboard::render::render_dashboard;
 
-
 #[test]
 fn disabling_preview_closes_hidden_question_and_routes_typing_to_dispatch() {
     let mut agents = IndexMap::from([(AgentId(0), make_agent())]);

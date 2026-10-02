@@ -223,7 +223,10 @@ impl FilenamePager {
             )
             .expect("rules unchanged"),
         );
-        assert_eq!(self.grants, grant_files(self.content.sandbox().codel_home()));
+        assert_eq!(
+            self.grants,
+            grant_files(self.content.sandbox().codel_home())
+        );
     }
 }
 

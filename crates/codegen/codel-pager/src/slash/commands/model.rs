@@ -370,10 +370,10 @@ fn effort_insert_text(prefix: &str, option: &ReasoningEffortOption) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::num::NonZeroU64;
-    use std::sync::Arc;
     use codel_shell::sampling::types::ReasoningEffort;
     use codel_test_support::acp_fixtures;
+    use std::num::NonZeroU64;
+    use std::sync::Arc;
 
     fn model_with_reasoning(id: &str, name: &str) -> (acp::ModelId, acp::ModelInfo) {
         let id = acp::ModelId::new(Arc::from(id));
@@ -436,8 +436,6 @@ mod tests {
             models,
             cwd: std::path::Path::new("."),
             has_session_announcements: false,
-            billing_surface_visible: true,
-            usage_command_visible: true,
             workflows_available: true,
             saved_workflows: &[],
             workflow_runs: &[],
@@ -501,7 +499,9 @@ mod tests {
             .suggest_args(&ctx, "Codel 4.7 hi")
             .expect("effort rows for a typed effort filter");
         assert!(
-            items.iter().any(|item| item.insert_text == "Codel 4.7 high"),
+            items
+                .iter()
+                .any(|item| item.insert_text == "Codel 4.7 high"),
             "typed effort must keep the effort rows up: {items:?}"
         );
 

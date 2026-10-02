@@ -1,8 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
+use codel_auth::bearer_suffix;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use codel_auth::bearer_suffix;
-
 
 pub const TOKEN_TTL: Duration = Duration::days(30);
 const DEFAULT_EARLY_INVALIDATION_SECS: u64 = 300; // 5 minutes
@@ -333,11 +332,6 @@ mod tests {
             ..CodelAuth::default()
         }
     }
-
-
-
-
-
 
     /// subscriptionTier present deserializes to Some.
     #[test]

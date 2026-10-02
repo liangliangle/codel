@@ -56,9 +56,7 @@ fn clean_title(raw: &str, unwrap_skill: bool) -> Option<String> {
         return None;
     }
     let unwrapped = unwrap_skill
-        .then(|| {
-            codel_tools::implementations::skills::skill::extract_skill_display_text(trimmed)
-        })
+        .then(|| codel_tools::implementations::skills::skill::extract_skill_display_text(trimmed))
         .flatten();
     Some(truncate_title(&sanitize_display_text(
         unwrapped.as_deref().unwrap_or(trimmed),

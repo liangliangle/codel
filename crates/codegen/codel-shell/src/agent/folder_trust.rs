@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use agent_client_protocol as acp;
-use parking_lot::Mutex;
 use codel_workspace::trust::{is_unsafe_trust_root, workspace_key};
+use parking_lot::Mutex;
 
 // The workspace scan, `decide`, and the trust store live in `codel-workspace`
 use codel_workspace::folder_trust::{
@@ -1076,9 +1076,9 @@ mod tests {
 
     #[test]
     fn filter_untrusted_project_lsp_drops_only_project() {
-        use std::collections::BTreeMap;
         use codel_tools::implementations::lsp::config::LspServerConfig;
         use codel_tools::types::config_source::ConfigSource;
+        use std::collections::BTreeMap;
 
         fn sourced() -> BTreeMap<String, (LspServerConfig, ConfigSource)> {
             let mut m = BTreeMap::new();
@@ -1132,7 +1132,11 @@ mod tests {
         let tmp = repo_tmp();
         let codel = tmp.path().join(".codel");
         std::fs::create_dir_all(&codel).unwrap();
-        std::fs::write(codel.join("lsp.json"), r#"{"projlsp": {"command": "true"}}"#).unwrap();
+        std::fs::write(
+            codel.join("lsp.json"),
+            r#"{"projlsp": {"command": "true"}}"#,
+        )
+        .unwrap();
 
         let sourced = load_servers_with_plugins_sourced(tmp.path(), &[], &[], &[], &[]);
         let (_, source) = sourced.get("projlsp").expect("project server present");
@@ -1151,7 +1155,11 @@ mod tests {
         let tmp = repo_tmp();
         let codel = tmp.path().join(".codel");
         std::fs::create_dir_all(&codel).unwrap();
-        std::fs::write(codel.join("lsp.json"), r#"{"projlsp": {"command": "true"}}"#).unwrap();
+        std::fs::write(
+            codel.join("lsp.json"),
+            r#"{"projlsp": {"command": "true"}}"#,
+        )
+        .unwrap();
 
         let sourced = load_servers_with_plugins_sourced(tmp.path(), &[], &[], &[], &[]);
         assert!(

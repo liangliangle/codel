@@ -12,9 +12,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use parking_lot::Mutex;
-use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
 use codel_egress_proxy::{Decider, Decision, DenySource, WouldBe};
 use codel_paths::AbsPathBuf;
 use codel_sandbox::WebsiteOrigin;
@@ -24,6 +21,9 @@ use codel_sandbox::command::{
     InformationalReason, Replay, SandboxMode, Violation,
 };
 use codel_tools::implementations::codel_build::web_fetch::domain::normalize_domain;
+use parking_lot::Mutex;
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use crate::permission::grants::denied_web_fetch_domain;
 use crate::permission::hub_gate::grant_dir_for;

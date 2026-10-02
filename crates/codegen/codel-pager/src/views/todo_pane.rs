@@ -2,9 +2,9 @@
 //!
 //! Wraps the canonical `TodoItem` type with a `ListItem` implementation that provides status-icon prefixes and styled content.
 
+use codel_shell::tools::{TodoItem, TodoStatus};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use codel_shell::tools::{TodoItem, TodoStatus};
 
 use super::list_pane::ListItem;
 

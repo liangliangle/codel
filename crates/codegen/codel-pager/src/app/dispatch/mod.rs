@@ -9,10 +9,10 @@
 //!
 //! Imports in this tree use at most one `super::` hop (absolute `crate::` paths otherwise); tests/ shares a fixture prelude via `use super::*;`.
 mod auth;
-mod dashboard_telemetry;
 mod cta;
 mod ctx;
 mod dashboard;
+mod dashboard_telemetry;
 pub(crate) mod external_editor;
 mod import_claude;
 mod inline_feedback;
@@ -35,6 +35,7 @@ mod turn;
 mod voice;
 pub(crate) use auth::scrollback_has_recent_disk_full;
 pub(in crate::app) use auth::scrollback_has_recent_error_banner;
+pub(crate) use ctx::{SwitchCause, switch_to_agent};
 pub(crate) use dashboard::{DashboardStopReadiness, dashboard_stop_readiness};
 pub(crate) use modes::{downgrade_displayed_auto_if_gated, effective_auto};
 pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;

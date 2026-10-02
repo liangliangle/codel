@@ -5,8 +5,6 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Value, json};
 use codel_sandbox::command::canonical::{fold_dots, is_within};
 use codel_sandbox::command::grants::{
     Expiry, GrantScope, GrantSubject, HostPattern, split_host_port,
@@ -18,6 +16,8 @@ use codel_sandbox::command::{
     BUILD_CACHE_TREES, BackendName, ProposalBounds, SandboxMode, canonical_path, is_too_broad,
 };
 use codel_tool_runtime::ToolApprovalPolicy;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Value, json};
 
 use crate::permission::prompter::tool_name_for_access;
 use crate::permission::types::AccessKind;

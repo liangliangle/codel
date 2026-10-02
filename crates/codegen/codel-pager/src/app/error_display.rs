@@ -37,9 +37,7 @@ impl WireErrorType {
                 Self::ContextLength
             }
             "encrypted_content_mismatch" => Self::EncryptedContentMismatch,
-            s if s == codel_shell::extensions::notification::DISK_FULL_ERROR_TYPE => {
-                Self::DiskFull
-            }
+            s if s == codel_shell::extensions::notification::DISK_FULL_ERROR_TYPE => Self::DiskFull,
             s => s
                 .parse::<codel_shell::sampling::error::SamplingErrorKind>()
                 .map(Into::into)

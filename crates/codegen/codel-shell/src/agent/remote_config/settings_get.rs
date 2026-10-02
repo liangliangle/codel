@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use tokio_util::sync::CancellationToken;
 use codel_login::{CodelAuth, CodelComConfig};
+use tokio_util::sync::CancellationToken;
 
 use crate::util::config::RemoteSettings;
 use codel_cloud_config::managed_config::policy_repair_pending;

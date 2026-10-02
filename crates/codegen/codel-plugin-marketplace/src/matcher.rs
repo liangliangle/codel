@@ -184,7 +184,10 @@ mod tests {
         let none: Vec<String> = Vec::new();
         let candidates = [candidate("vercel", &none, &kw)];
         assert_eq!(
-            match_plugin_keyword("https://github.com/codel-org/plugin-marketplace", &candidates),
+            match_plugin_keyword(
+                "https://github.com/codel-org/plugin-marketplace",
+                &candidates
+            ),
             None
         );
     }

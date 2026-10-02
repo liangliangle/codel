@@ -1,5 +1,6 @@
 use super::{direct_origin, read_projection};
 use codel_logging::events::{ReadLimitKind, ReadSkillMatch};
+use codel_tool_runtime::Tool;
 use codel_tools::implementations::codel_build::ReadFileTool;
 use codel_tools::types::source_summary::{
     CapApplicability, CapDisposition, ReadDetail, ReadLimitSlot, ReadRole, ToolSourceDetail,
@@ -7,7 +8,6 @@ use codel_tools::types::source_summary::{
 };
 use codel_tools::types::tool::ToolNamespace;
 use codel_tools::types::tool_call_origin::InvocationSource;
-use codel_tool_runtime::Tool;
 
 #[test]
 fn system_origin_leaves_the_model_absent_unless_it_is_known() {

@@ -9,10 +9,10 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::Value;
 use codel_tool_runtime::{
     ContentBlock, ToolChatCompletionResponse, ToolError, ToolProgress, TypedToolOutput,
 };
+use serde_json::Value;
 
 /// Model-visible workspace root.
 pub const VISIBLE_ROOT: &str = "/workspace";
@@ -732,8 +732,11 @@ fn codel_files_remount(root: &Path, mount_command: &str) -> Result<(), BindMount
             "codel-files remount exited {status} at {mp}"
         )));
     }
-    let ready = codel_files_sh(&codel_files_ready_probe(mp), CODEL_FILES_READY_PROBE_TIMEOUT)
-        .map_err(|e| BindMountError(format!("codel-files ready probe: {e}")))?;
+    let ready = codel_files_sh(
+        &codel_files_ready_probe(mp),
+        CODEL_FILES_READY_PROBE_TIMEOUT,
+    )
+    .map_err(|e| BindMountError(format!("codel-files ready probe: {e}")))?;
     if ready.success() {
         Ok(())
     } else {

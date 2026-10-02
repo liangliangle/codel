@@ -295,10 +295,7 @@ fn config_editor_action_still_uses_typed_request() {
         }) if queued == &path
     ));
 }
-fn seed_foreign_resume_hint(
-    app: &mut AppView,
-    tool: codel_foreign_sessions::ForeignSessionTool,
-) {
+fn seed_foreign_resume_hint(app: &mut AppView, tool: codel_foreign_sessions::ForeignSessionTool) {
     app.foreign_session_compat = codel_foreign_sessions::EnabledForeignSessionSources {
         claude: true,
         codex: true,
@@ -1187,9 +1184,7 @@ fn dispatch_fork_no_flag_always_reopens_modal_after_previous_answer() {
 #[test]
 fn translate_local_submit_skipped_returns_changed_with_no_action() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: vec![QuestionOption {
@@ -1218,9 +1213,7 @@ fn translate_local_submit_skipped_returns_changed_with_no_action() {
 #[test]
 fn translate_local_submit_no_selection_returns_changed_no_action() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: (0..2)
@@ -1249,9 +1242,7 @@ fn translate_local_submit_no_selection_returns_changed_no_action() {
 #[test]
 fn translate_local_submit_out_of_range_index_returns_changed_no_action() {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let q = Question {
         question: "?".into(),
         options: (0..2)
@@ -1284,9 +1275,7 @@ fn translate_local_submit_out_of_range_index_returns_changed_no_action() {
 #[test]
 fn handle_ask_user_question_does_not_push_system_block_when_displaced_acp_modal() {
     use crate::views::question_view::QuestionViewState;
-    use codel_tools::implementations::codel_build::ask_user_question::{
-        Question, QuestionOption,
-    };
+    use codel_tools::implementations::codel_build::ask_user_question::{Question, QuestionOption};
     let mut app = fork_test_app();
     let id = AgentId(0);
     let stashed = app.agents.get_mut(&id).unwrap().prompt.stash();

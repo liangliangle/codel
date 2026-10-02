@@ -903,7 +903,7 @@ mod tests {
         );
     }
 
-/// What an older proxy binary reports.
+    /// What an older proxy binary reports.
     fn stamp_only(last_activity_ms: u64) -> ActivitySample {
         ActivitySample {
             last_activity_ms,

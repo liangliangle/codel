@@ -369,7 +369,10 @@ mod tests {
         cmd.env("LC_CODEL_APPEARANCE", "light");
         apply_wrap_child_env(&mut cmd, Some(SystemAppearance::Dark));
         assert_eq!(env_str(&cmd, "CODEL_APPEARANCE").as_deref(), Some("dark"));
-        assert_eq!(env_str(&cmd, "LC_CODEL_APPEARANCE").as_deref(), Some("dark"));
+        assert_eq!(
+            env_str(&cmd, "LC_CODEL_APPEARANCE").as_deref(),
+            Some("dark")
+        );
         assert_eq!(env_str(&cmd, "CODEL_OSC52_SINK").as_deref(), Some("1"));
         assert_eq!(env_str(&cmd, "LC_CODEL_OSC52_SINK").as_deref(), Some("1"));
     }

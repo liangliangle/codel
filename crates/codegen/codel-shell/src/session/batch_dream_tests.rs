@@ -17,12 +17,8 @@ impl Fixture {
         let workspace = temp.path().join("workspace");
         codel_memory::ensure_scope_initialized(temp.path(), &global, V2MemoryScope::Global)
             .unwrap();
-        codel_memory::ensure_scope_initialized(
-            temp.path(),
-            &workspace,
-            V2MemoryScope::Workspace,
-        )
-        .unwrap();
+        codel_memory::ensure_scope_initialized(temp.path(), &workspace, V2MemoryScope::Workspace)
+            .unwrap();
         for (name, body) in topics {
             std::fs::write(workspace.join(format!("topics/{name}")), body).unwrap();
         }

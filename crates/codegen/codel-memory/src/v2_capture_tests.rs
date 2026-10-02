@@ -3,8 +3,8 @@ use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use super::*;
-use tempfile::TempDir;
 use codel_config_types::MemoryMode;
+use tempfile::TempDir;
 
 fn setup() -> (TempDir, V2CaptureStore) {
     let temp = TempDir::new().unwrap();

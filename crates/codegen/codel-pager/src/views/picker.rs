@@ -2670,12 +2670,10 @@ pub fn handle_picker_input(
 
         if crate::input::key::is_paste_key(key) || crate::input::key::is_inline_paste_key(key) {
             if let Some(text) = crate::clipboard::system_clipboard_get() {
-                if !crate::clipboard::clipboard_text_is_pasteable(Some(&text)) {
-                    
-                }
+                if !crate::clipboard::clipboard_text_is_pasteable(Some(&text)) {}
                 return handle_paste(state, text, config);
             }
-            
+
             return PickerOutcome::Unchanged;
         }
 

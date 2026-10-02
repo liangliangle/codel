@@ -3,11 +3,11 @@
 //! The text word-wraps under a hanging indent.
 //! [`height`] must measure with the same wrap that [`render`] paints.
 
+use codel_shell::sampling::types::{ModelNotice, ModelNoticeSeverity};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use codel_shell::sampling::types::{ModelNotice, ModelNoticeSeverity};
 
 use crate::glyphs::sanitize_toast_message;
 use crate::render::line_utils::truncate_str;

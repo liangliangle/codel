@@ -12,14 +12,14 @@ use crate::session::goal_planner::{
     spawn_with_fail_open_retry,
 };
 use crate::session::goal_role_tools::RoleToolNames;
-use std::path::Path;
-use std::sync::Arc;
 use codel_session_events::EventWriter;
+use codel_tool_types::SubagentCapabilityMode;
 use codel_tools::implementations::codel_build::task::backend::ChannelBackend;
 use codel_tools::implementations::codel_build::task::types::{
     SubagentOwner, SubagentRequest, SubagentRuntimeOverrides,
 };
-use codel_tool_types::SubagentCapabilityMode;
+use std::path::Path;
+use std::sync::Arc;
 
 // Constants
 
@@ -605,10 +605,10 @@ mod tests {
 
     #[tokio::test]
     async fn channel_spawner_request_is_harness_internal_and_read_only() {
+        use codel_tool_types::SubagentCapabilityMode;
         use codel_tools::implementations::codel_build::task::types::{
             SubagentEvent, SubagentResult,
         };
-        use codel_tool_types::SubagentCapabilityMode;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let spawner = ChannelSpawner {

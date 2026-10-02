@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use codel_sandbox::WebsiteOrigin;
 use codel_sandbox::command::CommandTag;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::{ConnectionError, ProxyError, write_committed};
 use crate::metrics::{ProxyMetrics, ProxyOutcome};
