@@ -1,0 +1,156 @@
+name: release
+
+# 多平台发布：6 条原生矩阵（linux/macos/windows × x86_64/aarch64）。
+# - 打 v* tag 自动构建并创建 GitHub Release
+# - workflow_dispatch 手动构建：只上传 artifact，不创建 Release
+#
+# 产物命名与 crates/codegen/codel-pager/scripts/install.sh 的约定一致：
+#   codel-<version>-<os>-<arch>[.exe]   （os ∈ macos|linux|windows, arch ∈ x86_64|aarch64）
+# 每份附带 .sha256；发布时另出汇总 SHA256SUMS。调试符号（.debug/.dSYM/.pdb）作为
+# workflow artifact 单独保留，不进 Release。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     platform: linux-x86_64 }
+          - { runner: ubuntu-24.04-arm, platform: linux-aarch64 }
+          - { runner: macos-15,         platform: macos-aarch64 }
+          - { runner: macos-15-intel,   platform: macos-x86_64 }
+          - { runner: windows-2025,     platform: windows-x86_64,  ext: ".exe" }
+          - { runner: windows-11-arm,   platform: windows-aarch64, ext: ".exe" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=dev-${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+
+      - name: Build (release-dist profile)
+        run: cargo build --profile release-dist --features release-dist -p codel-pager-bin
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          BIN="target/release-dist/codel-pager${{ matrix.ext }}"
+          ASSET="dist/codel-${VERSION}-${{ matrix.platform }}${{ matrix.ext }}"
+          test -f "$BIN"
+          cp "$BIN" "$ASSET"
+
+          case "${{ matrix.platform }}" in
+            macos-*)
+              # dSYM 必须从未 strip 的二进制生成；随后 ad-hoc 签名（否则 taskgated SIGKILL）。
+              dsymutil "$BIN" -o "dist/dsym/codel-pager.dSYM" 2>/dev/null || true
+              if [[ -d "dist/dsym/codel-pager.dSYM" ]]; then
+                tar -czf "dist/codel-${VERSION}-${{ matrix.platform }}.dSYM.tar.gz" -C dist/dsym codel-pager.dSYM
+              fi
+              rm -rf dist/dsym
+              strip -x "$ASSET" || true
+              xattr -cr "$ASSET" || true
+              codesign --force --sign - "$ASSET"
+              codesign --verify --verbose "$ASSET"
+              ;;
+            linux-*)
+              objcopy --only-keep-debug "$ASSET" "dist/codel-${VERSION}-${{ matrix.platform }}.debug"
+              strip "$ASSET"
+              ;;
+            windows-*)
+              PDB="target/release-dist/codel-pager.pdb"
+              if [[ -f "$PDB" ]]; then
+                cp "$PDB" "dist/codel-${VERSION}-${{ matrix.platform }}.pdb"
+              fi
+              ;;
+          esac
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "$ASSET.sha256"
+          else
+            shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          fi
+          ls -la dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codel-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish github release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Aggregated checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          : > SHA256SUMS
+          for f in codel-*; do
+            [[ -f "$f" ]] || continue
+            [[ "$f" == *.sha256 ]] && continue
+            sha256sum "$f" >> SHA256SUMS
+          done
+          cat SHA256SUMS
+          ls -la
+
+      - name: Create release
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            dist/*

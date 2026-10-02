@@ -1,0 +1,49 @@
+name: postmerge-ci
+
+# main 合并后的全量验证聚合入口（不进 PR 路径）。
+# 目前包含：workspace 全量 cargo check --all-targets（含测试目标——
+# 只查 lib 目标曾让测试目标的破损长期不被发现）。每条子检查后续可按需拆分/增加，
+# 末尾 results job 是本 workflow 的唯一汇总出口。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postmerge-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workspace-check:
+    name: cargo check (workspace, all targets)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: postmerge-ci-linux-x86_64
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+
+  results:
+    name: Postmerge CI results
+    needs: [workspace-check]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify all postmerge checks succeeded
+        run: |
+          echo "workspace-check=${{ needs.workspace-check.result }}"
+          failed="${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}"
+          if [[ "$failed" == "true" ]]; then
+            echo "::error::a postmerge check did not succeed"
+            exit 1
+          fi

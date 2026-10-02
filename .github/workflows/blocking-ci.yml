@@ -1,0 +1,59 @@
+name: blocking-ci
+
+# PR 与 push main 的合并门禁聚合入口（快、必过集）。
+# 分支 ruleset 只需要 require 末尾的 `required` 这一个 job。
+# 目前包含：fmt（cargo fmt --all --check）+ check（交付物 codel-pager-bin 编译门禁）。
+# 依赖 chore/rustfmt 先合入 main（该 PR 已把全仓 rustfmt 差异清零）。
+# 重的全量验证在 postmerge-ci.yml，不进 PR 路径。
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blocking-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format check
+        run: cargo fmt --all --check
+
+  check:
+    name: cargo check (codel-pager-bin)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: blocking-ci-linux-x86_64
+      - name: Check
+        run: cargo check -p codel-pager-bin
+
+  required:
+    name: required
+    needs: [fmt, check]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify all blocking checks succeeded
+        run: |
+          echo "fmt=${{ needs.fmt.result }} check=${{ needs.check.result }}"
+          failed="${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}"
+          if [[ "$failed" == "true" ]]; then
+            echo "::error::a blocking check did not succeed"
+            exit 1
+          fi
