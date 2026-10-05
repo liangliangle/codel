@@ -137,10 +137,14 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
+          # 校验和只覆盖 Release 资产；符号文件留在 workflow artifact 里。
           : > SHA256SUMS
           for f in codel-*; do
             [[ -f "$f" ]] || continue
             [[ "$f" == *.sha256 ]] && continue
+            case "$f" in
+              *.debug | *.dSYM.tar.gz | *.pdb) continue ;;
+            esac
             sha256sum "$f" >> SHA256SUMS
           done
           cat SHA256SUMS
@@ -150,7 +154,15 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+          assets=()
+          for f in dist/*; do
+            [[ -f "$f" ]] || continue
+            case "$f" in
+              *.debug | *.dSYM.tar.gz | *.pdb) continue ;;
+            esac
+            assets+=("$f")
+          done
           gh release create "$tag" \
             --title "$tag" \
             --generate-notes \
-            dist/*
+            "${assets[@]}"
